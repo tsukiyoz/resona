@@ -2,6 +2,7 @@
 package client
 
 import (
+	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
@@ -15,23 +16,43 @@ import (
 )
 
 type ServerProfile struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Address  string `json:"address"`
-	Nickname string `json:"nickname"`
+	ID                  string `json:"id"`
+	Name                string `json:"name"`
+	Address             string `json:"address"`
+	Nickname            string `json:"nickname"`
+	SkipPasswordStorage bool   `json:"skipPasswordStorage,omitempty"`
 }
 
 type Session struct {
-	Mode      string `json:"mode"`
-	ChannelID string `json:"channelID"`
-	Nickname  string `json:"nickname"`
+	Mode               string `json:"mode"`
+	ChannelID          string `json:"channelID"`
+	Nickname           string `json:"nickname"`
+	ServerID           string `json:"serverID"`
+	ServerName         string `json:"serverName"`
+	IdentityUID        string `json:"identityUID"`
+	SelfID             string `json:"selfID"`
+	Error              string `json:"error"`
+	SwitchingChannelID string `json:"switchingChannelID"`
+	CredentialError    string `json:"credentialError"`
+	MemberSyncState    string `json:"memberSyncState"`
+	MemberSyncError    string `json:"memberSyncError"`
 }
 
 type Channel struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Members     int    `json:"members"`
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	Description      string `json:"description"`
+	Members          int    `json:"members"`
+	ParentID         string `json:"parentID"`
+	Order            string `json:"order"`
+	PasswordRequired bool   `json:"passwordRequired"`
+}
+
+type User struct {
+	ID        string `json:"id"`
+	Nickname  string `json:"nickname"`
+	ChannelID string `json:"channelID"`
+	Self      bool   `json:"self"`
 }
 
 type Message struct {
@@ -43,10 +64,12 @@ type Message struct {
 }
 
 type Workspace struct {
-	Servers  []ServerProfile `json:"servers"`
-	Session  Session         `json:"session"`
-	Channels []Channel       `json:"channels"`
-	Messages []Message       `json:"messages"`
+	Servers       []ServerProfile `json:"servers"`
+	Session       Session         `json:"session"`
+	Channels      []Channel       `json:"channels"`
+	Users         []User          `json:"users"`
+	Messages      []Message       `json:"messages"`
+	Notifications []Notification  `json:"notifications"`
 }
 
 type ProfileStore interface {
@@ -55,12 +78,35 @@ type ProfileStore interface {
 }
 
 type Service struct {
-	mu    sync.Mutex
-	store ProfileStore
-	state Workspace
+	mu           sync.Mutex
+	lifecycleMu  sync.Mutex
+	credentialMu sync.Mutex
+	passwords    PasswordStore
+	store        ProfileStore
+	connector    RemoteConnector
+	state        Workspace
+
+	connection     RemoteConnection
+	connectCancel  context.CancelFunc
+	connectDone    chan struct{}
+	cleanupWG      sync.WaitGroup
+	generation     uint64
+	connectTimeout time.Duration
+	moveTimeout    time.Duration
+	moveCancel     context.CancelFunc
+	moveSequence   uint64
+	shutdown       bool
 }
 
 func New(store ProfileStore) (*Service, error) {
+	return NewWithConnector(store, nil)
+}
+
+func NewWithConnector(store ProfileStore, connector RemoteConnector) (*Service, error) {
+	return NewWithPasswordStore(store, connector, nil)
+}
+
+func NewWithPasswordStore(store ProfileStore, connector RemoteConnector, passwords PasswordStore) (*Service, error) {
 	profiles, err := store.Load()
 	if err != nil {
 		return nil, fmt.Errorf("load server profiles: %w", err)
@@ -68,9 +114,9 @@ func New(store ProfileStore) (*Service, error) {
 	if profiles == nil {
 		profiles = []ServerProfile{}
 	}
-	return &Service{store: store, state: Workspace{
+	return &Service{store: store, connector: connector, passwords: passwords, connectTimeout: 30 * time.Second, moveTimeout: 8 * time.Second, state: Workspace{
 		Servers: profiles, Session: Session{Mode: "offline", Nickname: "Resona"},
-		Channels: []Channel{}, Messages: []Message{},
+		Channels: []Channel{}, Users: []User{}, Messages: []Message{}, Notifications: []Notification{},
 	}}, nil
 }
 
@@ -81,6 +127,8 @@ func (s *Service) GetWorkspace() (Workspace, error) {
 }
 
 func (s *Service) SaveServer(profile ServerProfile) (Workspace, error) {
+	s.credentialMu.Lock()
+	defer s.credentialMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	profile.Name = strings.TrimSpace(profile.Name)
@@ -94,9 +142,18 @@ func (s *Service) SaveServer(profile ServerProfile) (Workspace, error) {
 		profile.ID = rand.Text()
 		profiles = append(profiles, profile)
 	} else {
+		if s.remoteActiveLocked() && s.state.Session.ServerID == profile.ID {
+			return Workspace{}, errors.New("请先断开当前服务器，再编辑该书签")
+		}
 		found := false
 		for i := range profiles {
 			if profiles[i].ID == profile.ID {
+				profile.SkipPasswordStorage = profiles[i].SkipPasswordStorage
+				if profiles[i].Address != profile.Address && s.passwords != nil {
+					if err := s.passwords.Delete(passwordKey(profiles[i])); err != nil {
+						return Workspace{}, errors.New("无法清除原服务器密码，地址未更改")
+					}
+				}
 				profiles[i] = profile
 				found = true
 				break
@@ -114,12 +171,22 @@ func (s *Service) SaveServer(profile ServerProfile) (Workspace, error) {
 }
 
 func (s *Service) DeleteServer(id string) (Workspace, error) {
+	s.credentialMu.Lock()
+	defer s.credentialMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.remoteActiveLocked() && s.state.Session.ServerID == id {
+		return Workspace{}, errors.New("请先断开当前服务器，再删除该书签")
+	}
 	profiles := make([]ServerProfile, 0, len(s.state.Servers))
 	found := false
 	for _, profile := range s.state.Servers {
 		if profile.ID == id {
+			if s.passwords != nil {
+				if err := s.passwords.Delete(passwordKey(profile)); err != nil {
+					return Workspace{}, errors.New("无法清除服务器密码，书签未删除")
+				}
+			}
 			found = true
 			continue
 		}
@@ -138,24 +205,33 @@ func (s *Service) DeleteServer(id string) (Workspace, error) {
 func (s *Service) OpenPreview() (Workspace, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.remoteActiveLocked() {
+		return Workspace{}, errors.New("请先断开当前服务器，再打开本地预览")
+	}
 	if s.state.Session.Mode == "preview" {
 		return s.snapshot(), nil
 	}
 	s.state.Session = Session{Mode: "preview", ChannelID: "lobby", Nickname: "Resona"}
+	s.state.Notifications = []Notification{}
 	s.state.Channels = []Channel{
 		{ID: "lobby", Name: "大厅", Description: "本地预览", Members: 1},
 		{ID: "music", Name: "音乐", Description: "本地预览", Members: 0},
 		{ID: "workshop", Name: "工作间", Description: "本地预览", Members: 0},
 	}
 	s.state.Messages = []Message{}
+	s.state.Users = []User{{ID: "preview-self", Nickname: "Resona", ChannelID: "lobby", Self: true}}
 	return s.snapshot(), nil
 }
 
 func (s *Service) LeavePreview() (Workspace, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.remoteActiveLocked() {
+		return Workspace{}, errors.New("当前是远程会话，不能退出本地预览")
+	}
 	s.state.Session = Session{Mode: "offline", Nickname: "Resona"}
 	s.state.Channels = []Channel{}
+	s.state.Users = []User{}
 	s.state.Messages = []Message{}
 	return s.snapshot(), nil
 }
@@ -163,8 +239,14 @@ func (s *Service) LeavePreview() (Workspace, error) {
 func (s *Service) SelectChannel(id string) (Workspace, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.state.Session.Mode == "connected" {
+		return s.selectRemoteChannelLocked(id)
+	}
 	if s.state.Session.Mode != "preview" {
-		return Workspace{}, errors.New("open local preview before selecting a channel")
+		if s.remoteActiveLocked() {
+			return Workspace{}, errors.New("请等待服务器连接完成，再选择频道")
+		}
+		return Workspace{}, errors.New("请先打开本地预览，再选择频道")
 	}
 	found := false
 	for _, channel := range s.state.Channels {
@@ -174,7 +256,7 @@ func (s *Service) SelectChannel(id string) (Workspace, error) {
 		}
 	}
 	if !found {
-		return Workspace{}, errors.New("channel does not exist")
+		return Workspace{}, errors.New("频道不存在")
 	}
 	for i := range s.state.Channels {
 		s.state.Channels[i].Members = 0
@@ -183,6 +265,11 @@ func (s *Service) SelectChannel(id string) (Workspace, error) {
 		}
 	}
 	s.state.Session.ChannelID = id
+	for i := range s.state.Users {
+		if s.state.Users[i].Self {
+			s.state.Users[i].ChannelID = id
+		}
+	}
 	return s.snapshot(), nil
 }
 
@@ -190,7 +277,10 @@ func (s *Service) SendMessage(text string) (Workspace, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.state.Session.Mode != "preview" {
-		return Workspace{}, errors.New("messages are available only in local preview")
+		if s.remoteActiveLocked() {
+			return Workspace{}, errors.New("真实服务器暂不支持发送消息")
+		}
+		return Workspace{}, errors.New("请先打开本地预览，再发送消息")
 	}
 	text = strings.TrimSpace(text)
 	if !utf8.ValidString(text) || text == "" || utf8.RuneCountInString(text) > 2000 {
@@ -210,7 +300,9 @@ func (s *Service) SendMessage(text string) (Workspace, error) {
 func (s *Service) snapshot() Workspace {
 	return Workspace{
 		Servers: append([]ServerProfile{}, s.state.Servers...), Session: s.state.Session,
-		Channels: append([]Channel{}, s.state.Channels...), Messages: append([]Message{}, s.state.Messages...),
+		Channels: append([]Channel{}, s.state.Channels...), Users: append([]User{}, s.state.Users...),
+		Messages:      append([]Message{}, s.state.Messages...),
+		Notifications: append([]Notification{}, s.state.Notifications...),
 	}
 }
 

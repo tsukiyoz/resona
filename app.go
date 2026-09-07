@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"sync"
 
 	"github.com/tsukiyoz/resona/internal/client"
 	"github.com/tsukiyoz/resona/internal/config"
+	"github.com/tsukiyoz/resona/internal/credentials"
+	"github.com/tsukiyoz/resona/internal/protocol/ts3"
 )
 
 type App struct {
@@ -22,7 +25,68 @@ func loadService() (*client.Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return client.New(store)
+	connector, err := ts3.NewDefault()
+	if err != nil {
+		return nil, err
+	}
+	return client.NewWithPasswordStore(store, connector, credentials.New())
+}
+
+func (a *App) GetServerCredentialStatus(id string) (client.CredentialStatus, error) {
+	service, err := a.backend()
+	if err != nil {
+		return client.CredentialStatus{}, err
+	}
+	return service.GetServerCredentialStatus(id)
+}
+
+func (a *App) ConnectSavedServer(id string) (client.Workspace, error) {
+	service, err := a.backend()
+	if err != nil {
+		return client.Workspace{}, err
+	}
+	return service.ConnectSavedServer(id)
+}
+
+func (a *App) ConnectServerWithPassword(id, password string, remember bool) (client.Workspace, error) {
+	service, err := a.backend()
+	if err != nil {
+		return client.Workspace{}, err
+	}
+	return service.ConnectServerWithPassword(id, password, remember)
+}
+
+func (a *App) ForgetServerPassword(id string) (client.Workspace, error) {
+	service, err := a.backend()
+	if err != nil {
+		return client.Workspace{}, err
+	}
+	return service.ForgetServerPassword(id)
+}
+
+func (a *App) shutdown(context.Context) {
+	a.mu.Lock()
+	service := a.service
+	a.mu.Unlock()
+	if service != nil {
+		service.Shutdown()
+	}
+}
+
+func (a *App) ConnectServer(id, password string) (client.Workspace, error) {
+	service, err := a.backend()
+	if err != nil {
+		return client.Workspace{}, err
+	}
+	return service.ConnectServer(id, password)
+}
+
+func (a *App) DisconnectServer() (client.Workspace, error) {
+	service, err := a.backend()
+	if err != nil {
+		return client.Workspace{}, err
+	}
+	return service.DisconnectServer()
 }
 
 func (a *App) backend() (*client.Service, error) {

@@ -27,7 +27,7 @@ func TestPreviewSessionBoundaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	state, _ := service.GetWorkspace()
-	if state.Session.Mode != "offline" || state.Channels == nil || state.Messages == nil {
+	if state.Session.Mode != "offline" || state.Channels == nil || state.Users == nil || state.Messages == nil {
 		t.Fatalf("unexpected initial state: %+v", state)
 	}
 	if _, err := service.SendMessage("hello"); err == nil {
@@ -37,7 +37,7 @@ func TestPreviewSessionBoundaries(t *testing.T) {
 		t.Fatal("offline selection must fail")
 	}
 	state, _ = service.OpenPreview()
-	if state.Session.Mode != "preview" || len(state.Channels) != 3 {
+	if state.Session.Mode != "preview" || len(state.Channels) != 3 || len(state.Users) != 1 || !state.Users[0].Self || state.Users[0].Nickname != "Resona" || state.Users[0].ChannelID != "lobby" {
 		t.Fatalf("unexpected preview: %+v", state)
 	}
 	if _, err := service.SelectChannel("unknown"); err == nil {
@@ -48,7 +48,7 @@ func TestPreviewSessionBoundaries(t *testing.T) {
 	for _, c := range state.Channels {
 		members += c.Members
 	}
-	if members != 1 || state.Session.ChannelID != "music" {
+	if members != 1 || state.Session.ChannelID != "music" || len(state.Users) != 1 || state.Users[0].ChannelID != "music" {
 		t.Fatalf("invalid member state: %+v", state)
 	}
 	state, err = service.SendMessage("  hello  ")
