@@ -10,6 +10,7 @@
 | [架构设计](architecture.md) | 分层、数据流、配置和错误边界 |
 | [功能设计](product.md) | GUI 工作流、状态和各阶段功能 |
 | [协议候选评估](protocol-evaluation.md) | 现有 Go TS3 库证据和接入门槛 |
+| [桌面 UI 评估](frontend-evaluation.md) | 低资源目标、Rust 原生 GUI 候选与同负载验证计划 |
 | [验证记录](verification.md) | 本轮构建、交互与实际连接验证结果 |
 | [ADR 索引](adr/README.md) | 影响长期演进的技术决策 |
 

@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type FormEvent,
@@ -25,6 +26,7 @@ import {
   Plus,
   Radio,
   RefreshCw,
+  RotateCcw,
   Send,
   Server,
   Settings,
@@ -43,6 +45,7 @@ import {
   type Channel,
   type ServerProfile,
   type User,
+  type Message,
   type Workspace,
 } from "./api";
 import {
@@ -51,6 +54,7 @@ import {
   saveSoundPreferences,
   type SoundPreferences,
 } from "./notificationAudio";
+import { ChannelIcon } from "./ChannelIcon";
 
 function IconButton({
   label,
@@ -175,10 +179,16 @@ export default function App() {
   const [rememberPassword, setRememberPassword] = useState(true);
   const [connectError, setConnectError] = useState("");
   const [selectedServer, setSelectedServer] = useState("");
-  const [draft, setDraft] = useState("");
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [messageRequest, setMessageRequest] = useState(false);
+  const [retrying, setRetrying] = useState<Message | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(
+    () => window.innerWidth > 1120,
+  );
+  const detailsToggle = useRef<HTMLButtonElement>(null);
   const [theme, setTheme] = useState(() =>
-    readPreference("resona.theme", "light"),
+    readPreference("resona.theme.v2", "dark"),
   );
   const [compact, setCompact] = useState(
     () => readPreference("resona.compact", "false") === "true",
@@ -187,7 +197,13 @@ export default function App() {
     useState(readSoundPreferences);
   const [soundError, setSoundError] = useState("");
   const notificationAudio = useRef<NotificationAudio>();
-  const messagesEnd = useRef<HTMLDivElement>(null);
+  const messageHistory = useRef<HTMLDivElement>(null);
+  const nearBottom = useRef(true);
+  const forceMessageScroll = useRef(false);
+  const messageRequestRef = useRef(0);
+  const sentDrafts = useRef(
+    new Map<string, { key: string; text: string; sessionID: string }>(),
+  );
   const sidebarContent = useRef<HTMLDivElement>(null);
   const channelRows = useRef(new Map<string, HTMLButtonElement>());
   const pendingRef = useRef(false);
@@ -199,6 +215,10 @@ export default function App() {
   const isPreview = mode === "preview";
   const isConnected = mode === "connected";
   const isRemote = remoteModes.has(mode);
+  const isHistory =
+    (mode === "offline" || mode === "failed") &&
+    !!workspace?.session.serverID &&
+    !!workspace.channels.length;
   const switchingChannelID = isConnected
     ? requestedChannelID || workspace?.session.switchingChannelID || ""
     : "";
@@ -210,6 +230,22 @@ export default function App() {
   );
   const messages =
     workspace?.messages.filter((m) => m.channelID === channel?.id) ?? [];
+  const draftKey = `${workspace?.session.serverID || "preview"}\0${channel?.id || ""}`;
+  const draft = drafts[draftKey] ?? "";
+  const setDraft = (value: string) =>
+    setDrafts((current) => ({ ...current, [draftKey]: value }));
+  const draftLength = isPreview
+    ? [...draft.trim()].length
+    : new TextEncoder().encode(draft).length;
+  const draftLimit = isPreview ? 2000 : 8192;
+  const sendingMessage =
+    messageRequest || !!workspace?.session.sendingMessageID;
+  const writable =
+    (isPreview || (isConnected && !!workspace?.session.id)) &&
+    channel?.kind !== "separator" &&
+    !!channel;
+  const canCompose =
+    writable && !pending && !switchingChannelID && !sendingMessage;
   const server = workspace?.servers.find((s) => s.id === selectedServer);
   const serverIsCurrent =
     !!server && workspace?.session.serverID === server.id && isRemote;
@@ -258,7 +294,11 @@ export default function App() {
     let cancelled = false;
     let timer = 0;
     const refresh = async () => {
-      if (!pendingRef.current && !channelRequestRef.current) {
+      if (
+        !pendingRef.current &&
+        !channelRequestRef.current &&
+        !messageRequestRef.current
+      ) {
         const revision = actionRevision.current;
         try {
           const next = await api.GetWorkspace();
@@ -266,7 +306,8 @@ export default function App() {
             !cancelled &&
             revision === actionRevision.current &&
             !pendingRef.current &&
-            !channelRequestRef.current
+            !channelRequestRef.current &&
+            !messageRequestRef.current
           ) {
             workspaceRef.current = next;
             setWorkspace(next);
@@ -298,17 +339,49 @@ export default function App() {
     document.documentElement.dataset.theme = theme;
     document.documentElement.dataset.compact = String(compact);
     try {
-      localStorage.setItem("resona.theme", theme);
+      localStorage.setItem("resona.theme.v2", theme);
       localStorage.setItem("resona.compact", String(compact));
     } catch {
       /* Preferences remain active for this session. */
     }
   }, [theme, compact]);
   useEffect(() => {
-    messagesEnd.current?.scrollIntoView({ block: "end" });
-  }, [workspace?.messages.length, channel?.id]);
+    if (!workspace) return;
+    for (const [id, submitted] of sentDrafts.current) {
+      if (submitted.sessionID !== workspace.session.id) {
+        sentDrafts.current.delete(id);
+        continue;
+      }
+      const message = workspace.messages.find((entry) => entry.id === id);
+      if (!message || message.status === "sending") continue;
+      if (message.status === "sent")
+        setDrafts((current) =>
+          current[submitted.key] === submitted.text
+            ? { ...current, [submitted.key]: "" }
+            : current,
+        );
+      sentDrafts.current.delete(id);
+    }
+  }, [workspace]);
+  const historyKey = `${workspace?.session.id || workspace?.session.mode}\0${channel?.id || ""}`;
+  useLayoutEffect(() => {
+    nearBottom.current = true;
+    forceMessageScroll.current = true;
+  }, [historyKey]);
+  useLayoutEffect(() => {
+    if (nearBottom.current || forceMessageScroll.current) {
+      const pane = messageHistory.current;
+      if (pane) pane.scrollTop = pane.scrollHeight;
+      forceMessageScroll.current = false;
+    }
+  }, [
+    historyKey,
+    messages.length,
+    messages.at(-1)?.id,
+    messages.at(-1)?.status,
+  ]);
   useEffect(() => {
-    if (mode !== "connected" && mode !== "preview") return;
+    if (mode !== "connected" && mode !== "preview" && !isHistory) return;
     const scroller = sidebarContent.current;
     const row = channelRows.current.get(channel?.id ?? "");
     if (!scroller?.clientHeight || !row) return;
@@ -319,7 +392,34 @@ export default function App() {
       scroller.scrollTop += target.top - viewport.top;
     else if (target.bottom > viewport.bottom)
       scroller.scrollTop += target.bottom - viewport.bottom;
-  }, [mode, workspace?.session.serverID, channel?.id, sidebarOpen]);
+  }, [mode, workspace?.session.serverID, channel?.id, sidebarOpen, isHistory]);
+  useEffect(() => {
+    const narrow = window.matchMedia("(max-width: 1120px)");
+    const resize = () => {
+      if (narrow.matches) setDetailsOpen(false);
+    };
+    narrow.addEventListener("change", resize);
+    return () => narrow.removeEventListener("change", resize);
+  }, []);
+  function closeDetails() {
+    setDetailsOpen(false);
+    detailsToggle.current?.focus();
+  }
+  useEffect(() => {
+    const close = (event: KeyboardEvent) => {
+      if (
+        event.key === "Escape" &&
+        detailsOpen &&
+        !editing &&
+        !deleting &&
+        !connectingTo &&
+        !retrying
+      )
+        closeDetails();
+    };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [detailsOpen, editing, deleting, connectingTo, retrying]);
   useEffect(() => {
     const close = (e: KeyboardEvent) => {
       if (e.key === "Escape" && !pending) {
@@ -328,6 +428,7 @@ export default function App() {
         setConnectingTo(null);
         setPassword("");
         setConnectError("");
+        setRetrying(null);
         setSidebarOpen(false);
       }
     };
@@ -355,18 +456,108 @@ export default function App() {
   }
   function send(event?: FormEvent) {
     event?.preventDefault();
-    if (draft.trim() && isPreview)
+    if (
+      !draft.trim() ||
+      !canCompose ||
+      draftLength > draftLimit ||
+      messageRequestRef.current
+    )
+      return;
+    const unconfirmed = isConnected
+      ? messages.find(
+          (message) =>
+            message.status === "unconfirmed" &&
+            message.text === draft &&
+            message.authorID === workspace?.session.selfID,
+        )
+      : undefined;
+    if (unconfirmed) {
+      retryMessage(unconfirmed);
+      return;
+    }
+    forceMessageScroll.current = true;
+    if (isPreview)
       void run(
         () => api.SendMessage(draft),
         () => setDraft(""),
       );
+    else if (workspace && channel)
+      void sendRemote(
+        () => api.SendChannelMessage(workspace.session.id, channel.id, draft),
+        draft,
+      );
+  }
+  async function sendRemote(
+    action: () => Promise<Workspace>,
+    submittedText: string,
+    retryID?: string,
+  ) {
+    if (
+      messageRequestRef.current ||
+      pendingRef.current ||
+      sendingMessage ||
+      !workspace
+    )
+      return;
+    const originalSession = workspace.session.id;
+    const originalKey = draftKey;
+    const beforeIDs = new Set(workspace.messages.map((message) => message.id));
+    const revision = ++actionRevision.current;
+    messageRequestRef.current = revision;
+    setMessageRequest(true);
+    setError("");
+    forceMessageScroll.current = true;
+    try {
+      const next = await action();
+      if (revision !== actionRevision.current) return;
+      const submitted =
+        next.messages.find(
+          (message) => message.id === next.session.sendingMessageID,
+        ) ??
+        next.messages.find(
+          (message) =>
+            !beforeIDs.has(message.id) &&
+            message.authorID === workspace.session.selfID &&
+            message.channelID === channel?.id &&
+            message.text === submittedText,
+        ) ??
+        next.messages.find((message) => message.id === retryID);
+      if (submitted)
+        sentDrafts.current.set(submitted.id, {
+          key: originalKey,
+          text: submittedText,
+          sessionID: originalSession,
+        });
+      workspaceRef.current = next;
+      setWorkspace(next);
+      setRetrying(null);
+    } catch (error) {
+      if (revision === actionRevision.current) setError(errorMessage(error));
+    } finally {
+      if (messageRequestRef.current === revision) {
+        messageRequestRef.current = 0;
+        setMessageRequest(false);
+      }
+    }
+  }
+  function retryMessage(message: Message, allowDuplicate = false) {
+    if (!canCompose || !isConnected || message.channelID !== channel?.id)
+      return;
+    if (message.status === "unconfirmed" && !allowDuplicate) {
+      setRetrying(message);
+      return;
+    }
+    void sendRemote(
+      () => api.RetryMessage(message.id, allowDuplicate),
+      message.text,
+      message.id,
+    );
   }
   function changePreview() {
     void run(
       () => (isPreview ? api.LeavePreview() : api.OpenPreview()),
       () => {
         setPage("chat");
-        setDraft("");
       },
     );
   }
@@ -429,6 +620,8 @@ export default function App() {
     setConnectError("");
     setError("");
     actionRevision.current += 1;
+    messageRequestRef.current = 0;
+    setMessageRequest(false);
     channelRequestRef.current = 0;
     setRequestedChannelID("");
     pendingRef.current = true;
@@ -451,29 +644,29 @@ export default function App() {
     }
   }
   function disconnect() {
+    messageRequestRef.current = 0;
+    setMessageRequest(false);
     channelRequestRef.current = 0;
     setRequestedChannelID("");
-    void run(
-      () => api.DisconnectServer(),
-      () => setDraft(""),
-    );
+    void run(() => api.DisconnectServer());
   }
   async function selectChannel(target: Channel) {
     if (
       pendingRef.current ||
       channelRequestRef.current ||
+      sendingMessage ||
       switchingChannelID ||
-      (!isPreview && !isConnected) ||
+      (!isPreview && !isConnected && !isHistory) ||
+      target.kind === "separator" ||
       (isConnected && target.passwordRequired)
     )
       return;
-    if (isPreview) {
+    if (isPreview || isHistory) {
       void run(
         () => api.SelectChannel(target.id),
         () => {
           setPage("chat");
           setSidebarOpen(false);
-          setDraft("");
         },
       );
       return;
@@ -518,6 +711,34 @@ export default function App() {
         >
           <MessageSquare size={21} />
         </IconButton>
+        <div className="rail-servers" aria-label="服务器快捷入口">
+          {workspace?.servers.map((server) => (
+            <button
+              key={server.id}
+              className={`rail-server ${selectedServer === server.id ? "selected" : ""}`}
+              title={server.name}
+              aria-label={`选择服务器 ${server.name}`}
+              aria-pressed={selectedServer === server.id}
+              onClick={() => {
+                setSelectedServer(server.id);
+                setPage("chat");
+                setSidebarOpen(true);
+              }}
+              onDoubleClick={() => void openConnect(server)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  void openConnect(server);
+                }
+              }}
+            >
+              <span>{Array.from(server.name)[0]}</span>
+              {workspace?.session.serverID === server.id && (
+                <i className={`status-dot ${statusClass}`} />
+              )}
+            </button>
+          ))}
+        </div>
         <IconButton label="添加服务器" onClick={() => setEditing(newServer())}>
           <Plus size={22} />
         </IconButton>
@@ -690,85 +911,106 @@ export default function App() {
             <span>频道</span>
             <ChevronDown size={14} />
           </div>
-          {(isPreview || isConnected) && workspace?.channels.length ? (
+          {(isPreview || isConnected || isHistory) &&
+          workspace?.channels.length ? (
             <div className="channel-list">
-              {channels.map(({ channel: c, depth }) => (
-                <div
-                  className="channel-group"
-                  key={c.id}
-                  data-channel-id={c.id}
-                >
-                  <button
-                    ref={(node) => {
-                      if (node) channelRows.current.set(c.id, node);
-                      else channelRows.current.delete(c.id);
-                    }}
-                    className={`channel-row ${channel?.id === c.id ? "selected" : ""}`}
-                    aria-current={channel?.id === c.id ? "true" : undefined}
-                    disabled={
-                      pending ||
-                      !!switchingChannelID ||
-                      (isConnected && c.passwordRequired)
-                    }
-                    title={
-                      isConnected && c.passwordRequired
-                        ? "此频道需要密码，暂不支持加入"
-                        : c.name
-                    }
-                    onClick={() => void selectChannel(c)}
+              {channels.map(({ channel: c, depth }) =>
+                c.kind === "separator" ? (
+                  <div
+                    className={`channel-separator align-${c.align} ${c.repeat ? "is-repeated" : ""}`}
+                    key={c.id}
+                    data-channel-id={c.id}
+                    role="separator"
+                    aria-label={c.name || undefined}
                   >
-                    <span
-                      className="channel-main"
-                      style={{ paddingLeft: `${Math.min(depth, 8) * 14}px` }}
-                    >
-                      {c.id === "music" && isPreview ? (
-                        <Music2 size={17} />
-                      ) : (
-                        <Volume2 size={17} />
-                      )}
-                      <span>{c.name}</span>
+                    <span aria-hidden={c.repeat || undefined}>
+                      {c.repeat && c.name
+                        ? c.name.repeat(Math.ceil(200 / c.name.length))
+                        : c.name}
                     </span>
-                    {isPreview && <small>{c.members}</small>}
-                    {isConnected &&
-                      workspace.session.memberSyncState !== "pending" &&
-                      !!usersByChannel.get(c.id)?.length && (
-                        <small aria-hidden="true" title="可见成员">
-                          {usersByChannel.get(c.id)!.length}
-                        </small>
-                      )}
-                    {isConnected && (
-                      <span className="channel-indicator" aria-hidden="true">
-                        {switchingChannelID === c.id ? (
-                          <LoaderCircle size={15} className="channel-spinner" />
-                        ) : c.passwordRequired ? (
-                          <LockKeyhole size={14} />
-                        ) : null}
-                      </span>
-                    )}
-                  </button>
-                  {isConnected && !!usersByChannel.get(c.id)?.length && (
-                    <ul
-                      className="channel-members"
-                      aria-label={`${c.name}的可见成员`}
+                  </div>
+                ) : (
+                  <div
+                    className="channel-group"
+                    key={c.id}
+                    data-channel-id={c.id}
+                  >
+                    <button
+                      ref={(node) => {
+                        if (node) channelRows.current.set(c.id, node);
+                        else channelRows.current.delete(c.id);
+                      }}
+                      className={`channel-row ${channel?.id === c.id ? "selected" : ""}`}
+                      aria-current={channel?.id === c.id ? "true" : undefined}
+                      disabled={
+                        pending ||
+                        sendingMessage ||
+                        !!switchingChannelID ||
+                        (isConnected && c.passwordRequired)
+                      }
+                      title={
+                        isConnected && c.passwordRequired
+                          ? "此频道需要密码，暂不支持加入"
+                          : c.name
+                      }
+                      onClick={() => void selectChannel(c)}
                     >
-                      {usersByChannel.get(c.id)!.map((user) => (
-                        <li
-                          className={`channel-member ${user.self ? "is-self" : ""}`}
-                          key={user.id}
-                          style={{
-                            paddingLeft: `${36 + Math.min(depth, 8) * 14}px`,
-                          }}
-                          title={user.nickname}
-                        >
-                          <UserRound size={14} aria-hidden="true" />
-                          <span>{user.nickname}</span>
-                          {user.self && <small>我</small>}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              ))}
+                      <span
+                        className="channel-main"
+                        style={{ paddingLeft: `${Math.min(depth, 8) * 14}px` }}
+                      >
+                        {c.id === "music" && isPreview ? (
+                          <Music2 size={17} />
+                        ) : (
+                          <ChannelIcon channel={c} />
+                        )}
+                        <span>{c.name}</span>
+                      </span>
+                      {isPreview && <small>{c.members}</small>}
+                      {isConnected &&
+                        workspace.session.memberSyncState !== "pending" &&
+                        !!usersByChannel.get(c.id)?.length && (
+                          <small aria-hidden="true" title="可见成员">
+                            {usersByChannel.get(c.id)!.length}
+                          </small>
+                        )}
+                      {isConnected && (
+                        <span className="channel-indicator" aria-hidden="true">
+                          {switchingChannelID === c.id ? (
+                            <LoaderCircle
+                              size={15}
+                              className="channel-spinner"
+                            />
+                          ) : c.passwordRequired ? (
+                            <LockKeyhole size={14} />
+                          ) : null}
+                        </span>
+                      )}
+                    </button>
+                    {isConnected && !!usersByChannel.get(c.id)?.length && (
+                      <ul
+                        className="channel-members"
+                        aria-label={`${c.name}的可见成员`}
+                      >
+                        {usersByChannel.get(c.id)!.map((user) => (
+                          <li
+                            className={`channel-member ${user.self ? "is-self" : ""}`}
+                            key={user.id}
+                            style={{
+                              paddingLeft: `${36 + Math.min(depth, 8) * 14}px`,
+                            }}
+                            title={user.nickname}
+                          >
+                            <UserRound size={14} aria-hidden="true" />
+                            <span>{user.nickname}</span>
+                            {user.self && <small>我</small>}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                ),
+              )}
             </div>
           ) : (
             <div className="channels-empty">
@@ -846,6 +1088,8 @@ export default function App() {
             </IconButton>
             {page === "settings" ? (
               <Settings size={20} />
+            ) : channel ? (
+              <ChannelIcon channel={channel} size={21} />
             ) : (
               <Volume2 size={21} />
             )}
@@ -865,6 +1109,19 @@ export default function App() {
                 : sessionLabel}
             </span>
           </div>
+          {page === "chat" && (
+            <button
+              className={`icon-button details-toggle ${detailsOpen ? "active" : ""}`}
+              ref={detailsToggle}
+              aria-label={detailsOpen ? "收起频道详情" : "展开频道详情"}
+              title={detailsOpen ? "收起频道详情" : "展开频道详情"}
+              aria-expanded={detailsOpen}
+              aria-controls="channel-details"
+              onClick={() => setDetailsOpen(!detailsOpen)}
+            >
+              <Users size={19} />
+            </button>
+          )}
         </header>
         {error && (
           <div className="error-banner" role="alert">
@@ -875,7 +1132,7 @@ export default function App() {
             </IconButton>
           </div>
         )}
-        {isConnected && workspace?.session.error && (
+        {(isConnected || isHistory) && workspace?.session.error && (
           <div className="error-banner" role="alert">
             <Info size={17} />
             <span>{workspace.session.error}</span>
@@ -1028,8 +1285,14 @@ export default function App() {
           <div className="conversation-layout">
             <section className="conversation" aria-label="频道聊天">
               <div
+                ref={messageHistory}
                 className={`message-history ${!messages.length ? "is-empty" : ""}`}
                 aria-live="polite"
+                onScroll={(event) => {
+                  const pane = event.currentTarget;
+                  nearBottom.current =
+                    pane.scrollHeight - pane.clientHeight - pane.scrollTop < 80;
+                }}
               >
                 {!workspace ? (
                   <div className="empty-state">
@@ -1045,7 +1308,7 @@ export default function App() {
                       </button>
                     )}
                   </div>
-                ) : !isPreview && !isRemote ? (
+                ) : !isPreview && !isRemote && !isHistory ? (
                   <div className="empty-state">
                     <div className="empty-symbol">
                       <Radio size={31} />
@@ -1080,7 +1343,7 @@ export default function App() {
                       </button>
                     )}
                   </div>
-                ) : mode === "failed" ? (
+                ) : mode === "failed" && !isHistory ? (
                   <div className="empty-state failure-state">
                     <div className="empty-symbol failed">
                       <Info size={30} />
@@ -1112,7 +1375,7 @@ export default function App() {
                     </h1>
                     <p>{workspace.session.serverName}</p>
                   </div>
-                ) : isConnected ? (
+                ) : isConnected && !messages.length ? (
                   <div className="empty-state channel-empty">
                     <div className="empty-symbol online">
                       <Volume2 size={29} />
@@ -1143,15 +1406,25 @@ export default function App() {
                     </div>
                     <h1>{channel?.name}</h1>
                     <p>暂无消息</p>
-                    <span className="preview-badge">
-                      <span className="status-dot preview" />
-                      本地预览
+                    <span
+                      className={isPreview ? "preview-badge" : "browser-tag"}
+                    >
+                      <span
+                        className={`status-dot ${isPreview ? "preview" : ""}`}
+                      />
+                      {isPreview ? "本地预览" : "已断开"}
                     </span>
                   </div>
                 ) : (
                   <>
                     <div className="history-heading">
-                      <span>本地预览</span>
+                      <span>
+                        {isPreview
+                          ? "本地预览"
+                          : isHistory
+                            ? "会话记录 · 已断开"
+                            : channel?.name}
+                      </span>
                       <span>
                         {new Date().toLocaleDateString("zh-CN", {
                           month: "long",
@@ -1160,7 +1433,11 @@ export default function App() {
                       </span>
                     </div>
                     {messages.map((m) => (
-                      <article className="message" key={m.id}>
+                      <article
+                        className={`message message-${m.status}`}
+                        key={m.id}
+                        data-message-id={m.id}
+                      >
                         <div className="avatar">{m.author.slice(0, 1)}</div>
                         <div className="message-copy">
                           <div className="message-meta">
@@ -1171,39 +1448,73 @@ export default function App() {
                                 { hour: "2-digit", minute: "2-digit" },
                               )}
                             </time>
-                            <span>本地</span>
+                            <span
+                              className="message-status"
+                              title={m.error || undefined}
+                            >
+                              {isPreview
+                                ? "本地"
+                                : (
+                                    {
+                                      sending: "发送中",
+                                      sent: "已发送",
+                                      received: "",
+                                      failed: "发送失败",
+                                      unconfirmed: "未确认送达",
+                                    } as const
+                                  )[m.status]}
+                            </span>
                           </div>
                           <p>{m.text}</p>
+                          {!isPreview &&
+                            (m.status === "failed" ||
+                              m.status === "unconfirmed") && (
+                              <div className="message-delivery">
+                                <span>{m.error}</span>
+                                <IconButton
+                                  label="重试消息"
+                                  disabled={
+                                    !canCompose ||
+                                    !isConnected ||
+                                    m.channelID !== channel?.id
+                                  }
+                                  onClick={() => retryMessage(m)}
+                                >
+                                  <RotateCcw size={14} />
+                                </IconButton>
+                              </div>
+                            )}
                         </div>
                       </article>
                     ))}
                   </>
                 )}
-                <div ref={messagesEnd} />
               </div>
               <form
-                className={`composer ${!isPreview ? "disabled" : ""}`}
+                className={`composer ${!canCompose ? "disabled" : ""}`}
                 onSubmit={send}
               >
                 <textarea
                   aria-label="消息"
                   placeholder={
-                    isPreview
+                    writable
                       ? `发送到 ${channel?.name || "频道"}`
-                      : isRemote
-                        ? "文字发送尚未开放"
-                        : "未连接"
+                      : isHistory
+                        ? "已断开连接"
+                        : isConnected
+                          ? "等待会话信息"
+                          : "未连接"
                   }
                   value={draft}
                   onChange={(e) => setDraft(e.target.value)}
-                  maxLength={2000}
-                  disabled={!isPreview || pending}
+                  disabled={!canCompose}
                   rows={2}
                   onKeyDown={(e) => {
                     if (
                       e.key === "Enter" &&
                       !e.shiftKey &&
-                      !e.nativeEvent.isComposing
+                      !e.nativeEvent.isComposing &&
+                      e.nativeEvent.keyCode !== 229
                     ) {
                       e.preventDefault();
                       send();
@@ -1214,17 +1525,25 @@ export default function App() {
                   <span>
                     {isPreview
                       ? "本地预览"
-                      : isRemote
-                        ? "文字与语音通话尚未接入"
-                        : "离线"}
-                    {draft.length > 1800 && ` · ${draft.length}/2000`}
+                      : sendingMessage
+                        ? "正在发送…"
+                        : isConnected
+                          ? "频道消息"
+                          : "离线"}
+                    {draftLength > draftLimit * 0.9 && (
+                      <span
+                        className={draftLength > draftLimit ? "text-error" : ""}
+                      >{` · ${draftLength}/${draftLimit}${isPreview ? " 字符" : " 字节"}`}</span>
+                    )}
                   </span>
                   <button
                     className="send-button"
                     type="submit"
                     title="发送消息"
                     aria-label="发送消息"
-                    disabled={!isPreview || pending || !draft.trim()}
+                    disabled={
+                      !canCompose || !draft.trim() || draftLength > draftLimit
+                    }
                   >
                     <Send size={16} />
                   </button>
@@ -1243,95 +1562,130 @@ export default function App() {
                 </span>
               </footer>
             </section>
-            <aside className="details-panel">
-              <div className="details-heading">
-                <span>频道详情</span>
-                <Info size={15} />
-              </div>
-              <div className="detail-channel-icon">
-                <Volume2 size={23} />
-              </div>
-              <h2>{channel?.name || "暂无频道"}</h2>
-              <p className="detail-description">
-                {channel ? channel.description || "暂无频道主题" : "未连接"}
-              </p>
-              <dl>
-                <div>
-                  <dt>状态</dt>
-                  <dd>
-                    <span className={`status-dot ${statusClass}`} />
-                    {sessionLabel}
-                  </dd>
+            {detailsOpen && (
+              <aside
+                className="details-panel"
+                id="channel-details"
+                aria-label="频道详情"
+              >
+                <div className="details-heading">
+                  <span>频道详情</span>
+                  <IconButton label="关闭频道详情" onClick={closeDetails}>
+                    <X size={15} />
+                  </IconButton>
                 </div>
-                {isRemote && (
-                  <div>
-                    <dt>服务器</dt>
-                    <dd className="detail-value">
-                      {workspace?.session.serverName || "-"}
-                    </dd>
-                  </div>
-                )}
-                {isRemote && (
-                  <div>
-                    <dt>身份 UID</dt>
-                    <dd className="detail-value">
-                      {workspace?.session.identityUID || "-"}
-                    </dd>
-                  </div>
-                )}
-                <div>
-                  <dt>语音</dt>
-                  <dd>未接入</dd>
+                <div className="detail-channel-icon">
+                  {channel ? (
+                    <ChannelIcon channel={channel} size={23} />
+                  ) : (
+                    <Volume2 size={23} />
+                  )}
                 </div>
-              </dl>
-              <div className="members-heading">
-                <Users size={15} />
-                <span>可见成员</span>
-                <span>
-                  {isConnected
-                    ? workspace?.session.memberSyncState === "pending"
-                      ? "同步中"
-                      : workspace?.session.memberSyncState === "limited"
-                        ? "受限"
-                        : channelUsers.length
-                    : (channel?.members ?? 0)}
-                </span>
-              </div>
-              {isPreview ? (
-                <div className="member">
-                  <div className="avatar">我</div>
-                  <div>
-                    <strong>{workspace?.session.nickname}</strong>
-                    <small>本地预览</small>
-                  </div>
-                  <MicOff size={15} />
-                </div>
-              ) : isConnected && channelUsers.length ? (
-                channelUsers.map((user) => (
-                  <div className="member" key={user.id}>
-                    <div className="avatar">{user.nickname.slice(0, 1)}</div>
-                    <div>
-                      <strong>{user.nickname}</strong>
-                      <small>{user.self ? "当前用户" : "远程成员"}</small>
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <p className="no-members">
-                  {isConnected
-                    ? workspace?.session.memberSyncState === "pending"
-                      ? "正在同步成员…"
-                      : workspace?.session.memberSyncState === "limited"
-                        ? "成员信息受限"
-                        : "暂无可见成员"
-                    : "暂无成员"}
+                <h2>{channel?.name || "暂无频道"}</h2>
+                <p className="detail-description">
+                  {channel ? channel.description || "暂无频道主题" : "未连接"}
                 </p>
-              )}
-            </aside>
+                <dl>
+                  <div>
+                    <dt>状态</dt>
+                    <dd>
+                      <span className={`status-dot ${statusClass}`} />
+                      {sessionLabel}
+                    </dd>
+                  </div>
+                  {isRemote && (
+                    <div>
+                      <dt>服务器</dt>
+                      <dd className="detail-value">
+                        {workspace?.session.serverName || "-"}
+                      </dd>
+                    </div>
+                  )}
+                  {isRemote && (
+                    <div>
+                      <dt>身份 UID</dt>
+                      <dd className="detail-value">
+                        {workspace?.session.identityUID || "-"}
+                      </dd>
+                    </div>
+                  )}
+                  <div>
+                    <dt>语音</dt>
+                    <dd>未接入</dd>
+                  </div>
+                </dl>
+                <div className="members-heading">
+                  <Users size={15} />
+                  <span>可见成员</span>
+                  <span>
+                    {isConnected
+                      ? workspace?.session.memberSyncState === "pending"
+                        ? "同步中"
+                        : workspace?.session.memberSyncState === "limited"
+                          ? "受限"
+                          : channelUsers.length
+                      : (channel?.members ?? 0)}
+                  </span>
+                </div>
+                {isPreview ? (
+                  <div className="member">
+                    <div className="avatar">我</div>
+                    <div>
+                      <strong>{workspace?.session.nickname}</strong>
+                      <small>本地预览</small>
+                    </div>
+                    <MicOff size={15} />
+                  </div>
+                ) : isConnected && channelUsers.length ? (
+                  channelUsers.map((user) => (
+                    <div className="member" key={user.id}>
+                      <div className="avatar">{user.nickname.slice(0, 1)}</div>
+                      <div>
+                        <strong>{user.nickname}</strong>
+                        <small>{user.self ? "当前用户" : "远程成员"}</small>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <p className="no-members">
+                    {isConnected
+                      ? workspace?.session.memberSyncState === "pending"
+                        ? "正在同步成员…"
+                        : workspace?.session.memberSyncState === "limited"
+                          ? "成员信息受限"
+                          : "暂无可见成员"
+                      : "暂无成员"}
+                  </p>
+                )}
+              </aside>
+            )}
           </div>
         )}
       </main>
 
+      {retrying && (
+        <Modal title="重新发送消息" close={() => setRetrying(null)}>
+          <p className="delete-copy">
+            这条消息可能已经送达，重新发送可能出现重复消息。
+          </p>
+          <div className="modal-actions">
+            <button
+              className="secondary-button"
+              onClick={() => setRetrying(null)}
+            >
+              取消
+            </button>
+            <button
+              className="primary-button"
+              disabled={!canCompose || !isConnected}
+              onClick={() => retryMessage(retrying, true)}
+            >
+              <RotateCcw size={15} />
+              仍然发送
+            </button>
+          </div>
+        </Modal>
+      )}
       {connectingTo && (
         <Modal title={`连接 ${connectingTo.name}`} close={closeConnect}>
           <p className="connect-copy">{connectingTo.address}</p>

@@ -52,6 +52,7 @@ func (s *connection) publishMemberSyncLocked() {
 	snapshot := s.state.snapshot()
 	// A status-only update must not repeat the last protocol notification.
 	snapshot.Events = nil
+	snapshot.Messages = nil
 	s.update(snapshot)
 }
 

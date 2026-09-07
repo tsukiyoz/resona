@@ -233,6 +233,34 @@ func TestExecCommandContext_CanceledBeforeSend(t *testing.T) {
 	assertCommandTrackerEmpty(t, c.cmdTrack)
 }
 
+func TestExecCommandContext_ReturnCodeInsideTextIsNotAParameter(t *testing.T) {
+	c := newTestClient(t)
+	body := "return_code=abc | top-level return_code=42\nunchanged"
+	c.finalCmdHandler = func(raw string) error {
+		parsed := commands.ParseCommand(raw)
+		if parsed == nil || parsed.Params["msg"] != body || parsed.Params["return_code"] == "" {
+			t.Fatalf("text or tracked response ID lost: %q", raw)
+		}
+		c.handleCommand("error id=0 msg=ok return_code=" + parsed.Params["return_code"])
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := c.ExecCommandContext(ctx, commands.BuildCommand("sendtextmessage", map[string]string{"targetmode": "2", "msg": body})); err != nil {
+		t.Fatalf("text was not acknowledged: %v", err)
+	}
+	assertCommandTrackerEmpty(t, c.cmdTrack)
+}
+
+func TestExecCommandContext_RejectsUntrackedExplicitReturnCode(t *testing.T) {
+	c := newTestClient(t)
+	c.finalCmdHandler = func(string) error { t.Fatal("untracked response ID was sent"); return nil }
+	if err := c.ExecCommandContext(context.Background(), "dummycmd return_code=external"); err == nil {
+		t.Fatal("caller response ID bypassed tracker ownership")
+	}
+	assertCommandTrackerEmpty(t, c.cmdTrack)
+}
+
 func TestExecCommandContext_DeadlineDuringThrottle(t *testing.T) {
 	c := newTestClient(t)
 	c.throttle.tokens = 0

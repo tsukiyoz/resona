@@ -12,6 +12,11 @@ export interface Channel {
   parentID: string;
   order: string;
   passwordRequired: boolean;
+  kind: "channel" | "separator";
+  align: "left" | "center" | "right";
+  repeat: boolean;
+  iconID: string;
+  iconDataURL: string;
 }
 export interface User {
   id: string;
@@ -25,6 +30,9 @@ export interface Message {
   author: string;
   text: string;
   createdAt: string;
+  authorID: string;
+  status: "sending" | "sent" | "received" | "failed" | "unconfirmed";
+  error: string;
 }
 export interface Notification {
   id: string;
@@ -35,6 +43,8 @@ export interface Notification {
 export interface Workspace {
   servers: ServerProfile[];
   session: {
+    id: string;
+    sendingMessageID: string;
     mode:
       | "offline"
       | "preview"
@@ -67,6 +77,12 @@ interface Bridge {
   LeavePreview(): Promise<Workspace>;
   SelectChannel(id: string): Promise<Workspace>;
   SendMessage(text: string): Promise<Workspace>;
+  SendChannelMessage(
+    sessionID: string,
+    channelID: string,
+    text: string,
+  ): Promise<Workspace>;
+  RetryMessage(id: string, allowDuplicate: boolean): Promise<Workspace>;
   ConnectServer(id: string, password: string): Promise<Workspace>;
   GetServerCredentialStatus(
     id: string,
@@ -97,6 +113,11 @@ const channels: Channel[] = [
     parentID: "",
     order: "0",
     passwordRequired: false,
+    kind: "channel",
+    align: "left",
+    repeat: false,
+    iconID: "",
+    iconDataURL: "",
   },
   {
     id: "music",
@@ -106,6 +127,11 @@ const channels: Channel[] = [
     parentID: "",
     order: "lobby",
     passwordRequired: false,
+    kind: "channel",
+    align: "left",
+    repeat: false,
+    iconID: "",
+    iconDataURL: "",
   },
   {
     id: "workshop",
@@ -115,11 +141,18 @@ const channels: Channel[] = [
     parentID: "",
     order: "music",
     passwordRequired: false,
+    kind: "channel",
+    align: "left",
+    repeat: false,
+    iconID: "",
+    iconDataURL: "",
   },
 ];
 const emptyWorkspace = (): Workspace => ({
   servers: [],
   session: {
+    id: "",
+    sendingMessageID: "",
     mode: "offline",
     channelID: "",
     switchingChannelID: "",
@@ -288,12 +321,21 @@ const browserBridge: Bridge = {
       author: local.session.nickname,
       text: text.trim(),
       createdAt: new Date().toISOString(),
+      authorID: "preview-self",
+      status: "sent",
+      error: "",
     });
     local.messages = local.messages.slice(-500);
     return result();
   },
   async ConnectServer() {
     throw new Error("真实连接仅在桌面应用中可用");
+  },
+  async SendChannelMessage() {
+    throw new Error("真实消息仅在桌面应用中可用");
+  },
+  async RetryMessage() {
+    throw new Error("真实消息仅在桌面应用中可用");
   },
   async GetServerCredentialStatus() {
     return { saved: false, remember: true };
@@ -318,6 +360,8 @@ function normalizeWorkspace(value: Workspace): Workspace {
   return {
     servers: value?.servers ?? [],
     session: {
+      id: session.id ?? "",
+      sendingMessageID: session.sendingMessageID ?? "",
       mode: session.mode ?? "offline",
       channelID: session.channelID ?? "",
       switchingChannelID: session.switchingChannelID ?? "",
@@ -338,9 +382,19 @@ function normalizeWorkspace(value: Workspace): Workspace {
       parentID: channel.parentID ?? "",
       order: channel.order ?? "",
       passwordRequired: channel.passwordRequired ?? false,
+      kind: channel.kind ?? "channel",
+      align: channel.align ?? "left",
+      repeat: channel.repeat ?? false,
+      iconID: channel.iconID ?? "",
+      iconDataURL: channel.iconDataURL ?? "",
     })),
     users: value?.users ?? [],
-    messages: value?.messages ?? [],
+    messages: (value?.messages ?? []).map((message) => ({
+      ...message,
+      authorID: message.authorID ?? "",
+      status: message.status ?? "received",
+      error: message.error ?? "",
+    })),
     notifications: value?.notifications ?? [],
   };
 }
@@ -358,6 +412,12 @@ function normalizeBridge(bridge: Bridge): Bridge {
       normalizeWorkspace(await bridge.SelectChannel(id)),
     SendMessage: async (message) =>
       normalizeWorkspace(await bridge.SendMessage(message)),
+    SendChannelMessage: async (sessionID, channelID, text) =>
+      normalizeWorkspace(
+        await bridge.SendChannelMessage(sessionID, channelID, text),
+      ),
+    RetryMessage: async (id, allowDuplicate) =>
+      normalizeWorkspace(await bridge.RetryMessage(id, allowDuplicate)),
     ConnectServer: async (id, password) =>
       normalizeWorkspace(await bridge.ConnectServer(id, password)),
     GetServerCredentialStatus: (id) => bridge.GetServerCredentialStatus(id),

@@ -56,6 +56,7 @@ func (t *fileTransferTracker) unregister(cftid uint16) {
 func (t *fileTransferTracker) notify(cftid uint16, v any) {
 	t.mu.Lock()
 	if ch, ok := t.pending[cftid]; ok {
+		delete(t.pending, cftid)
 		ch <- v
 	}
 	t.mu.Unlock()
@@ -118,6 +119,21 @@ func (c *Client) FileTransferInitUpload(
 // FileTransferInitDownload sends ftinitdownload to the server and waits for the
 // notifystartdownload response containing the TCP port and transfer key.
 func (c *Client) FileTransferInitDownload(channelID uint64, path string, password string) (*FileDownloadInfo, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	info, err := c.FileTransferInitDownloadContext(ctx, channelID, path, password)
+	if errors.Is(err, context.DeadlineExceeded) {
+		return nil, errFileTransferTimedOut
+	}
+	return info, err
+}
+
+// FileTransferInitDownloadContext cancels command throttling, acknowledgement,
+// and notification waits together. It does not open a TCP transfer connection.
+func (c *Client) FileTransferInitDownloadContext(ctx context.Context, channelID uint64, path string, password string) (*FileDownloadInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	cftid, ch := c.ftTrack.register()
 	defer c.ftTrack.unregister(cftid)
 
@@ -134,13 +150,16 @@ func (c *Client) FileTransferInitDownload(channelID uint64, path string, passwor
 		"seekpos":     "0",
 	})
 
-	err := c.ExecCommand(cmd, 10*time.Second)
+	err := c.ExecCommandContext(ctx, cmd)
 	if err != nil {
 		return nil, err
 	}
 
 	select {
 	case res := <-ch:
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		switch v := res.(type) {
 		case FileDownloadInfo:
 			return &v, nil
@@ -149,8 +168,8 @@ func (c *Client) FileTransferInitDownload(channelID uint64, path string, passwor
 		default:
 			return nil, fmt.Errorf("%w: %T", errUnexpectedRespType, v)
 		}
-	case <-time.After(10 * time.Second):
-		return nil, errFileTransferTimedOut
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 

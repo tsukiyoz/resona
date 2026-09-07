@@ -20,6 +20,9 @@ the command-timeout sentinel; their deadline now includes throttling. Canceling
 does not retract an already-sent command. Tracker cleanup removes collected rows,
 and resolving a command retires its pending entry so late/duplicate replies cannot
 block the packet reader. These cases are covered in command_test.go.
+ExecCommand parses top-level parameters before attaching its own return_code;
+message text containing the literal spelling cannot suppress tracking. Explicit
+caller return_code parameters are rejected because the tracker owns response IDs.
 
 helpers.go preserves shared movement context when splitting batched
 notifycliententerview, notifyclientleftview, and notifyclientmoved commands.
@@ -31,8 +34,14 @@ batch movement, overrides, and unrelated commands are covered in
 member_rows_test.go. An upstream TS3AudioBot connection trace demonstrates the
 shared first-row context: https://github.com/Splamy/TS3AudioBot/issues/283.
 
-Resona uses this interface for passive login channel snapshots and ordered
-membership updates. It does not claim full voice or long-running compatibility.
+transfer.go adds FileTransferInitDownloadContext for cancellable command and
+file-transfer notification waits. The existing download initializer delegates
+with a ten-second deadline. The transfer tracker retires the first notification
+before delivery so duplicate notifications cannot block the packet reader.
+Covered in transfer_test.go; used for bounded, read-only channel icon downloads.
+
+Resona uses these interfaces for login snapshots, ordered membership updates,
+channel text messages, and custom channel icons. It does not claim full voice or long-running compatibility.
 See docs/adr/0005-read-only-ts3-session.md in the Resona root.
 
 Run tests here separately: `go test -race ./...`. The parent module's tests do

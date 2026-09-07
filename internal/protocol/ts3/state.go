@@ -11,27 +11,37 @@ import (
 
 // A reducer belongs to one connection and runs in the incoming command order.
 type reducer struct {
-	state       client.RemoteState
-	channels    map[string]client.Channel
-	users       map[string]client.User
-	initialized bool
-	listed      bool
+	state        client.RemoteState
+	channels     map[string]client.Channel
+	users        map[string]client.User
+	initialized  bool
+	listed       bool
+	presentation map[string]channelMetadata
+	iconCache    map[string]string
+	serverUID    string
+}
+
+type channelMetadata struct {
+	name      string
+	permanent bool
 }
 
 func newReducer(uid string) *reducer {
 	return &reducer{state: client.RemoteState{IdentityUID: uid},
-		channels: make(map[string]client.Channel), users: make(map[string]client.User)}
+		channels: make(map[string]client.Channel), users: make(map[string]client.User), presentation: make(map[string]channelMetadata), iconCache: make(map[string]string)}
 }
 
 func (r *reducer) apply(command teamspeak.IncomingCommand) bool {
 	p := command.Params
 	r.state.Events = nil
+	r.state.Messages = nil
 	wasReady := r.ready()
 	currentChannel := r.users[r.state.SelfID].ChannelID
 	previousUser, knownUser := r.users[p["clid"]]
 	switch command.Name {
 	case "initserver":
 		r.initialized = true
+		r.serverUID = p["virtualserver_unique_identifier"]
 		r.state.ServerName = p["virtualserver_name"]
 		r.state.SelfID = p["aclid"]
 		if r.state.SelfID == "" {
@@ -43,9 +53,13 @@ func (r *reducer) apply(command teamspeak.IncomingCommand) bool {
 			return false
 		}
 		ch := r.channels[id]
+		meta, exists := r.presentation[id]
+		if !exists {
+			meta.name = ch.Name
+		}
 		ch.ID = id
 		if v, ok := p["channel_name"]; ok {
-			ch.Name = v
+			meta.name = v
 		}
 		if v, ok := p["cpid"]; ok {
 			ch.ParentID = v
@@ -62,11 +76,24 @@ func (r *reducer) apply(command teamspeak.IncomingCommand) bool {
 		if v, ok := p["channel_flag_password"]; ok {
 			ch.PasswordRequired = v == "1"
 		}
+		if v, ok := p["channel_flag_permanent"]; ok {
+			meta.permanent = v == "1"
+		}
+		r.presentation[id] = meta
+		presentation := parseChannelPresentation(meta.name, ch.ParentID, meta.permanent)
+		ch.Kind, ch.Name, ch.Align, ch.Repeat = presentation.Kind, presentation.DisplayName, presentation.Align, presentation.Repeat
+		if v, ok := p["channel_icon_id"]; ok {
+			ch.IconID = normalizeIconID(v)
+		}
+		ch.IconDataURL = r.iconCache[ch.IconID]
 		r.channels[id] = ch
 	case "channellistfinished":
 		r.listed = true
 	case "notifychanneldeleted":
 		delete(r.channels, p["cid"])
+		delete(r.presentation, p["cid"])
+	case "notifytextmessage":
+		return r.applyChannelText(p)
 	case "notifycliententerview", "notifyclientupdated", "notifyclientmoved":
 		id := p["clid"]
 		if !validID(id) {
@@ -144,6 +171,7 @@ func (r *reducer) ready() bool {
 func (r *reducer) snapshot() client.RemoteState {
 	s := r.state
 	s.Events = append([]client.RemoteEvent(nil), r.state.Events...)
+	s.Messages = append([]client.RemoteMessage(nil), r.state.Messages...)
 	s.Channels = make([]client.Channel, 0, len(r.channels))
 	s.Users = make([]client.User, 0, len(r.users))
 	counts := make(map[string]int)
