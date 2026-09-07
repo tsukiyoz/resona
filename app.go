@@ -157,3 +157,19 @@ func (a *App) SendMessage(text string) (client.Workspace, error) {
 	}
 	return service.SendMessage(text)
 }
+
+func (a *App) SendChannelMessage(sessionID, channelID, text string) (client.Workspace, error) {
+	service, err := a.backend()
+	if err != nil {
+		return client.Workspace{}, err
+	}
+	return service.SendChannelMessage(sessionID, channelID, text)
+}
+
+func (a *App) RetryMessage(id string, allowDuplicate bool) (client.Workspace, error) {
+	service, err := a.backend()
+	if err != nil {
+		return client.Workspace{}, err
+	}
+	return service.RetryMessage(id, allowDuplicate)
+}

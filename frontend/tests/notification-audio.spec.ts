@@ -207,9 +207,7 @@ async function installAudioBridge(page: Page, initialMode = "connected") {
       "Test server · 在线",
     );
   } else {
-    await expect(
-      page.getByRole("heading", { name: "还没有加入会话" }),
-    ).toBeVisible();
+    await expect(page.locator(".connection-label")).toHaveText("离线");
   }
   await page.getByRole("button", { name: "设置", exact: true }).click();
   await page.getByRole("checkbox", { name: "启用提示音" }).uncheck();

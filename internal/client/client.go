@@ -24,6 +24,8 @@ type ServerProfile struct {
 }
 
 type Session struct {
+	ID                 string `json:"id"`
+	SendingMessageID   string `json:"sendingMessageID"`
 	Mode               string `json:"mode"`
 	ChannelID          string `json:"channelID"`
 	Nickname           string `json:"nickname"`
@@ -39,6 +41,11 @@ type Session struct {
 }
 
 type Channel struct {
+	Kind             string `json:"kind"`
+	Align            string `json:"align"`
+	Repeat           bool   `json:"repeat"`
+	IconID           string `json:"iconID"`
+	IconDataURL      string `json:"iconDataURL"`
 	ID               string `json:"id"`
 	Name             string `json:"name"`
 	Description      string `json:"description"`
@@ -56,6 +63,9 @@ type User struct {
 }
 
 type Message struct {
+	AuthorID  string `json:"authorID"`
+	Status    string `json:"status"`
+	Error     string `json:"error"`
 	ID        string `json:"id"`
 	ChannelID string `json:"channelID"`
 	Author    string `json:"author"`
@@ -86,16 +96,19 @@ type Service struct {
 	connector    RemoteConnector
 	state        Workspace
 
-	connection     RemoteConnection
-	connectCancel  context.CancelFunc
-	connectDone    chan struct{}
-	cleanupWG      sync.WaitGroup
-	generation     uint64
-	connectTimeout time.Duration
-	moveTimeout    time.Duration
-	moveCancel     context.CancelFunc
-	moveSequence   uint64
-	shutdown       bool
+	connection      RemoteConnection
+	connectCancel   context.CancelFunc
+	connectDone     chan struct{}
+	cleanupWG       sync.WaitGroup
+	generation      uint64
+	connectTimeout  time.Duration
+	moveTimeout     time.Duration
+	moveCancel      context.CancelFunc
+	moveSequence    uint64
+	messageTimeout  time.Duration
+	messageCancel   context.CancelFunc
+	messageSequence uint64
+	shutdown        bool
 }
 
 func New(store ProfileStore) (*Service, error) {
@@ -114,7 +127,7 @@ func NewWithPasswordStore(store ProfileStore, connector RemoteConnector, passwor
 	if profiles == nil {
 		profiles = []ServerProfile{}
 	}
-	return &Service{store: store, connector: connector, passwords: passwords, connectTimeout: 30 * time.Second, moveTimeout: 8 * time.Second, state: Workspace{
+	return &Service{store: store, connector: connector, passwords: passwords, connectTimeout: 30 * time.Second, moveTimeout: 8 * time.Second, messageTimeout: 8 * time.Second, state: Workspace{
 		Servers: profiles, Session: Session{Mode: "offline", Nickname: "Resona"},
 		Channels: []Channel{}, Users: []User{}, Messages: []Message{}, Notifications: []Notification{},
 	}}, nil
@@ -242,6 +255,15 @@ func (s *Service) SelectChannel(id string) (Workspace, error) {
 	if s.state.Session.Mode == "connected" {
 		return s.selectRemoteChannelLocked(id)
 	}
+	if (s.state.Session.Mode == "offline" || s.state.Session.Mode == "failed") && s.state.Session.ID != "" {
+		for _, channel := range s.state.Channels {
+			if channel.ID == id && channel.Kind != "separator" {
+				s.state.Session.ChannelID = id
+				return s.snapshot(), nil
+			}
+		}
+		return Workspace{}, errors.New("频道不存在")
+	}
 	if s.state.Session.Mode != "preview" {
 		if s.remoteActiveLocked() {
 			return Workspace{}, errors.New("请等待服务器连接完成，再选择频道")
@@ -289,6 +311,7 @@ func (s *Service) SendMessage(text string) (Workspace, error) {
 	s.state.Messages = append(s.state.Messages, Message{
 		ID: rand.Text(), ChannelID: s.state.Session.ChannelID,
 		Author: s.state.Session.Nickname, Text: text, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		AuthorID: "preview-self", Status: "sent",
 	})
 	// Keep the local preview bounded while retaining its most recent messages.
 	if len(s.state.Messages) > 500 {

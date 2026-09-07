@@ -12,6 +12,9 @@ func (s *Service) selectRemoteChannelLocked(id string) (Workspace, error) {
 	if s.state.Session.SwitchingChannelID != "" {
 		return Workspace{}, errors.New("正在切换频道，请稍候")
 	}
+	if s.state.Session.SendingMessageID != "" {
+		return Workspace{}, errors.New("消息正在发送，请等待结果后切换频道")
+	}
 	var target *Channel
 	for i := range s.state.Channels {
 		if s.state.Channels[i].ID == id {
@@ -21,6 +24,9 @@ func (s *Service) selectRemoteChannelLocked(id string) (Workspace, error) {
 	}
 	if target == nil {
 		return Workspace{}, errors.New("频道不存在")
+	}
+	if target.Kind == "separator" {
+		return Workspace{}, errors.New("分隔项不能加入")
 	}
 	if target.PasswordRequired {
 		return Workspace{}, ErrChannelPasswordRequired

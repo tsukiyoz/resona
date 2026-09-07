@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 )
 
@@ -32,6 +33,8 @@ type RemoteState struct {
 	Users           []User
 	MemberSyncState string
 	MemberSyncError string
+	// Messages contains only text received in this update, not a history snapshot.
+	Messages []RemoteMessage
 	// Events contains only changes from this update, never a cumulative history.
 	Events []RemoteEvent
 	// Error must be safe for direct display; adapters remove technical details
@@ -81,6 +84,7 @@ func (s *Service) connectServerLocked(id, password string, remember bool, expect
 	s.connectCancel = cancel
 	s.connectDone = done
 	s.state.Session = Session{
+		ID:         rand.Text(),
 		Mode:       "connecting",
 		Nickname:   profile.Nickname,
 		ServerID:   profile.ID,
@@ -164,23 +168,27 @@ func (s *Service) applyRemoteState(generation uint64, remote RemoteState) {
 	}
 	s.state.Channels = cloneChannels(remote.Channels)
 	s.state.Users = cloneUsers(remote.Users)
-	s.state.Messages = []Message{}
 	var connection RemoteConnection
 	if remote.Closed {
 		if wasConnected {
 			s.addNotificationLocked("disconnected", previousChannel)
 		}
 		s.cancelMoveLocked()
+		s.cancelMessageLocked()
 		connection = s.connection
 		s.connection = nil
 		s.state.Session.Mode = "failed"
+		s.state.Session.ChannelID = previousChannel
 		s.state.Session.Error = remote.Error
 		if s.state.Session.Error == "" {
 			s.state.Session.Error = "服务器连接已关闭"
 		}
-		s.clearRemoteCollectionsLocked()
-	} else if wasConnected {
-		s.applyRemoteEventsLocked(remote.Events)
+		s.clearRemotePresenceLocked()
+	} else {
+		s.appendRemoteMessagesLocked(remote.Messages)
+		if wasConnected {
+			s.applyRemoteEventsLocked(remote.Events)
+		}
 	}
 	if connection != nil {
 		s.cleanupWG.Add(1)
@@ -220,6 +228,7 @@ func (s *Service) disconnectRemote() (Workspace, error) {
 	s.generation++
 	s.state.Session.Mode = "disconnecting"
 	s.cancelMoveLocked()
+	s.cancelMessageLocked()
 	cancel := s.connectCancel
 	done := s.connectDone
 	connection := s.connection
@@ -292,8 +301,24 @@ func (s *Service) clearRemoteCollectionsLocked() {
 }
 
 func (s *Service) setOfflineLocked() {
+	if s.state.Session.ID != "" {
+		s.state.Session.Mode = "offline"
+		s.state.Session.Error = ""
+		s.state.Session.MemberSyncState = ""
+		s.state.Session.MemberSyncError = ""
+		s.state.Session.CredentialError = ""
+		s.clearRemotePresenceLocked()
+		return
+	}
 	s.state.Session = Session{Mode: "offline", Nickname: "Resona"}
 	s.clearRemoteCollectionsLocked()
+}
+
+func (s *Service) clearRemotePresenceLocked() {
+	s.state.Users = []User{}
+	for i := range s.state.Channels {
+		s.state.Channels[i].Members = 0
+	}
 }
 
 func cloneChannels(channels []Channel) []Channel {

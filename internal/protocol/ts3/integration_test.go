@@ -13,8 +13,9 @@ import (
 	"github.com/tsukiyoz/resona/internal/client"
 )
 
-// Explicitly opt in against an authorized server. No queries, messages, voice,
-// subscription changes or administration commands are sent by this probe.
+// Explicitly opt in against an authorized server. The adapter subscribes to
+// visible membership and reads channel icons; this probe sends no messages,
+// voice, channel moves, or administration commands.
 func TestLiveReadOnlySession(t *testing.T) {
 	address := os.Getenv("RESONA_TS_ADDRESS")
 	if address == "" {

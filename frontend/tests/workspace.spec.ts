@@ -306,7 +306,7 @@ test("desktop connection passes an ephemeral password and polls until disconnect
   ).toBeVisible();
   await expect(
     page.getByRole("textbox", { name: "消息", exact: true }),
-  ).toHaveAttribute("placeholder", "文字发送尚未开放");
+  ).toHaveAttribute("placeholder", "等待会话信息");
   await expect(
     page.getByRole("textbox", { name: "消息", exact: true }),
   ).toBeDisabled();

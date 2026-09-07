@@ -17,18 +17,27 @@ import (
 	"github.com/honeybbq/teamspeak-go/commands"
 	"github.com/honeybbq/teamspeak-go/discovery"
 	"github.com/tsukiyoz/resona/internal/client"
+	"github.com/tsukiyoz/resona/internal/iconcache"
 )
 
-type Connector struct{ identityPath string }
+type Connector struct {
+	identityPath string
+	icons        *iconcache.Cache
+}
 
-func New(identityPath string) *Connector { return &Connector{identityPath: identityPath} }
+// Explicit identity paths keep tests and embedding callers in memory only.
+func New(identityPath string) *Connector {
+	return &Connector{identityPath: identityPath, icons: iconcache.New("")}
+}
 
 func NewDefault() (*Connector, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return nil, err
 	}
-	return New(filepath.Join(dir, "resona", "identity.key")), nil
+	c := New(filepath.Join(dir, "resona", "identity.key"))
+	c.icons = iconcache.NewDefault()
+	return c, nil
 }
 
 func (c *Connector) Connect(ctx context.Context, profile client.ServerProfile, password string, update func(client.RemoteState)) (client.RemoteConnection, error) {
@@ -50,8 +59,23 @@ func (c *Connector) Connect(ctx context.Context, profile client.ServerProfile, p
 		teamspeak.WithResolver(fixedResolver(endpoint)),
 		teamspeak.WithServerPassword(password),
 		teamspeak.WithCommandObserver(s.observe),
-		teamspeak.WithCommandMiddleware(muteOutput))
+		teamspeak.WithCommandMiddleware(muteOutput, s.guardChannelText))
 	s.execCommand = s.client.ExecCommandContext
+	host, _, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		stop()
+		return nil, errors.New("invalid resolved TS3 endpoint")
+	}
+	s.icons = newCachedIconLoader(lifetime, c.icons, func() iconcache.Key {
+		s.mu.Lock()
+		serverUID := s.state.serverUID
+		s.mu.Unlock()
+		return iconcache.Key{Protocol: "ts3", ServerUID: serverUID,
+			Address: strings.ToLower(strings.TrimSpace(profile.Address)), Endpoint: endpoint,
+			IdentityUID: identityUID(id)}
+	}, func(ctx context.Context, iconID string) (string, error) {
+		return downloadChannelIcon(ctx, host, iconID, s.client.FileTransferInitDownloadContext)
+	}, s.publishIcon)
 	s.client.OnDisconnected(func(error) { s.disconnected() })
 	// The endpoint is already numeric, so Connect does no blocking DNS work.
 	if err := s.client.Connect(); err != nil {
@@ -104,6 +128,7 @@ type connection struct {
 	execCommand      func(context.Context, string) error
 	subscribeStarted bool
 	background       sync.WaitGroup
+	icons            *iconLoader
 }
 
 func (s *connection) observe(cmd teamspeak.IncomingCommand) {
@@ -121,6 +146,11 @@ func (s *connection) observe(cmd teamspeak.IncomingCommand) {
 		return
 	}
 	if s.state.ready() {
+		if s.icons != nil {
+			for _, channel := range s.state.channels {
+				s.icons.Request(channel.IconID)
+			}
+		}
 		s.update(s.state.snapshot())
 		s.readyOnce.Do(func() { close(s.ready) })
 	}
@@ -134,6 +164,7 @@ func (s *connection) disconnected() {
 	}
 	s.state.state.Closed = true
 	s.state.state.Events = nil
+	s.state.state.Messages = nil
 	s.state.state.Error = "与服务器的连接已断开"
 	s.stop()
 	s.endOnce.Do(func() { close(s.ended) })
@@ -148,6 +179,9 @@ func (s *connection) Close() error {
 		s.mu.Unlock()
 		s.closeErr = s.client.Disconnect()
 		s.background.Wait()
+		if s.icons != nil {
+			s.icons.Close()
+		}
 	})
 	return s.closeErr
 }
@@ -182,6 +216,9 @@ func (s *connection) MoveChannel(ctx context.Context, id string) error {
 	}
 	if channel.PasswordRequired {
 		return client.ErrChannelPasswordRequired
+	}
+	if channel.Kind == "separator" {
+		return errors.New("分隔项不能加入")
 	}
 	if current == id {
 		return nil

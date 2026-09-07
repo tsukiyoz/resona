@@ -1,9 +1,71 @@
 package teamspeak
 
 import (
+	"context"
+	"errors"
+	"strconv"
 	"testing"
 	"time"
+
+	"github.com/honeybbq/teamspeak-go/commands"
 )
+
+func TestFileTransferInitDownloadContextCancelsAllWaits(t *testing.T) {
+	for _, stage := range []string{"before-send", "throttle", "ack", "notification"} {
+		t.Run(stage, func(t *testing.T) {
+			c := newTestClient(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+			defer cancel()
+			if stage == "before-send" {
+				cancel()
+			}
+			if stage == "throttle" {
+				c.throttle.tokens = 0
+			}
+			c.finalCmdHandler = func(raw string) error {
+				if stage == "before-send" || stage == "throttle" {
+					t.Error("canceled transfer command sent")
+				}
+				if stage == "notification" {
+					cmd := commands.ParseCommand(raw)
+					c.handleCommand("error id=0 msg=ok return_code=" + cmd.Params["return_code"])
+				}
+				return nil
+			}
+			_, err := c.FileTransferInitDownloadContext(ctx, 0, "/icon_1234", "")
+			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("expected cancellation, got %v", err)
+			}
+			assertCommandTrackerEmpty(t, c.cmdTrack)
+			c.ftTrack.mu.Lock()
+			defer c.ftTrack.mu.Unlock()
+			if len(c.ftTrack.pending) != 0 {
+				t.Fatal("file transfer registration leaked")
+			}
+		})
+	}
+}
+
+func TestFileTransferInitDownloadContextEarlyDuplicateNotification(t *testing.T) {
+	c := newTestClient(t)
+	c.finalCmdHandler = func(raw string) error {
+		cmd := commands.ParseCommand(raw)
+		if cmd.Name != "ftinitdownload" || cmd.Params["cid"] != "0" || cmd.Params["name"] != "/icon_1234" {
+			t.Fatalf("unexpected transfer command: %s", raw)
+		}
+		id, _ := strconv.ParseUint(cmd.Params["clientftfid"], 10, 16)
+		c.ftTrack.notify(uint16(id), FileDownloadInfo{Size: 42, Port: 30033, FileTransferKey: "key"})
+		c.ftTrack.notify(uint16(id), FileDownloadInfo{Size: 500})
+		c.handleCommand("error id=0 msg=ok return_code=" + cmd.Params["return_code"])
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	got, err := c.FileTransferInitDownloadContext(ctx, 0, "icon_1234", "")
+	if err != nil || got == nil || got.Size != 42 {
+		t.Fatalf("download initialization: %#v %v", got, err)
+	}
+}
 
 func TestFileTransferTracker_Register_ReturnsUniqueIDs(t *testing.T) {
 	tr := newFileTransferTracker()

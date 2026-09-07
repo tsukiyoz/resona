@@ -6,6 +6,7 @@ require (
 	github.com/honeybbq/teamspeak-go v0.0.0
 	github.com/keybase/go-keychain v0.0.1
 	github.com/wailsapp/wails/v2 v2.15.0
+	golang.org/x/image v0.41.0
 )
 
 replace github.com/honeybbq/teamspeak-go => ./third_party/teamspeak-go

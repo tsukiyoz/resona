@@ -254,6 +254,15 @@ func (c *Client) execCommandWithResponse(ctx context.Context, cmd string) ([]map
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	parsed := commands.ParseCommand(cmd)
+	if parsed == nil {
+		return nil, errors.New("invalid command")
+	}
+	// The tracker owns the top-level response ID. Text parameter values may
+	// contain this spelling and must not affect response correlation.
+	if _, exists := parsed.Params["return_code"]; exists {
+		return nil, errors.New("return_code is managed by ExecCommand")
+	}
 	if err := c.throttle.wait(ctx); err != nil {
 		return nil, err
 	}
@@ -264,10 +273,7 @@ func (c *Client) execCommandWithResponse(ctx context.Context, cmd string) ([]map
 	rc, ch := c.cmdTrack.register()
 	defer c.cmdTrack.unregister(rc)
 
-	withReturnCode := cmd
-	if !strings.Contains(cmd, "return_code=") {
-		withReturnCode = fmt.Sprintf("%s return_code=%d", cmd, rc)
-	}
+	withReturnCode := fmt.Sprintf("%s return_code=%d", cmd, rc)
 
 	c.logger.Debug("sending command", slog.String("raw", withReturnCode))
 
