@@ -1,0 +1,261 @@
+// Package client owns UI-independent workspace and local preview behavior.
+package client
+
+import (
+	"crypto/rand"
+	"errors"
+	"fmt"
+	"net"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+	"unicode"
+	"unicode/utf8"
+)
+
+type ServerProfile struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Address  string `json:"address"`
+	Nickname string `json:"nickname"`
+}
+
+type Session struct {
+	Mode      string `json:"mode"`
+	ChannelID string `json:"channelID"`
+	Nickname  string `json:"nickname"`
+}
+
+type Channel struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Members     int    `json:"members"`
+}
+
+type Message struct {
+	ID        string `json:"id"`
+	ChannelID string `json:"channelID"`
+	Author    string `json:"author"`
+	Text      string `json:"text"`
+	CreatedAt string `json:"createdAt"`
+}
+
+type Workspace struct {
+	Servers  []ServerProfile `json:"servers"`
+	Session  Session         `json:"session"`
+	Channels []Channel       `json:"channels"`
+	Messages []Message       `json:"messages"`
+}
+
+type ProfileStore interface {
+	Load() ([]ServerProfile, error)
+	Save([]ServerProfile) error
+}
+
+type Service struct {
+	mu    sync.Mutex
+	store ProfileStore
+	state Workspace
+}
+
+func New(store ProfileStore) (*Service, error) {
+	profiles, err := store.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load server profiles: %w", err)
+	}
+	if profiles == nil {
+		profiles = []ServerProfile{}
+	}
+	return &Service{store: store, state: Workspace{
+		Servers: profiles, Session: Session{Mode: "offline", Nickname: "Resona"},
+		Channels: []Channel{}, Messages: []Message{},
+	}}, nil
+}
+
+func (s *Service) GetWorkspace() (Workspace, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.snapshot(), nil
+}
+
+func (s *Service) SaveServer(profile ServerProfile) (Workspace, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	profile.Name = strings.TrimSpace(profile.Name)
+	profile.Address = strings.TrimSpace(profile.Address)
+	profile.Nickname = strings.TrimSpace(profile.Nickname)
+	if err := ValidateProfile(profile); err != nil {
+		return Workspace{}, err
+	}
+	profiles := append([]ServerProfile{}, s.state.Servers...)
+	if profile.ID == "" {
+		profile.ID = rand.Text()
+		profiles = append(profiles, profile)
+	} else {
+		found := false
+		for i := range profiles {
+			if profiles[i].ID == profile.ID {
+				profiles[i] = profile
+				found = true
+				break
+			}
+		}
+		if !found {
+			return Workspace{}, errors.New("server profile does not exist")
+		}
+	}
+	if err := s.store.Save(profiles); err != nil {
+		return Workspace{}, fmt.Errorf("save server profiles: %w", err)
+	}
+	s.state.Servers = profiles
+	return s.snapshot(), nil
+}
+
+func (s *Service) DeleteServer(id string) (Workspace, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	profiles := make([]ServerProfile, 0, len(s.state.Servers))
+	found := false
+	for _, profile := range s.state.Servers {
+		if profile.ID == id {
+			found = true
+			continue
+		}
+		profiles = append(profiles, profile)
+	}
+	if !found {
+		return Workspace{}, errors.New("server profile does not exist")
+	}
+	if err := s.store.Save(profiles); err != nil {
+		return Workspace{}, fmt.Errorf("save server profiles: %w", err)
+	}
+	s.state.Servers = profiles
+	return s.snapshot(), nil
+}
+
+func (s *Service) OpenPreview() (Workspace, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state.Session.Mode == "preview" {
+		return s.snapshot(), nil
+	}
+	s.state.Session = Session{Mode: "preview", ChannelID: "lobby", Nickname: "Resona"}
+	s.state.Channels = []Channel{
+		{ID: "lobby", Name: "大厅", Description: "本地预览", Members: 1},
+		{ID: "music", Name: "音乐", Description: "本地预览", Members: 0},
+		{ID: "workshop", Name: "工作间", Description: "本地预览", Members: 0},
+	}
+	s.state.Messages = []Message{}
+	return s.snapshot(), nil
+}
+
+func (s *Service) LeavePreview() (Workspace, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.Session = Session{Mode: "offline", Nickname: "Resona"}
+	s.state.Channels = []Channel{}
+	s.state.Messages = []Message{}
+	return s.snapshot(), nil
+}
+
+func (s *Service) SelectChannel(id string) (Workspace, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state.Session.Mode != "preview" {
+		return Workspace{}, errors.New("open local preview before selecting a channel")
+	}
+	found := false
+	for _, channel := range s.state.Channels {
+		if channel.ID == id {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return Workspace{}, errors.New("channel does not exist")
+	}
+	for i := range s.state.Channels {
+		s.state.Channels[i].Members = 0
+		if s.state.Channels[i].ID == id {
+			s.state.Channels[i].Members = 1
+		}
+	}
+	s.state.Session.ChannelID = id
+	return s.snapshot(), nil
+}
+
+func (s *Service) SendMessage(text string) (Workspace, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state.Session.Mode != "preview" {
+		return Workspace{}, errors.New("messages are available only in local preview")
+	}
+	text = strings.TrimSpace(text)
+	if !utf8.ValidString(text) || text == "" || utf8.RuneCountInString(text) > 2000 {
+		return Workspace{}, errors.New("message must contain between 1 and 2000 characters")
+	}
+	s.state.Messages = append(s.state.Messages, Message{
+		ID: rand.Text(), ChannelID: s.state.Session.ChannelID,
+		Author: s.state.Session.Nickname, Text: text, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	// Keep the local preview bounded while retaining its most recent messages.
+	if len(s.state.Messages) > 500 {
+		s.state.Messages = append([]Message{}, s.state.Messages[len(s.state.Messages)-500:]...)
+	}
+	return s.snapshot(), nil
+}
+
+func (s *Service) snapshot() Workspace {
+	return Workspace{
+		Servers: append([]ServerProfile{}, s.state.Servers...), Session: s.state.Session,
+		Channels: append([]Channel{}, s.state.Channels...), Messages: append([]Message{}, s.state.Messages...),
+	}
+}
+
+func ValidateProfile(profile ServerProfile) error {
+	for _, field := range []struct {
+		name  string
+		value string
+		limit int
+	}{{"name", profile.Name, 100}, {"nickname", profile.Nickname, 30}} {
+		if !utf8.ValidString(field.value) || strings.TrimSpace(field.value) == "" || utf8.RuneCountInString(field.value) > field.limit || strings.ContainsFunc(field.value, unicode.IsControl) {
+			return fmt.Errorf("%s must contain between 1 and %d characters without control characters", field.name, field.limit)
+		}
+	}
+	address := profile.Address
+	if address == "" || len(address) > 253 || strings.ContainsAny(address, "/\\@?#") || strings.ContainsFunc(address, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) {
+		return errors.New("address must be a hostname or IP address with an optional port")
+	}
+	if net.ParseIP(address) != nil {
+		return nil
+	}
+	host := address
+	if strings.Contains(address, ":") {
+		var port string
+		var err error
+		host, port, err = net.SplitHostPort(address)
+		if err != nil {
+			return errors.New("invalid address; use hostname:port or [IPv6]:port")
+		}
+		p, err := strconv.Atoi(port)
+		if err != nil || p < 1 || p > 65535 {
+			return errors.New("port must be between 1 and 65535")
+		}
+	}
+	if net.ParseIP(host) != nil {
+		return nil
+	}
+	for _, label := range strings.Split(strings.TrimSuffix(host, "."), ".") {
+		if label == "" || len(label) > 63 || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return errors.New("invalid hostname")
+		}
+		for _, r := range label {
+			if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-') {
+				return errors.New("hostname must use ASCII letters, digits, hyphens and dots")
+			}
+		}
+	}
+	return nil
+}

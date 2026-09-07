@@ -1,0 +1,19 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "resona",
+  "outputfilename": "resona",
+  "frontend:install": "npm ci",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "info": {
+    "companyName": "Resona contributors",
+    "productName": "Resona",
+    "productVersion": "0.1.0",
+    "copyright": "Copyright 2026 Resona contributors",
+    "comments": "Resona desktop client"
+  },
+  "author": {
+    "name": "Resona contributors"
+  }
+}
