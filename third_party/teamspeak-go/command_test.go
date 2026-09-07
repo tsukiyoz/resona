@@ -1,6 +1,9 @@
 package teamspeak
 
 import (
+	"context"
+	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -191,6 +194,9 @@ func TestExecCommandWithResponse_Timeout(t *testing.T) {
 	if !strings.Contains(err.Error(), "timeout") {
 		t.Errorf("expected 'timeout' in error, got %v", err)
 	}
+	if !errors.Is(err, errCommandTimed) {
+		t.Errorf("expected legacy timeout sentinel, got %v", err)
+	}
 	if elapsed < 40*time.Millisecond || elapsed > 500*time.Millisecond {
 		t.Errorf("unexpected elapsed time: %v", elapsed)
 	}
@@ -210,6 +216,132 @@ func TestExecCommandWithResponse_ServerError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "invalid_size") {
 		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestExecCommandContext_CanceledBeforeSend(t *testing.T) {
+	c := newTestClient(t)
+	c.finalCmdHandler = func(string) error {
+		t.Error("canceled command was sent")
+		return nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := c.ExecCommandContext(ctx, "clientmove clid=1 cid=2"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+	assertCommandTrackerEmpty(t, c.cmdTrack)
+}
+
+func TestExecCommandContext_DeadlineDuringThrottle(t *testing.T) {
+	c := newTestClient(t)
+	c.throttle.tokens = 0
+	c.finalCmdHandler = func(string) error {
+		t.Error("throttled command was sent after deadline")
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	if err := c.ExecCommandContext(ctx, "clientmove clid=1 cid=2"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context deadline, got %v", err)
+	}
+	assertCommandTrackerEmpty(t, c.cmdTrack)
+}
+
+func TestExecCommandContext_CancelPendingAndIgnoreLateResult(t *testing.T) {
+	c := newTestClient(t)
+	sent := make(chan uint32, 1)
+	c.finalCmdHandler = func(cmd string) error {
+		rc, err := strconv.ParseUint(commands.ParseCommand(cmd).Params["return_code"], 10, 32)
+		if err != nil {
+			return err
+		}
+		sent <- uint32(rc)
+		return nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { result <- c.ExecCommandContext(ctx, "clientmove clid=1 cid=2") }()
+	var rc uint32
+	select {
+	case rc = <-sent:
+	case <-time.After(time.Second):
+		t.Fatal("command was not sent")
+	}
+	c.cmdTrack.collect(map[string]string{"stale": "data"})
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected cancellation, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pending command did not cancel")
+	}
+	assertCommandTrackerEmpty(t, c.cmdTrack)
+	newRC, next := c.cmdTrack.register()
+	defer c.cmdTrack.unregister(newRC)
+	c.handleCommand("error id=0 msg=ok return_code=" + itoa(rc))
+	select {
+	case result := <-next:
+		t.Fatalf("late result resolved a later command: %+v", result)
+	default:
+	}
+	c.handleCommand("error id=0 msg=ok return_code=" + itoa(newRC))
+	if result := <-next; result.Err != nil || len(result.Data) != 0 {
+		t.Fatalf("later command contaminated: %+v", result)
+	}
+}
+
+func TestExecCommandContext_TypedServerError(t *testing.T) {
+	c := newTestClient(t)
+	c.finalCmdHandler = func(raw string) error {
+		cmd := commands.ParseCommand(raw)
+		c.handleCommand("error id=2568 msg=insufficient\\sclient\\spermissions return_code=" + cmd.Params["return_code"])
+		return nil
+	}
+	err := c.ExecCommandContext(context.Background(), "clientmove clid=1 cid=2")
+	var serverErr *CommandError
+	if !errors.As(err, &serverErr) || serverErr.ID != 2568 || serverErr.Message != "insufficient client permissions" {
+		t.Fatalf("expected typed permission error, got %v", err)
+	}
+	if !errors.Is(err, errTeamSpeakCommand) {
+		t.Fatalf("missing legacy server error sentinel: %v", err)
+	}
+	if err.Error() != "TeamSpeak server error: insufficient client permissions (id=2568)" {
+		t.Fatalf("changed error text: %s", err)
+	}
+	assertCommandTrackerEmpty(t, c.cmdTrack)
+}
+
+func TestCommandTracker_DuplicateResultIsHarmless(t *testing.T) {
+	tracker := newCommandTracker()
+	rc, result := tracker.register()
+	defer tracker.unregister(rc)
+	done := make(chan struct{})
+	go func() {
+		tracker.resolve(rc, nil)
+		tracker.resolve(rc, errors.New("duplicate"))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("duplicate result blocked resolution")
+	}
+	if res := <-result; res.Err != nil {
+		t.Fatalf("duplicate changed initial result: %v", res.Err)
+	}
+	assertCommandTrackerEmpty(t, tracker)
+}
+
+func assertCommandTrackerEmpty(t *testing.T, tracker *commandTracker) {
+	t.Helper()
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	if len(tracker.pending) != 0 || len(tracker.collecting) != 0 {
+		t.Fatalf("leaked command state: pending=%d collecting=%d", len(tracker.pending), len(tracker.collecting))
 	}
 }
 

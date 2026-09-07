@@ -22,6 +22,18 @@ var (
 	errCommandTimed     = errors.New("command timeout")
 )
 
+// CommandError is a nonzero error response returned by the TeamSpeak server.
+type CommandError struct {
+	ID      uint32
+	Message string
+}
+
+func (e *CommandError) Error() string {
+	return fmt.Sprintf("%s: %s (id=%d)", errTeamSpeakCommand, e.Message, e.ID)
+}
+
+func (e *CommandError) Unwrap() error { return errTeamSpeakCommand }
+
 type commandResult struct {
 	Err  error
 	Data []map[string]string
@@ -55,6 +67,7 @@ func (t *commandTracker) register() (uint32, <-chan commandResult) {
 func (t *commandTracker) unregister(rc uint32) {
 	t.mu.Lock()
 	delete(t.pending, rc)
+	delete(t.collecting, rc)
 	t.mu.Unlock()
 }
 
@@ -78,6 +91,7 @@ func (t *commandTracker) resolve(rc uint32, err error) {
 	defer t.mu.Unlock()
 	if ch, ok := t.pending[rc]; ok {
 		data := t.collecting[rc]
+		delete(t.pending, rc)
 		delete(t.collecting, rc)
 		ch <- commandResult{Data: data, Err: err}
 	}
@@ -174,7 +188,11 @@ func (c *Client) handleError(cmd *commands.Command) {
 
 	var err error
 	if id != "0" {
-		err = fmt.Errorf("%w: %s (id=%s)", errTeamSpeakCommand, msg, id)
+		if number, parseErr := strconv.ParseUint(id, 10, 32); parseErr == nil {
+			err = &CommandError{ID: uint32(number), Message: msg}
+		} else {
+			err = fmt.Errorf("%w: %s (id=%s)", errTeamSpeakCommand, msg, id)
+		}
 		c.logger.Error("server returned error", slog.String("id", id), slog.String("message", msg))
 
 		if id == "3329" {
@@ -214,8 +232,35 @@ func (c *Client) ExecCommand(cmd string, timeout time.Duration) error {
 	return err
 }
 
+// ExecCommandContext waits for throttling and the server response until ctx ends.
+// Cancellation cannot retract a command that has already been sent.
+func (c *Client) ExecCommandContext(ctx context.Context, cmd string) error {
+	_, err := c.execCommandWithResponse(ctx, cmd)
+	return err
+}
+
 // ExecCommandWithResponse sends a command and waits for its return_code response and data.
 func (c *Client) ExecCommandWithResponse(cmd string, timeout time.Duration) ([]map[string]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	data, err := c.execCommandWithResponse(ctx, cmd)
+	if errors.Is(err, context.DeadlineExceeded) {
+		return nil, fmt.Errorf("%w: %s", errCommandTimed, cmd)
+	}
+	return data, err
+}
+
+func (c *Client) execCommandWithResponse(ctx context.Context, cmd string) ([]map[string]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := c.throttle.wait(ctx); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	rc, ch := c.cmdTrack.register()
 	defer c.cmdTrack.unregister(rc)
 
@@ -226,12 +271,7 @@ func (c *Client) ExecCommandWithResponse(cmd string, timeout time.Duration) ([]m
 
 	c.logger.Debug("sending command", slog.String("raw", withReturnCode))
 
-	err := c.throttle.wait(context.Background())
-	if err != nil {
-		return nil, err
-	}
-
-	err = c.finalCmdHandler(withReturnCode)
+	err := c.finalCmdHandler(withReturnCode)
 	if err != nil {
 		return nil, err
 	}
@@ -239,7 +279,7 @@ func (c *Client) ExecCommandWithResponse(cmd string, timeout time.Duration) ([]m
 	select {
 	case res := <-ch:
 		return res.Data, res.Err
-	case <-time.After(timeout):
-		return nil, fmt.Errorf("%w: %s", errCommandTimed, cmd)
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }

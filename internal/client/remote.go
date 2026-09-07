@@ -13,15 +13,27 @@ type RemoteConnector interface {
 
 type RemoteConnection interface {
 	Close() error
+	// MoveChannel completes after the server acknowledges the move and publishes
+	// the destination state. Cancellation must release the pending operation.
+	MoveChannel(context.Context, string) error
 }
 
+var (
+	ErrChannelPermissionDenied = errors.New("没有进入此频道的权限")
+	ErrChannelPasswordRequired = errors.New("此频道需要密码，暂不支持进入")
+)
+
 type RemoteState struct {
-	ServerName  string
-	ChannelID   string
-	SelfID      string
-	IdentityUID string
-	Channels    []Channel
-	Users       []User
+	ServerName      string
+	ChannelID       string
+	SelfID          string
+	IdentityUID     string
+	Channels        []Channel
+	Users           []User
+	MemberSyncState string
+	MemberSyncError string
+	// Events contains only changes from this update, never a cumulative history.
+	Events []RemoteEvent
 	// Error must be safe for direct display; adapters remove technical details
 	// and credentials before publishing it.
 	Error  string
@@ -31,7 +43,10 @@ type RemoteState struct {
 func (s *Service) ConnectServer(id, password string) (Workspace, error) {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
+	return s.connectServerLocked(id, password, false, "")
+}
 
+func (s *Service) connectServerLocked(id, password string, remember bool, expectedAddress string) (Workspace, error) {
 	s.mu.Lock()
 	if s.shutdown {
 		s.mu.Unlock()
@@ -54,6 +69,10 @@ func (s *Service) ConnectServer(id, password string) (Workspace, error) {
 		s.mu.Unlock()
 		return Workspace{}, errors.New("服务器书签不存在")
 	}
+	if expectedAddress != "" && profile.Address != expectedAddress {
+		s.mu.Unlock()
+		return Workspace{}, errors.New("服务器地址已更改，请重新连接")
+	}
 
 	s.generation++
 	generation := s.generation
@@ -68,18 +87,19 @@ func (s *Service) ConnectServer(id, password string) (Workspace, error) {
 		ServerName: profile.Name,
 	}
 	s.clearRemoteCollectionsLocked()
+	s.state.Notifications = []Notification{}
 	state := s.snapshot()
 	connector := s.connector
 	s.mu.Unlock()
 
 	go func() {
 		defer cancel()
-		s.connect(ctx, connector, profile, password, generation, done)
+		s.connect(ctx, connector, profile, password, generation, done, remember)
 	}()
 	return state, nil
 }
 
-func (s *Service) connect(ctx context.Context, connector RemoteConnector, profile ServerProfile, password string, generation uint64, done chan struct{}) {
+func (s *Service) connect(ctx context.Context, connector RemoteConnector, profile ServerProfile, password string, generation uint64, done chan struct{}, remember bool) {
 	defer func() {
 		close(done)
 		s.mu.Lock()
@@ -118,7 +138,11 @@ func (s *Service) connect(ctx context.Context, connector RemoteConnector, profil
 	s.connection = connection
 	s.state.Session.Mode = "connected"
 	s.state.Session.Error = ""
+	s.addNotificationLocked("connected", s.state.Session.ChannelID)
 	s.mu.Unlock()
+	if remember {
+		s.rememberSuccessfulPassword(profile, password, generation)
+	}
 }
 
 func (s *Service) applyRemoteState(generation uint64, remote RemoteState) {
@@ -127,23 +151,36 @@ func (s *Service) applyRemoteState(generation uint64, remote RemoteState) {
 		s.mu.Unlock()
 		return
 	}
+	wasConnected := s.state.Session.Mode == "connected"
+	previousChannel := s.state.Session.ChannelID
 	s.state.Session.ServerName = remote.ServerName
 	s.state.Session.ChannelID = remote.ChannelID
 	s.state.Session.SelfID = remote.SelfID
 	s.state.Session.IdentityUID = remote.IdentityUID
-	s.state.Session.Error = remote.Error
+	s.state.Session.MemberSyncState = remote.MemberSyncState
+	s.state.Session.MemberSyncError = remote.MemberSyncError
+	if remote.Error != "" {
+		s.state.Session.Error = remote.Error
+	}
 	s.state.Channels = cloneChannels(remote.Channels)
 	s.state.Users = cloneUsers(remote.Users)
 	s.state.Messages = []Message{}
 	var connection RemoteConnection
 	if remote.Closed {
+		if wasConnected {
+			s.addNotificationLocked("disconnected", previousChannel)
+		}
+		s.cancelMoveLocked()
 		connection = s.connection
 		s.connection = nil
 		s.state.Session.Mode = "failed"
+		s.state.Session.Error = remote.Error
 		if s.state.Session.Error == "" {
 			s.state.Session.Error = "服务器连接已关闭"
 		}
 		s.clearRemoteCollectionsLocked()
+	} else if wasConnected {
+		s.applyRemoteEventsLocked(remote.Events)
 	}
 	if connection != nil {
 		s.cleanupWG.Add(1)
@@ -177,8 +214,12 @@ func (s *Service) disconnectRemote() (Workspace, error) {
 		s.mu.Unlock()
 		return state, nil
 	}
+	if s.state.Session.Mode == "connected" {
+		s.addNotificationLocked("disconnected", s.state.Session.ChannelID)
+	}
 	s.generation++
 	s.state.Session.Mode = "disconnecting"
+	s.cancelMoveLocked()
 	cancel := s.connectCancel
 	done := s.connectDone
 	connection := s.connection

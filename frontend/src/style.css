@@ -103,6 +103,7 @@ textarea {
   min-height: 420px;
   display: grid;
   grid-template-columns: 64px 260px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   overflow: hidden;
   background: var(--bg);
 }
@@ -190,9 +191,12 @@ textarea {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 }
 .brand-heading {
   height: 81px;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -220,6 +224,9 @@ textarea {
 .sidebar-content {
   overflow: auto;
   flex: 1;
+  min-height: 0;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   padding: 14px 13px;
 }
 .section-label {
@@ -340,6 +347,29 @@ textarea {
   display: flex;
   justify-content: flex-end;
   padding: 6px 5px 0;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.sync-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  font-size: 12px;
+  color: var(--amber);
+  background: var(--amber-bg);
+}
+.modal .checkbox-label {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+.modal .checkbox-label input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--teal);
 }
 .compact-button {
   min-height: 30px;
@@ -368,6 +398,37 @@ textarea {
   margin: 2px 0;
   font-size: 12px;
 }
+.channel-members {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 5px;
+}
+.channel-member {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  height: 30px;
+  padding-right: 12px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.channel-member > svg {
+  flex-shrink: 0;
+}
+.channel-member > span {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.channel-member > small {
+  flex-shrink: 0;
+  font-size: 9px;
+}
+.channel-member.is-self {
+  color: var(--teal);
+}
 .channel-main {
   flex: 1;
   display: flex;
@@ -391,10 +452,49 @@ textarea {
   background: var(--teal-bg);
   font-weight: 600;
 }
-.channel-row[aria-disabled="true"] {
-  cursor: help;
+.channel-row:disabled {
+  cursor: default;
+}
+.channel-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+}
+.channel-main > svg {
+  flex-shrink: 0;
+}
+.channel-spinner {
+  flex-shrink: 0;
+  animation: channel-spin 1s linear infinite;
+}
+.channel-switch-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 20px;
+  color: var(--teal);
+  background: var(--teal-bg);
+  font-size: 12px;
+}
+.channel-switch-status > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+@keyframes channel-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .channel-spinner {
+    animation: none;
+  }
 }
 .preview-control {
+  flex-shrink: 0;
   margin: 0 15px;
   padding: 15px 5px;
   display: flex;
@@ -409,6 +509,7 @@ textarea {
   font-size: 11px;
 }
 .identity {
+  flex-shrink: 0;
   padding: 15px;
   display: flex;
   align-items: center;
@@ -859,6 +960,39 @@ textarea {
   font-size: 24px;
   font-weight: 600;
   margin-bottom: 26px;
+}
+.settings-section-heading {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 32px 0 4px;
+}
+.sound-volume {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 210px;
+  max-width: 65%;
+}
+.sound-volume input {
+  width: 100%;
+  min-width: 0;
+  accent-color: var(--teal);
+}
+.sound-volume output {
+  width: 4ch;
+  flex-shrink: 0;
+  text-align: right;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.setting-row.sound-event-row {
+  padding: 14px 0;
+}
+.sound-error {
+  color: var(--red);
+  margin-top: 12px;
+  font-size: 12px;
 }
 .setting-row {
   display: flex;

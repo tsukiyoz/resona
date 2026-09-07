@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/honeybbq/teamspeak-go v0.0.0
+	github.com/keybase/go-keychain v0.0.1
 	github.com/wailsapp/wails/v2 v2.15.0
 )
 

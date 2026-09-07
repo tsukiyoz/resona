@@ -6,6 +6,7 @@ import (
 
 	"github.com/tsukiyoz/resona/internal/client"
 	"github.com/tsukiyoz/resona/internal/config"
+	"github.com/tsukiyoz/resona/internal/credentials"
 	"github.com/tsukiyoz/resona/internal/protocol/ts3"
 )
 
@@ -28,7 +29,39 @@ func loadService() (*client.Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return client.NewWithConnector(store, connector)
+	return client.NewWithPasswordStore(store, connector, credentials.New())
+}
+
+func (a *App) GetServerCredentialStatus(id string) (client.CredentialStatus, error) {
+	service, err := a.backend()
+	if err != nil {
+		return client.CredentialStatus{}, err
+	}
+	return service.GetServerCredentialStatus(id)
+}
+
+func (a *App) ConnectSavedServer(id string) (client.Workspace, error) {
+	service, err := a.backend()
+	if err != nil {
+		return client.Workspace{}, err
+	}
+	return service.ConnectSavedServer(id)
+}
+
+func (a *App) ConnectServerWithPassword(id, password string, remember bool) (client.Workspace, error) {
+	service, err := a.backend()
+	if err != nil {
+		return client.Workspace{}, err
+	}
+	return service.ConnectServerWithPassword(id, password, remember)
+}
+
+func (a *App) ForgetServerPassword(id string) (client.Workspace, error) {
+	service, err := a.backend()
+	if err != nil {
+		return client.Workspace{}, err
+	}
+	return service.ForgetServerPassword(id)
 }
 
 func (a *App) shutdown(context.Context) {

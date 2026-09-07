@@ -14,6 +14,8 @@ import {
   Info,
   LogIn,
   LogOut,
+  LockKeyhole,
+  LoaderCircle,
   Menu,
   MessageSquare,
   MicOff,
@@ -30,6 +32,7 @@ import {
   Sun,
   Trash2,
   Users,
+  UserRound,
   Volume2,
   X,
 } from "lucide-react";
@@ -39,8 +42,15 @@ import {
   errorMessage,
   type Channel,
   type ServerProfile,
+  type User,
   type Workspace,
 } from "./api";
+import {
+  NotificationAudio,
+  readSoundPreferences,
+  saveSoundPreferences,
+  type SoundPreferences,
+} from "./notificationAudio";
 
 function IconButton({
   label,
@@ -155,12 +165,14 @@ function orderedChannels(
 export default function App() {
   const [workspace, setWorkspace] = useState<Workspace>();
   const [pending, setPending] = useState(false);
+  const [requestedChannelID, setRequestedChannelID] = useState("");
   const [error, setError] = useState("");
   const [page, setPage] = useState<"chat" | "settings">("chat");
   const [editing, setEditing] = useState<ServerProfile | null>(null);
   const [deleting, setDeleting] = useState<ServerProfile | null>(null);
   const [connectingTo, setConnectingTo] = useState<ServerProfile | null>(null);
   const [password, setPassword] = useState("");
+  const [rememberPassword, setRememberPassword] = useState(true);
   const [connectError, setConnectError] = useState("");
   const [selectedServer, setSelectedServer] = useState("");
   const [draft, setDraft] = useState("");
@@ -171,8 +183,15 @@ export default function App() {
   const [compact, setCompact] = useState(
     () => readPreference("resona.compact", "false") === "true",
   );
+  const [soundPreferences, setSoundPreferences] =
+    useState(readSoundPreferences);
+  const [soundError, setSoundError] = useState("");
+  const notificationAudio = useRef<NotificationAudio>();
   const messagesEnd = useRef<HTMLDivElement>(null);
+  const sidebarContent = useRef<HTMLDivElement>(null);
+  const channelRows = useRef(new Map<string, HTMLButtonElement>());
   const pendingRef = useRef(false);
+  const channelRequestRef = useRef(0);
   const workspaceRef = useRef<Workspace>();
   const actionRevision = useRef(0);
   const pollError = useRef("");
@@ -180,6 +199,12 @@ export default function App() {
   const isPreview = mode === "preview";
   const isConnected = mode === "connected";
   const isRemote = remoteModes.has(mode);
+  const switchingChannelID = isConnected
+    ? requestedChannelID || workspace?.session.switchingChannelID || ""
+    : "";
+  const switchingChannel = workspace?.channels.find(
+    (c) => c.id === switchingChannelID,
+  );
   const channel = workspace?.channels.find(
     (c) => c.id === workspace.session.channelID,
   );
@@ -188,12 +213,13 @@ export default function App() {
   const server = workspace?.servers.find((s) => s.id === selectedServer);
   const serverIsCurrent =
     !!server && workspace?.session.serverID === server.id && isRemote;
-  const anotherSessionIsActive =
-    !!server &&
-    activeModes.has(mode) &&
-    workspace?.session.serverID !== server.id;
-  const channelUsers =
-    workspace?.users.filter((user) => user.channelID === channel?.id) ?? [];
+  const usersByChannel = new Map<string, User[]>();
+  for (const user of workspace?.users ?? []) {
+    const members = usersByChannel.get(user.channelID) ?? [];
+    members.push(user);
+    usersByChannel.set(user.channelID, members);
+  }
+  const channelUsers = usersByChannel.get(channel?.id ?? "") ?? [];
   const channels = orderedChannels(workspace?.channels ?? []);
   const sessionLabel = sessionLabels[mode];
   const statusClass =
@@ -208,17 +234,39 @@ export default function App() {
             : "";
 
   useEffect(() => {
+    const audio = new NotificationAudio(readSoundPreferences(), setSoundError);
+    notificationAudio.current = audio;
+    const close = () => audio.close();
+    window.addEventListener("pagehide", close);
+    return () => {
+      window.removeEventListener("pagehide", close);
+      audio.close();
+      notificationAudio.current = undefined;
+    };
+  }, []);
+  useEffect(() => {
+    if (workspace) notificationAudio.current?.consume(workspace);
+  }, [workspace]);
+
+  function updateSoundPreferences(value: SoundPreferences) {
+    notificationAudio.current?.setPreferences(value);
+    setSoundPreferences(value);
+    saveSoundPreferences(value);
+  }
+
+  useEffect(() => {
     let cancelled = false;
     let timer = 0;
     const refresh = async () => {
-      if (!pendingRef.current) {
+      if (!pendingRef.current && !channelRequestRef.current) {
         const revision = actionRevision.current;
         try {
           const next = await api.GetWorkspace();
           if (
             !cancelled &&
             revision === actionRevision.current &&
-            !pendingRef.current
+            !pendingRef.current &&
+            !channelRequestRef.current
           ) {
             workspaceRef.current = next;
             setWorkspace(next);
@@ -259,6 +307,19 @@ export default function App() {
   useEffect(() => {
     messagesEnd.current?.scrollIntoView({ block: "end" });
   }, [workspace?.messages.length, channel?.id]);
+  useEffect(() => {
+    if (mode !== "connected" && mode !== "preview") return;
+    const scroller = sidebarContent.current;
+    const row = channelRows.current.get(channel?.id ?? "");
+    if (!scroller?.clientHeight || !row) return;
+    const viewport = scroller.getBoundingClientRect();
+    const target = row.getBoundingClientRect();
+    // Scroll only this pane; document-level scrolling can move the fixed shell.
+    if (target.top < viewport.top)
+      scroller.scrollTop += target.top - viewport.top;
+    else if (target.bottom > viewport.bottom)
+      scroller.scrollTop += target.bottom - viewport.bottom;
+  }, [mode, workspace?.session.serverID, channel?.id, sidebarOpen]);
   useEffect(() => {
     const close = (e: KeyboardEvent) => {
       if (e.key === "Escape" && !pending) {
@@ -309,9 +370,35 @@ export default function App() {
       },
     );
   }
-  function openConnect(target: ServerProfile) {
+  async function openConnect(target: ServerProfile, forcePassword = false) {
+    if (browserPreview || pendingRef.current) return;
+    if (
+      !forcePassword &&
+      workspaceRef.current?.session.serverID === target.id &&
+      activeModes.has(workspaceRef.current.session.mode)
+    ) {
+      setPage("chat");
+      return;
+    }
+    void notificationAudio.current?.unlock();
     setPassword("");
     setConnectError("");
+    pendingRef.current = true;
+    setPending(true);
+    let status = { saved: false, remember: true };
+    try {
+      status = await api.GetServerCredentialStatus(target.id);
+    } catch (error) {
+      setConnectError(errorMessage(error));
+    } finally {
+      pendingRef.current = false;
+      setPending(false);
+    }
+    setRememberPassword(status.remember);
+    if (status.saved && !forcePassword) {
+      await connectTarget(target, () => api.ConnectSavedServer(target.id));
+      return;
+    }
     setConnectingTo(target);
   }
   function closeConnect() {
@@ -323,23 +410,40 @@ export default function App() {
   async function connect(event: FormEvent) {
     event.preventDefault();
     if (!connectingTo || pendingRef.current) return;
+    void notificationAudio.current?.unlock();
     const target = connectingTo;
     const submittedPassword = password;
-    setPassword("");
+    await connectTarget(target, () =>
+      api.ConnectServerWithPassword(
+        target.id,
+        submittedPassword,
+        rememberPassword,
+      ),
+    );
+  }
+  async function connectTarget(
+    target: ServerProfile,
+    action: () => Promise<Workspace>,
+  ) {
+    if (pendingRef.current) return;
     setConnectError("");
     setError("");
     actionRevision.current += 1;
+    channelRequestRef.current = 0;
+    setRequestedChannelID("");
     pendingRef.current = true;
     setPending(true);
     try {
-      const next = await api.ConnectServer(target.id, submittedPassword);
+      const next = await action();
       workspaceRef.current = next;
       setWorkspace(next);
+      setPassword("");
       setConnectingTo(null);
       setSelectedServer(target.id);
       setPage("chat");
       setSidebarOpen(false);
     } catch (e) {
+      setConnectingTo(target);
       setConnectError(errorMessage(e));
     } finally {
       pendingRef.current = false;
@@ -347,10 +451,52 @@ export default function App() {
     }
   }
   function disconnect() {
+    channelRequestRef.current = 0;
+    setRequestedChannelID("");
     void run(
       () => api.DisconnectServer(),
       () => setDraft(""),
     );
+  }
+  async function selectChannel(target: Channel) {
+    if (
+      pendingRef.current ||
+      channelRequestRef.current ||
+      switchingChannelID ||
+      (!isPreview && !isConnected) ||
+      (isConnected && target.passwordRequired)
+    )
+      return;
+    if (isPreview) {
+      void run(
+        () => api.SelectChannel(target.id),
+        () => {
+          setPage("chat");
+          setSidebarOpen(false);
+          setDraft("");
+        },
+      );
+      return;
+    }
+    if (target.id === workspaceRef.current?.session.channelID) return;
+    const revision = ++actionRevision.current;
+    channelRequestRef.current = revision;
+    setRequestedChannelID(target.id);
+    setError("");
+    setPage("chat");
+    try {
+      const next = await api.SelectChannel(target.id);
+      if (revision !== actionRevision.current) return;
+      workspaceRef.current = next;
+      setWorkspace(next);
+    } catch (e) {
+      if (revision === actionRevision.current) setError(errorMessage(e));
+    } finally {
+      if (channelRequestRef.current === revision) {
+        channelRequestRef.current = 0;
+        setRequestedChannelID("");
+      }
+    }
   }
 
   return (
@@ -407,7 +553,7 @@ export default function App() {
             <X size={18} />
           </IconButton>
         </header>
-        <div className="sidebar-content">
+        <div className="sidebar-content" ref={sidebarContent}>
           <div className="section-label">
             <span>服务器</span>
             <IconButton
@@ -426,6 +572,14 @@ export default function App() {
                   onClick={() => {
                     setSelectedServer(s.id);
                     setPage("chat");
+                  }}
+                  onDoubleClick={() => void openConnect(s)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      setSelectedServer(s.id);
+                      void openConnect(s);
+                    }
                   }}
                 >
                   <span className="server-icon">
@@ -463,12 +617,18 @@ export default function App() {
                 <span title={server.address}>{server.address}</span>
                 <IconButton
                   label={`编辑 ${server.name}`}
+                  disabled={
+                    pending || (serverIsCurrent && activeModes.has(mode))
+                  }
                   onClick={() => setEditing({ ...server })}
                 >
                   <Pencil size={14} />
                 </IconButton>
                 <IconButton
                   label={`删除 ${server.name}`}
+                  disabled={
+                    pending || (serverIsCurrent && activeModes.has(mode))
+                  }
                   onClick={() => setDeleting(server)}
                 >
                   <Trash2 size={14} />
@@ -504,20 +664,22 @@ export default function App() {
                   <button
                     className="primary-button compact-button"
                     aria-label={`${mode === "failed" && serverIsCurrent ? "重新连接" : "连接"} ${server.name}`}
-                    title={
-                      browserPreview
-                        ? "在桌面应用中连接"
-                        : anotherSessionIsActive
-                          ? "请先断开当前服务器"
-                          : undefined
-                    }
-                    disabled={
-                      browserPreview || anotherSessionIsActive || pending
-                    }
-                    onClick={() => openConnect(server)}
+                    title={browserPreview ? "在桌面应用中连接" : undefined}
+                    disabled={browserPreview || pending}
+                    onClick={() => void openConnect(server)}
                   >
                     <LogIn size={14} />
                     {mode === "failed" && serverIsCurrent ? "重新连接" : "连接"}
+                  </button>
+                )}
+                {serverIsCurrent && mode === "failed" && (
+                  <button
+                    className="secondary-button compact-button"
+                    disabled={pending}
+                    onClick={() => void openConnect(server, true)}
+                  >
+                    <Pencil size={14} />
+                    修改密码
                   </button>
                 )}
               </div>
@@ -531,36 +693,81 @@ export default function App() {
           {(isPreview || isConnected) && workspace?.channels.length ? (
             <div className="channel-list">
               {channels.map(({ channel: c, depth }) => (
-                <button
+                <div
+                  className="channel-group"
                   key={c.id}
-                  className={`channel-row ${channel?.id === c.id ? "selected" : ""}`}
-                  aria-disabled={isConnected || pending}
-                  title={isConnected ? "频道切换暂未开放" : undefined}
-                  onClick={() => {
-                    if (!isPreview || pending) return;
-                    void run(
-                      () => api.SelectChannel(c.id),
-                      () => {
-                        setPage("chat");
-                        setSidebarOpen(false);
-                        setDraft("");
-                      },
-                    );
-                  }}
+                  data-channel-id={c.id}
                 >
-                  <span
-                    className="channel-main"
-                    style={{ paddingLeft: `${depth * 14}px` }}
+                  <button
+                    ref={(node) => {
+                      if (node) channelRows.current.set(c.id, node);
+                      else channelRows.current.delete(c.id);
+                    }}
+                    className={`channel-row ${channel?.id === c.id ? "selected" : ""}`}
+                    aria-current={channel?.id === c.id ? "true" : undefined}
+                    disabled={
+                      pending ||
+                      !!switchingChannelID ||
+                      (isConnected && c.passwordRequired)
+                    }
+                    title={
+                      isConnected && c.passwordRequired
+                        ? "此频道需要密码，暂不支持加入"
+                        : c.name
+                    }
+                    onClick={() => void selectChannel(c)}
                   >
-                    {c.id === "music" && isPreview ? (
-                      <Music2 size={17} />
-                    ) : (
-                      <Volume2 size={17} />
+                    <span
+                      className="channel-main"
+                      style={{ paddingLeft: `${Math.min(depth, 8) * 14}px` }}
+                    >
+                      {c.id === "music" && isPreview ? (
+                        <Music2 size={17} />
+                      ) : (
+                        <Volume2 size={17} />
+                      )}
+                      <span>{c.name}</span>
+                    </span>
+                    {isPreview && <small>{c.members}</small>}
+                    {isConnected &&
+                      workspace.session.memberSyncState !== "pending" &&
+                      !!usersByChannel.get(c.id)?.length && (
+                        <small aria-hidden="true" title="可见成员">
+                          {usersByChannel.get(c.id)!.length}
+                        </small>
+                      )}
+                    {isConnected && (
+                      <span className="channel-indicator" aria-hidden="true">
+                        {switchingChannelID === c.id ? (
+                          <LoaderCircle size={15} className="channel-spinner" />
+                        ) : c.passwordRequired ? (
+                          <LockKeyhole size={14} />
+                        ) : null}
+                      </span>
                     )}
-                    <span>{c.name}</span>
-                  </span>
-                  {isPreview && <small>{c.members}</small>}
-                </button>
+                  </button>
+                  {isConnected && !!usersByChannel.get(c.id)?.length && (
+                    <ul
+                      className="channel-members"
+                      aria-label={`${c.name}的可见成员`}
+                    >
+                      {usersByChannel.get(c.id)!.map((user) => (
+                        <li
+                          className={`channel-member ${user.self ? "is-self" : ""}`}
+                          key={user.id}
+                          style={{
+                            paddingLeft: `${36 + Math.min(depth, 8) * 14}px`,
+                          }}
+                          title={user.nickname}
+                        >
+                          <UserRound size={14} aria-hidden="true" />
+                          <span>{user.nickname}</span>
+                          {user.self && <small>我</small>}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
               ))}
             </div>
           ) : (
@@ -611,10 +818,10 @@ export default function App() {
                 : sessionLabel}
             </small>
           </div>
-          <IconButton label="语音设备尚未接入" disabled>
+          <IconButton label="语音通话设备尚未接入" disabled>
             <MicOff size={18} />
           </IconButton>
-          <IconButton label="音频播放尚未接入" disabled>
+          <IconButton label="语音通话播放尚未接入" disabled>
             <Headphones size={18} />
           </IconButton>
         </div>
@@ -668,6 +875,32 @@ export default function App() {
             </IconButton>
           </div>
         )}
+        {isConnected && workspace?.session.error && (
+          <div className="error-banner" role="alert">
+            <Info size={17} />
+            <span>{workspace.session.error}</span>
+          </div>
+        )}
+        {isConnected && workspace?.session.credentialError && (
+          <div className="error-banner" role="alert">
+            <Info size={17} />
+            <span>{workspace.session.credentialError}</span>
+          </div>
+        )}
+        {isConnected && workspace?.session.memberSyncError && (
+          <div className="sync-banner" role="status">
+            <Info size={15} />
+            <span>{workspace.session.memberSyncError}</span>
+          </div>
+        )}
+        {switchingChannelID && (
+          <div className="channel-switch-status" role="status">
+            <LoaderCircle size={15} className="channel-spinner" />
+            <span>
+              正在加入 {switchingChannel?.name || "目标频道"}，等待服务器确认
+            </span>
+          </div>
+        )}
         {page === "settings" ? (
           <div className="settings-view">
             <button
@@ -713,6 +946,76 @@ export default function App() {
                 <span />
               </label>
             </div>
+            <h2 className="settings-section-heading">提示音</h2>
+            <div className="setting-row">
+              <div>
+                <strong>启用提示音</strong>
+              </div>
+              <label className="switch">
+                <input
+                  type="checkbox"
+                  aria-label="启用提示音"
+                  checked={soundPreferences.enabled}
+                  onChange={(event) => {
+                    void notificationAudio.current?.unlock();
+                    updateSoundPreferences({
+                      ...soundPreferences,
+                      enabled: event.target.checked,
+                    });
+                  }}
+                />
+                <span />
+              </label>
+            </div>
+            <div className="setting-row">
+              <div>
+                <strong>音量</strong>
+              </div>
+              <div className="sound-volume">
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="1"
+                  aria-label="提示音音量"
+                  value={soundPreferences.volume}
+                  disabled={!soundPreferences.enabled}
+                  onChange={(event) =>
+                    updateSoundPreferences({
+                      ...soundPreferences,
+                      volume: Number(event.target.value),
+                    })
+                  }
+                />
+                <output>{soundPreferences.volume}%</output>
+              </div>
+            </div>
+            {(
+              [
+                ["connected", "连接服务器"],
+                ["disconnected", "断开连接"],
+                ["member_joined", "成员进入当前频道"],
+                ["member_left", "成员离开当前频道"],
+              ] as const
+            ).map(([kind, label]) => (
+              <div className="setting-row sound-event-row" key={kind}>
+                <div>
+                  <strong>{label}</strong>
+                </div>
+                <IconButton
+                  label={`试听${label}`}
+                  disabled={!soundPreferences.enabled}
+                  onClick={() => void notificationAudio.current?.preview(kind)}
+                >
+                  <Volume2 size={18} />
+                </IconButton>
+              </div>
+            ))}
+            {soundError && (
+              <p className="sound-error" role="status">
+                {soundError}
+              </p>
+            )}
             <div className="settings-about">
               <img src="/resona.svg" alt="" />
               <div>
@@ -818,7 +1121,11 @@ export default function App() {
                     <p>
                       {channelUsers.length
                         ? `${channelUsers.length} 位可见成员`
-                        : "当前频道暂无可见成员"}
+                        : workspace?.session.memberSyncState === "pending"
+                          ? "正在同步可见成员…"
+                          : workspace?.session.memberSyncState === "limited"
+                            ? "成员信息受限"
+                            : "当前频道暂无可见成员"}
                     </p>
                     <span className="online-badge">
                       <span className="status-dot online" />
@@ -908,7 +1215,7 @@ export default function App() {
                     {isPreview
                       ? "本地预览"
                       : isRemote
-                        ? "远程会话 · 只读"
+                        ? "文字与语音通话尚未接入"
                         : "离线"}
                     {draft.length > 1800 && ` · ${draft.length}/2000`}
                   </span>
@@ -946,7 +1253,7 @@ export default function App() {
               </div>
               <h2>{channel?.name || "暂无频道"}</h2>
               <p className="detail-description">
-                {channel?.description || "未连接"}
+                {channel ? channel.description || "暂无频道主题" : "未连接"}
               </p>
               <dl>
                 <div>
@@ -979,9 +1286,15 @@ export default function App() {
               </dl>
               <div className="members-heading">
                 <Users size={15} />
-                <span>成员</span>
+                <span>可见成员</span>
                 <span>
-                  {isConnected ? channelUsers.length : (channel?.members ?? 0)}
+                  {isConnected
+                    ? workspace?.session.memberSyncState === "pending"
+                      ? "同步中"
+                      : workspace?.session.memberSyncState === "limited"
+                        ? "受限"
+                        : channelUsers.length
+                    : (channel?.members ?? 0)}
                 </span>
               </div>
               {isPreview ? (
@@ -1004,7 +1317,15 @@ export default function App() {
                   </div>
                 ))
               ) : (
-                <p className="no-members">暂无成员</p>
+                <p className="no-members">
+                  {isConnected
+                    ? workspace?.session.memberSyncState === "pending"
+                      ? "正在同步成员…"
+                      : workspace?.session.memberSyncState === "limited"
+                        ? "成员信息受限"
+                        : "暂无可见成员"
+                    : "暂无成员"}
+                </p>
               )}
             </aside>
           </div>
@@ -1024,6 +1345,14 @@ export default function App() {
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
               />
+            </label>
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={rememberPassword}
+                onChange={(event) => setRememberPassword(event.target.checked)}
+              />
+              记住密码
             </label>
             {connectError && (
               <p className="form-error" role="alert">
@@ -1102,6 +1431,19 @@ export default function App() {
               <p className="form-error" role="alert">
                 {error}
               </p>
+            )}
+            {editing.id && !browserPreview && (
+              <button
+                type="button"
+                className="text-button"
+                disabled={pending}
+                onClick={() =>
+                  void run(() => api.ForgetServerPassword(editing.id))
+                }
+              >
+                <Trash2 size={14} />
+                忘记已保存密码
+              </button>
             )}
             <div className="modal-actions">
               <button

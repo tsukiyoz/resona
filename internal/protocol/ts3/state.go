@@ -25,6 +25,10 @@ func newReducer(uid string) *reducer {
 
 func (r *reducer) apply(command teamspeak.IncomingCommand) bool {
 	p := command.Params
+	r.state.Events = nil
+	wasReady := r.ready()
+	currentChannel := r.users[r.state.SelfID].ChannelID
+	previousUser, knownUser := r.users[p["clid"]]
 	switch command.Name {
 	case "initserver":
 		r.initialized = true
@@ -55,6 +59,9 @@ func (r *reducer) apply(command teamspeak.IncomingCommand) bool {
 		if v, ok := p["channel_topic"]; ok {
 			ch.Description = v
 		}
+		if v, ok := p["channel_flag_password"]; ok {
+			ch.PasswordRequired = v == "1"
+		}
 		r.channels[id] = ch
 	case "channellistfinished":
 		r.listed = true
@@ -74,9 +81,19 @@ func (r *reducer) apply(command teamspeak.IncomingCommand) bool {
 			u.ChannelID = v
 		}
 		r.users[id] = u
+		if wasReady && id != r.state.SelfID && command.Name != "notifyclientupdated" && memberChangeReason(p["reasonid"]) {
+			if knownUser && previousUser.ChannelID == currentChannel && u.ChannelID != currentChannel {
+				r.memberEvent("member_left", id, currentChannel)
+			} else if u.ChannelID == currentChannel && (!knownUser || previousUser.ChannelID != currentChannel) {
+				r.memberEvent("member_joined", id, currentChannel)
+			}
+		}
 	case "notifyclientleftview":
 		delete(r.users, p["clid"])
-		if p["clid"] == r.state.SelfID && p["reasonid"] == "5" {
+		if wasReady && p["clid"] != r.state.SelfID && knownUser && previousUser.ChannelID == currentChannel && memberChangeReason(p["reasonid"]) {
+			r.memberEvent("member_left", p["clid"], currentChannel)
+		}
+		if p["clid"] == r.state.SelfID && disconnectReason(p["reasonid"]) {
 			r.state.Closed = true
 			r.state.Error = "服务器已结束本次连接"
 		}
@@ -91,6 +108,29 @@ func (r *reducer) apply(command teamspeak.IncomingCommand) bool {
 	return true
 }
 
+// Subscription snapshots are not live joins, even after our own login is ready.
+func memberChangeReason(reason string) bool {
+	switch reason {
+	case "0", "1", "3", "4", "5", "6", "8":
+		return true
+	default:
+		return false
+	}
+}
+
+func disconnectReason(reason string) bool {
+	switch reason {
+	case "3", "5", "6", "7", "8", "11":
+		return true
+	default:
+		return false
+	}
+}
+
+func (r *reducer) memberEvent(kind, userID, channelID string) {
+	r.state.Events = append(r.state.Events, client.RemoteEvent{Kind: kind, UserID: userID, ChannelID: channelID})
+}
+
 func validID(id string) bool {
 	n, err := strconv.ParseUint(id, 10, 64)
 	return err == nil && n != 0
@@ -103,6 +143,7 @@ func (r *reducer) ready() bool {
 
 func (r *reducer) snapshot() client.RemoteState {
 	s := r.state
+	s.Events = append([]client.RemoteEvent(nil), r.state.Events...)
 	s.Channels = make([]client.Channel, 0, len(r.channels))
 	s.Users = make([]client.User, 0, len(r.users))
 	counts := make(map[string]int)

@@ -18,6 +18,14 @@ func (f connectorFunc) Connect(ctx context.Context, profile ServerProfile, passw
 
 type fakeConnection struct {
 	closed atomic.Int32
+	move   func(context.Context, string) error
+}
+
+func (c *fakeConnection) MoveChannel(ctx context.Context, id string) error {
+	if c.move != nil {
+		return c.move(ctx, id)
+	}
+	return errors.New("move not configured")
 }
 
 func (c *fakeConnection) Close() error {
@@ -153,7 +161,7 @@ func TestDisconnectCancelsPendingConnectAndIgnoresOldUpdates(t *testing.T) {
 	}
 }
 
-func TestConnectedSessionRejectsDuplicateAndWriteOperations(t *testing.T) {
+func TestConnectedSessionRejectsDuplicateAndUnsupportedOperations(t *testing.T) {
 	connection := &fakeConnection{}
 	connector := connectorFunc(func(_ context.Context, _ ServerProfile, _ string, update func(RemoteState)) (RemoteConnection, error) {
 		update(RemoteState{ServerName: "Live", Channels: []Channel{}, Users: []User{}})
@@ -166,7 +174,7 @@ func TestConnectedSessionRejectsDuplicateAndWriteOperations(t *testing.T) {
 	waitForMode(t, service, "connected")
 	for name, operation := range map[string]func() error{
 		"duplicate connect": func() error { _, err := service.ConnectServer(profile.ID, "password"); return err },
-		"select channel":    func() error { _, err := service.SelectChannel("1"); return err },
+		"unknown channel":   func() error { _, err := service.SelectChannel("1"); return err },
 		"send message":      func() error { _, err := service.SendMessage("hello"); return err },
 		"open preview":      func() error { _, err := service.OpenPreview(); return err },
 		"edit profile":      func() error { profile.Name = "Changed"; _, err := service.SaveServer(profile); return err },

@@ -11,6 +11,7 @@ export interface Channel {
   members: number;
   parentID: string;
   order: string;
+  passwordRequired: boolean;
 }
 export interface User {
   id: string;
@@ -25,6 +26,12 @@ export interface Message {
   text: string;
   createdAt: string;
 }
+export interface Notification {
+  id: string;
+  kind: "connected" | "member_joined" | "member_left" | "disconnected";
+  channelID: string;
+  createdAt: string;
+}
 export interface Workspace {
   servers: ServerProfile[];
   session: {
@@ -36,16 +43,21 @@ export interface Workspace {
       | "failed"
       | "disconnecting";
     channelID: string;
+    switchingChannelID: string;
     nickname: string;
     serverID: string;
     serverName: string;
     identityUID: string;
     selfID: string;
     error: string;
+    credentialError: string;
+    memberSyncState: "pending" | "ready" | "limited";
+    memberSyncError: string;
   };
   channels: Channel[];
   users: User[];
   messages: Message[];
+  notifications: Notification[];
 }
 interface Bridge {
   GetWorkspace(): Promise<Workspace>;
@@ -56,6 +68,16 @@ interface Bridge {
   SelectChannel(id: string): Promise<Workspace>;
   SendMessage(text: string): Promise<Workspace>;
   ConnectServer(id: string, password: string): Promise<Workspace>;
+  GetServerCredentialStatus(
+    id: string,
+  ): Promise<{ saved: boolean; remember: boolean }>;
+  ConnectSavedServer(id: string): Promise<Workspace>;
+  ConnectServerWithPassword(
+    id: string,
+    password: string,
+    remember: boolean,
+  ): Promise<Workspace>;
+  ForgetServerPassword(id: string): Promise<Workspace>;
   DisconnectServer(): Promise<Workspace>;
 }
 declare global {
@@ -74,6 +96,7 @@ const channels: Channel[] = [
     members: 1,
     parentID: "",
     order: "0",
+    passwordRequired: false,
   },
   {
     id: "music",
@@ -82,6 +105,7 @@ const channels: Channel[] = [
     members: 0,
     parentID: "",
     order: "lobby",
+    passwordRequired: false,
   },
   {
     id: "workshop",
@@ -90,6 +114,7 @@ const channels: Channel[] = [
     members: 0,
     parentID: "",
     order: "music",
+    passwordRequired: false,
   },
 ];
 const emptyWorkspace = (): Workspace => ({
@@ -97,16 +122,21 @@ const emptyWorkspace = (): Workspace => ({
   session: {
     mode: "offline",
     channelID: "",
+    switchingChannelID: "",
     nickname: "Resona",
     serverID: "",
     serverName: "",
     identityUID: "",
     selfID: "",
     error: "",
+    credentialError: "",
+    memberSyncState: "pending",
+    memberSyncError: "",
   },
   channels: [],
   users: [],
   messages: [],
+  notifications: [],
 });
 let local = emptyWorkspace();
 let loaded = false;
@@ -265,6 +295,18 @@ const browserBridge: Bridge = {
   async ConnectServer() {
     throw new Error("真实连接仅在桌面应用中可用");
   },
+  async GetServerCredentialStatus() {
+    return { saved: false, remember: true };
+  },
+  async ConnectSavedServer() {
+    throw new Error("真实连接仅在桌面应用中可用");
+  },
+  async ConnectServerWithPassword() {
+    throw new Error("真实连接仅在桌面应用中可用");
+  },
+  async ForgetServerPassword() {
+    throw new Error("真实连接仅在桌面应用中可用");
+  },
   async DisconnectServer() {
     throw new Error("真实连接仅在桌面应用中可用");
   },
@@ -278,12 +320,16 @@ function normalizeWorkspace(value: Workspace): Workspace {
     session: {
       mode: session.mode ?? "offline",
       channelID: session.channelID ?? "",
+      switchingChannelID: session.switchingChannelID ?? "",
       nickname: session.nickname ?? "",
       serverID: session.serverID ?? "",
       serverName: session.serverName ?? "",
       identityUID: session.identityUID ?? "",
       selfID: session.selfID ?? "",
       error: session.error ?? "",
+      credentialError: session.credentialError ?? "",
+      memberSyncState: session.memberSyncState || "pending",
+      memberSyncError: session.memberSyncError ?? "",
     },
     channels: (value?.channels ?? []).map((channel) => ({
       ...channel,
@@ -291,9 +337,11 @@ function normalizeWorkspace(value: Workspace): Workspace {
       members: channel.members ?? 0,
       parentID: channel.parentID ?? "",
       order: channel.order ?? "",
+      passwordRequired: channel.passwordRequired ?? false,
     })),
     users: value?.users ?? [],
     messages: value?.messages ?? [],
+    notifications: value?.notifications ?? [],
   };
 }
 
@@ -312,6 +360,15 @@ function normalizeBridge(bridge: Bridge): Bridge {
       normalizeWorkspace(await bridge.SendMessage(message)),
     ConnectServer: async (id, password) =>
       normalizeWorkspace(await bridge.ConnectServer(id, password)),
+    GetServerCredentialStatus: (id) => bridge.GetServerCredentialStatus(id),
+    ConnectSavedServer: async (id) =>
+      normalizeWorkspace(await bridge.ConnectSavedServer(id)),
+    ConnectServerWithPassword: async (id, password, remember) =>
+      normalizeWorkspace(
+        await bridge.ConnectServerWithPassword(id, password, remember),
+      ),
+    ForgetServerPassword: async (id) =>
+      normalizeWorkspace(await bridge.ForgetServerPassword(id)),
     DisconnectServer: async () =>
       normalizeWorkspace(await bridge.DisconnectServer()),
   };

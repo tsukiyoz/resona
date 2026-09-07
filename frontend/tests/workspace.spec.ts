@@ -67,6 +67,7 @@ async function installDesktopBridge(
     const emptySession = () => ({
       mode: "offline",
       channelID: "",
+      switchingChannelID: "",
       nickname: "DesktopUser",
       serverID: "",
       serverName: "",
@@ -85,10 +86,70 @@ async function installDesktopBridge(
     const calls = {
       connect: [] as Array<[string, string]>,
       disconnect: 0,
+      select: [] as string[],
     };
     const snapshot = () => structuredClone(state);
+    let holdPoll = false;
+    let releasePoll: (() => void) | undefined;
+    let holdSelect = false;
+    let releaseSelect: (() => void) | undefined;
+    const control = {
+      holdNextPoll() {
+        holdPoll = true;
+      },
+      hasHeldPoll() {
+        return !!releasePoll;
+      },
+      releasePoll() {
+        releasePoll?.();
+        releasePoll = undefined;
+      },
+      holdNextSelect() {
+        holdSelect = true;
+      },
+      hasHeldSelect() {
+        return !!releaseSelect;
+      },
+      releaseSelect() {
+        releaseSelect?.();
+        releaseSelect = undefined;
+      },
+      finishSwitch(error = "") {
+        const target = state.session.switchingChannelID;
+        state.session = {
+          ...state.session,
+          channelID: error ? state.session.channelID : target,
+          switchingChannelID: "",
+          error,
+        };
+        if (!error) {
+          state.users = state.users.map((user) =>
+            user.self ? { ...user, channelID: target } : user,
+          );
+        }
+      },
+    };
     const app = {
+      async GetServerCredentialStatus() {
+        return { saved: false, remember: true };
+      },
+      async ConnectSavedServer(id: string) {
+        return app.ConnectServer(id, "");
+      },
+      async ConnectServerWithPassword(id: string, password: string) {
+        return app.ConnectServer(id, password);
+      },
+      async ForgetServerPassword() {
+        return snapshot();
+      },
       async GetWorkspace() {
+        if (holdPoll) {
+          holdPoll = false;
+          const delayedSnapshot = snapshot();
+          return new Promise<typeof state>((resolve) => {
+            releasePoll = () => resolve(delayedSnapshot);
+          });
+        }
         if (state.session.mode === "connecting") {
           connectingPolls += 1;
           if (connectingPolls >= 2) {
@@ -134,6 +195,7 @@ async function installDesktopBridge(
                       members: 99,
                       parentID: "lobby",
                       order: "0",
+                      passwordRequired: true,
                     },
                   ],
                   users: [
@@ -198,7 +260,16 @@ async function installDesktopBridge(
       async LeavePreview() {
         return snapshot();
       },
-      async SelectChannel() {
+      async SelectChannel(id: string) {
+        calls.select.push(id);
+        state.session = { ...state.session, switchingChannelID: id, error: "" };
+        if (holdSelect) {
+          holdSelect = false;
+          const delayedSnapshot = snapshot();
+          return new Promise<typeof state>((resolve) => {
+            releaseSelect = () => resolve(delayedSnapshot);
+          });
+        }
         return snapshot();
       },
       async SendMessage() {
@@ -208,6 +279,7 @@ async function installDesktopBridge(
     Object.assign(window, {
       go: { main: { App: app } },
       desktopBridgeCalls: calls,
+      desktopBridgeControl: control,
     });
   }, shouldFail);
 }
@@ -229,17 +301,21 @@ test("desktop connection passes an ephemeral password and polls until disconnect
       timeout: 4000,
     },
   );
-  await expect(page.getByText("RemoteUser", { exact: true })).toBeVisible();
+  await expect(
+    page.locator(".details-panel").getByText("RemoteUser", { exact: true }),
+  ).toBeVisible();
   await expect(
     page.getByRole("textbox", { name: "消息", exact: true }),
   ).toHaveAttribute("placeholder", "文字发送尚未开放");
   await expect(
     page.getByRole("textbox", { name: "消息", exact: true }),
   ).toBeDisabled();
-  await expect(page.getByRole("button", { name: "大厅" })).toHaveAttribute(
-    "title",
-    "频道切换暂未开放",
-  );
+  await expect(
+    page.getByRole("button", { name: "大厅", exact: true }),
+  ).toHaveAttribute("aria-current", "true");
+  await expect(
+    page.getByRole("button", { name: "工作间", exact: true }),
+  ).toBeEnabled();
   await expect(page.locator(".channel-row")).toHaveText([
     "大厅",
     "子频道",
@@ -297,6 +373,170 @@ test("desktop connection failure stays visible and can be retried", async ({
   await expect(
     page.getByRole("button", { name: "重新连接", exact: true }),
   ).toBeEnabled();
+});
+
+async function connectedDesktop(page: import("@playwright/test").Page) {
+  await installDesktopBridge(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "桌面测试 未连接" }).click();
+  await page.getByRole("button", { name: "连接 桌面测试" }).click();
+  await page.getByRole("button", { name: "连接服务器" }).click();
+  await expect(page.locator(".connection-label")).toHaveText(
+    "桌面测试 · 在线",
+    { timeout: 4000 },
+  );
+}
+
+async function desktopControl(
+  page: import("@playwright/test").Page,
+  command: string,
+  message = "",
+) {
+  return page.evaluate(
+    ({ command, message }) => {
+      const controls = (
+        window as unknown as {
+          desktopBridgeControl: Record<string, (message?: string) => unknown>;
+        }
+      ).desktopBridgeControl;
+      return controls[command](message);
+    },
+    { command, message },
+  );
+}
+
+test("remote channel switch waits for confirmation and password channels stay locked", async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await connectedDesktop(page);
+  await expect(
+    page.getByRole("button", { name: "编辑 桌面测试" }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: "删除 桌面测试" }),
+  ).toBeDisabled();
+  const locked = page.getByRole("button", { name: "子频道", exact: true });
+  await expect(locked).toBeDisabled();
+  await expect(locked).toHaveAttribute("title", "此频道需要密码，暂不支持加入");
+  const target = page.getByRole("button", { name: "工作间", exact: true });
+  const before = await target.boundingBox();
+  await target.click();
+  await expect(page.getByRole("status")).toHaveText(
+    "正在加入 工作间，等待服务器确认",
+  );
+  await expect(
+    page.getByRole("heading", { name: "大厅", exact: true, level: 1 }),
+  ).toBeVisible();
+  await expect(target).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: "大厅", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: "断开 桌面测试" }),
+  ).toBeEnabled();
+  expect(await target.boundingBox()).toEqual(before);
+  await page.screenshot({
+    path: testInfo.outputPath("channel-switch-desktop.png"),
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: "展开侧栏" }).click();
+  await expect(target).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("channel-switch-mobile-sidebar.png"),
+  });
+  await page.getByRole("button", { name: "关闭侧栏" }).click();
+  await page.screenshot({
+    path: testInfo.outputPath("channel-switch-mobile.png"),
+  });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBeTruthy();
+  await desktopControl(page, "finishSwitch");
+  await expect(
+    page.getByRole("heading", { name: "工作间", exact: true, level: 1 }),
+  ).toBeVisible();
+  await expect(page.getByRole("status")).toHaveCount(0);
+  await expect(
+    page.getByRole("textbox", { name: "消息", exact: true }),
+  ).toBeDisabled();
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { desktopBridgeCalls: { select: string[] } })
+          .desktopBridgeCalls.select,
+    ),
+  ).toEqual(["workshop"]);
+});
+
+test("permission denial preserves the actual channel and permits a retry", async ({
+  page,
+}, testInfo) => {
+  await connectedDesktop(page);
+  await page.getByRole("button", { name: "工作间", exact: true }).click();
+  await desktopControl(page, "finishSwitch", "加入频道失败：权限不足（2568）");
+  await expect(page.getByRole("alert")).toHaveText(
+    "加入频道失败：权限不足（2568）",
+  );
+  await expect(
+    page.getByRole("heading", { name: "大厅", exact: true, level: 1 }),
+  ).toBeVisible();
+  await expect(page.locator(".connection-label")).toHaveText("桌面测试 · 在线");
+  await expect(
+    page.locator(".details-panel").getByText("RemoteUser", { exact: true }),
+  ).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("channel-permission-error.png"),
+  });
+  await page.getByRole("button", { name: "工作间", exact: true }).click();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await desktopControl(page, "finishSwitch");
+  await expect(
+    page.getByRole("heading", { name: "工作间", exact: true, level: 1 }),
+  ).toBeVisible();
+});
+
+test("late polling cannot erase a pending switch or restore a disconnected session", async ({
+  page,
+}) => {
+  await connectedDesktop(page);
+  await desktopControl(page, "holdNextPoll");
+  await expect.poll(() => desktopControl(page, "hasHeldPoll")).toBe(true);
+  await page.getByRole("button", { name: "工作间", exact: true }).click();
+  await desktopControl(page, "releasePoll");
+  await expect(page.getByRole("status")).toBeVisible();
+  await desktopControl(page, "holdNextPoll");
+  await expect.poll(() => desktopControl(page, "hasHeldPoll")).toBe(true);
+  await page.getByRole("button", { name: "断开 桌面测试" }).click();
+  await expect(page.getByRole("heading", { name: "正在断开" })).toBeVisible();
+  await desktopControl(page, "releasePoll");
+  await expect(page.getByRole("heading", { name: "正在断开" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "还没有加入会话" }),
+  ).toBeVisible();
+  await expect(page.getByRole("status")).toHaveCount(0);
+});
+
+test("disconnect remains available while the channel bridge response is delayed", async ({
+  page,
+}) => {
+  await connectedDesktop(page);
+  await desktopControl(page, "holdNextSelect");
+  await page.getByRole("button", { name: "工作间", exact: true }).click();
+  await expect.poll(() => desktopControl(page, "hasHeldSelect")).toBe(true);
+  await expect(
+    page.getByRole("button", { name: "断开 桌面测试" }),
+  ).toBeEnabled();
+  await page.getByRole("button", { name: "断开 桌面测试" }).click();
+  await expect(page.getByRole("heading", { name: "正在断开" })).toBeVisible();
+  await desktopControl(page, "releaseSelect");
+  await expect(page.getByRole("heading", { name: "正在断开" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "还没有加入会话" }),
+  ).toBeVisible();
+  await expect(page.getByRole("status")).toHaveCount(0);
 });
 
 test("appearance persists and mobile navigation opens", async ({ page }) => {

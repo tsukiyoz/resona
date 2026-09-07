@@ -35,10 +35,13 @@ func TestInitialSnapshotAndOrderedUpdates(t *testing.T) {
 	}
 	s.Channels[1].Name = "mutated"
 	s.Users[0].Nickname = "mutated"
-	apply("notifychanneledited", map[string]string{"cid": "20", "channel_topic": "new topic"})
+	apply("notifychanneledited", map[string]string{"cid": "20", "channel_topic": "new topic", "channel_flag_password": "1"})
 	apply("notifyclientmoved", map[string]string{"clid": "7", "ctid": "10"})
 	apply("notifyclientupdated", map[string]string{"clid": "7", "client_nickname": "new name"})
 	s = r.snapshot()
+	if !s.Channels[1].PasswordRequired {
+		t.Fatal("password flag was not updated")
+	}
 	if s.ChannelID != "10" || s.Channels[1].Name != `Music\sRoom` || s.Channels[1].Members != 1 || s.Users[0].Nickname != "new name" {
 		t.Fatalf("partial update lost fields: %+v", s)
 	}

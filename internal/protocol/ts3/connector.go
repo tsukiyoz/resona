@@ -1,4 +1,4 @@
-// Package ts3 adapts the pinned TS3 transport to Resona's read-only sessions.
+// Package ts3 adapts the pinned TS3 transport to Resona's client sessions.
 package ts3
 
 import (
@@ -43,13 +43,15 @@ func (c *Connector) Connect(ctx context.Context, profile client.ServerProfile, p
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	s := &connection{state: newReducer(identityUID(id)), update: update, ready: make(chan struct{}), ended: make(chan struct{})}
+	lifetime, stop := context.WithCancel(context.Background())
+	s := &connection{state: newReducer(identityUID(id)), update: update, ready: make(chan struct{}), ended: make(chan struct{}), changed: make(chan struct{}), commandGate: make(chan struct{}, 1), lifetime: lifetime, stop: stop}
 	s.client = teamspeak.NewClient(id, endpoint, profile.Nickname,
 		teamspeak.WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
 		teamspeak.WithResolver(fixedResolver(endpoint)),
 		teamspeak.WithServerPassword(password),
 		teamspeak.WithCommandObserver(s.observe),
 		teamspeak.WithCommandMiddleware(muteOutput))
+	s.execCommand = s.client.ExecCommandContext
 	s.client.OnDisconnected(func(error) { s.disconnected() })
 	// The endpoint is already numeric, so Connect does no blocking DNS work.
 	if err := s.client.Connect(); err != nil {
@@ -78,22 +80,30 @@ func (c *Connector) Connect(ctx context.Context, profile client.ServerProfile, p
 			_ = s.Close()
 			return nil, errors.New(message)
 		}
+		s.startMemberSubscription()
 		return s, nil
 	}
 }
 
 type connection struct {
-	mu        sync.Mutex
-	client    *teamspeak.Client
-	state     *reducer
-	update    func(client.RemoteState)
-	ready     chan struct{}
-	ended     chan struct{}
-	readyOnce sync.Once
-	endOnce   sync.Once
-	closeOnce sync.Once
-	closing   bool
-	closeErr  error
+	mu               sync.Mutex
+	client           *teamspeak.Client
+	state            *reducer
+	update           func(client.RemoteState)
+	ready            chan struct{}
+	ended            chan struct{}
+	readyOnce        sync.Once
+	endOnce          sync.Once
+	closeOnce        sync.Once
+	closing          bool
+	closeErr         error
+	changed          chan struct{}
+	commandGate      chan struct{}
+	lifetime         context.Context
+	stop             context.CancelFunc
+	execCommand      func(context.Context, string) error
+	subscribeStarted bool
+	background       sync.WaitGroup
 }
 
 func (s *connection) observe(cmd teamspeak.IncomingCommand) {
@@ -102,7 +112,10 @@ func (s *connection) observe(cmd teamspeak.IncomingCommand) {
 	if s.closing || s.state.state.Closed || !s.state.apply(cmd) {
 		return
 	}
+	close(s.changed)
+	s.changed = make(chan struct{})
 	if s.state.state.Closed {
+		s.stop()
 		s.endOnce.Do(func() { close(s.ended) })
 		s.update(s.state.snapshot())
 		return
@@ -120,7 +133,9 @@ func (s *connection) disconnected() {
 		return
 	}
 	s.state.state.Closed = true
+	s.state.state.Events = nil
 	s.state.state.Error = "与服务器的连接已断开"
+	s.stop()
 	s.endOnce.Do(func() { close(s.ended) })
 	s.update(s.state.snapshot())
 }
@@ -129,10 +144,81 @@ func (s *connection) Close() error {
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
 		s.closing = true
+		s.stop()
 		s.mu.Unlock()
 		s.closeErr = s.client.Disconnect()
+		s.background.Wait()
 	})
 	return s.closeErr
+}
+
+// MoveChannel waits for both command acceptance and the observed own membership.
+// It only moves this connection, never an arbitrary client ID supplied by the UI.
+func (s *connection) MoveChannel(ctx context.Context, id string) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stop := context.AfterFunc(s.lifetime, cancel)
+	defer stop()
+	select {
+	case s.commandGate <- struct{}{}:
+		defer func() { <-s.commandGate }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	channel, exists := s.state.channels[id]
+	selfID := s.state.state.SelfID
+	current := s.state.users[selfID].ChannelID
+	closed := s.closing || s.state.state.Closed
+	s.mu.Unlock()
+	if closed {
+		return context.Canceled
+	}
+	if !exists || !validID(id) || !validID(selfID) {
+		return errors.New("频道不存在")
+	}
+	if channel.PasswordRequired {
+		return client.ErrChannelPasswordRequired
+	}
+	if current == id {
+		return nil
+	}
+	cmd := commands.BuildCommand("clientmove", map[string]string{"clid": selfID, "cid": id})
+	if err := s.execCommand(ctx, cmd); err != nil {
+		var commandError *teamspeak.CommandError
+		if errors.As(err, &commandError) {
+			switch commandError.ID {
+			case 0x0a08:
+				return client.ErrChannelPermissionDenied
+			case 0x030d:
+				return client.ErrChannelPasswordRequired
+			}
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return errors.New("服务器拒绝了频道切换")
+	}
+	for {
+		s.mu.Lock()
+		current, changed := s.state.users[selfID].ChannelID, s.changed
+		closed := s.closing || s.state.state.Closed
+		s.mu.Unlock()
+		if closed {
+			return context.Canceled
+		}
+		if current == id {
+			return nil
+		}
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 func muteOutput(next func(string) error) func(string) error {
