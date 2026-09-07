@@ -2,6 +2,7 @@
 package client
 
 import (
+	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
@@ -22,9 +23,14 @@ type ServerProfile struct {
 }
 
 type Session struct {
-	Mode      string `json:"mode"`
-	ChannelID string `json:"channelID"`
-	Nickname  string `json:"nickname"`
+	Mode        string `json:"mode"`
+	ChannelID   string `json:"channelID"`
+	Nickname    string `json:"nickname"`
+	ServerID    string `json:"serverID"`
+	ServerName  string `json:"serverName"`
+	IdentityUID string `json:"identityUID"`
+	SelfID      string `json:"selfID"`
+	Error       string `json:"error"`
 }
 
 type Channel struct {
@@ -32,6 +38,15 @@ type Channel struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Members     int    `json:"members"`
+	ParentID    string `json:"parentID"`
+	Order       string `json:"order"`
+}
+
+type User struct {
+	ID        string `json:"id"`
+	Nickname  string `json:"nickname"`
+	ChannelID string `json:"channelID"`
+	Self      bool   `json:"self"`
 }
 
 type Message struct {
@@ -46,6 +61,7 @@ type Workspace struct {
 	Servers  []ServerProfile `json:"servers"`
 	Session  Session         `json:"session"`
 	Channels []Channel       `json:"channels"`
+	Users    []User          `json:"users"`
 	Messages []Message       `json:"messages"`
 }
 
@@ -55,12 +71,26 @@ type ProfileStore interface {
 }
 
 type Service struct {
-	mu    sync.Mutex
-	store ProfileStore
-	state Workspace
+	mu          sync.Mutex
+	lifecycleMu sync.Mutex
+	store       ProfileStore
+	connector   RemoteConnector
+	state       Workspace
+
+	connection     RemoteConnection
+	connectCancel  context.CancelFunc
+	connectDone    chan struct{}
+	cleanupWG      sync.WaitGroup
+	generation     uint64
+	connectTimeout time.Duration
+	shutdown       bool
 }
 
 func New(store ProfileStore) (*Service, error) {
+	return NewWithConnector(store, nil)
+}
+
+func NewWithConnector(store ProfileStore, connector RemoteConnector) (*Service, error) {
 	profiles, err := store.Load()
 	if err != nil {
 		return nil, fmt.Errorf("load server profiles: %w", err)
@@ -68,9 +98,9 @@ func New(store ProfileStore) (*Service, error) {
 	if profiles == nil {
 		profiles = []ServerProfile{}
 	}
-	return &Service{store: store, state: Workspace{
+	return &Service{store: store, connector: connector, connectTimeout: 30 * time.Second, state: Workspace{
 		Servers: profiles, Session: Session{Mode: "offline", Nickname: "Resona"},
-		Channels: []Channel{}, Messages: []Message{},
+		Channels: []Channel{}, Users: []User{}, Messages: []Message{},
 	}}, nil
 }
 
@@ -94,6 +124,9 @@ func (s *Service) SaveServer(profile ServerProfile) (Workspace, error) {
 		profile.ID = rand.Text()
 		profiles = append(profiles, profile)
 	} else {
+		if s.remoteActiveLocked() && s.state.Session.ServerID == profile.ID {
+			return Workspace{}, errors.New("请先断开当前服务器，再编辑该书签")
+		}
 		found := false
 		for i := range profiles {
 			if profiles[i].ID == profile.ID {
@@ -116,6 +149,9 @@ func (s *Service) SaveServer(profile ServerProfile) (Workspace, error) {
 func (s *Service) DeleteServer(id string) (Workspace, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.remoteActiveLocked() && s.state.Session.ServerID == id {
+		return Workspace{}, errors.New("请先断开当前服务器，再删除该书签")
+	}
 	profiles := make([]ServerProfile, 0, len(s.state.Servers))
 	found := false
 	for _, profile := range s.state.Servers {
@@ -138,6 +174,9 @@ func (s *Service) DeleteServer(id string) (Workspace, error) {
 func (s *Service) OpenPreview() (Workspace, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.remoteActiveLocked() {
+		return Workspace{}, errors.New("请先断开当前服务器，再打开本地预览")
+	}
 	if s.state.Session.Mode == "preview" {
 		return s.snapshot(), nil
 	}
@@ -148,14 +187,19 @@ func (s *Service) OpenPreview() (Workspace, error) {
 		{ID: "workshop", Name: "工作间", Description: "本地预览", Members: 0},
 	}
 	s.state.Messages = []Message{}
+	s.state.Users = []User{{ID: "preview-self", Nickname: "Resona", ChannelID: "lobby", Self: true}}
 	return s.snapshot(), nil
 }
 
 func (s *Service) LeavePreview() (Workspace, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.remoteActiveLocked() {
+		return Workspace{}, errors.New("当前是远程会话，不能退出本地预览")
+	}
 	s.state.Session = Session{Mode: "offline", Nickname: "Resona"}
 	s.state.Channels = []Channel{}
+	s.state.Users = []User{}
 	s.state.Messages = []Message{}
 	return s.snapshot(), nil
 }
@@ -164,7 +208,10 @@ func (s *Service) SelectChannel(id string) (Workspace, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.state.Session.Mode != "preview" {
-		return Workspace{}, errors.New("open local preview before selecting a channel")
+		if s.remoteActiveLocked() {
+			return Workspace{}, errors.New("真实服务器当前为只读模式，暂不支持切换频道")
+		}
+		return Workspace{}, errors.New("请先打开本地预览，再选择频道")
 	}
 	found := false
 	for _, channel := range s.state.Channels {
@@ -174,7 +221,7 @@ func (s *Service) SelectChannel(id string) (Workspace, error) {
 		}
 	}
 	if !found {
-		return Workspace{}, errors.New("channel does not exist")
+		return Workspace{}, errors.New("频道不存在")
 	}
 	for i := range s.state.Channels {
 		s.state.Channels[i].Members = 0
@@ -183,6 +230,11 @@ func (s *Service) SelectChannel(id string) (Workspace, error) {
 		}
 	}
 	s.state.Session.ChannelID = id
+	for i := range s.state.Users {
+		if s.state.Users[i].Self {
+			s.state.Users[i].ChannelID = id
+		}
+	}
 	return s.snapshot(), nil
 }
 
@@ -190,7 +242,10 @@ func (s *Service) SendMessage(text string) (Workspace, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.state.Session.Mode != "preview" {
-		return Workspace{}, errors.New("messages are available only in local preview")
+		if s.remoteActiveLocked() {
+			return Workspace{}, errors.New("真实服务器当前为只读模式，暂不支持发送消息")
+		}
+		return Workspace{}, errors.New("请先打开本地预览，再发送消息")
 	}
 	text = strings.TrimSpace(text)
 	if !utf8.ValidString(text) || text == "" || utf8.RuneCountInString(text) > 2000 {
@@ -210,7 +265,8 @@ func (s *Service) SendMessage(text string) (Workspace, error) {
 func (s *Service) snapshot() Workspace {
 	return Workspace{
 		Servers: append([]ServerProfile{}, s.state.Servers...), Session: s.state.Session,
-		Channels: append([]Channel{}, s.state.Channels...), Messages: append([]Message{}, s.state.Messages...),
+		Channels: append([]Channel{}, s.state.Channels...), Users: append([]User{}, s.state.Users...),
+		Messages: append([]Message{}, s.state.Messages...),
 	}
 }
 

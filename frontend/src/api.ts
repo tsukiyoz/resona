@@ -9,6 +9,14 @@ export interface Channel {
   name: string;
   description: string;
   members: number;
+  parentID: string;
+  order: string;
+}
+export interface User {
+  id: string;
+  nickname: string;
+  channelID: string;
+  self: boolean;
 }
 export interface Message {
   id: string;
@@ -19,8 +27,24 @@ export interface Message {
 }
 export interface Workspace {
   servers: ServerProfile[];
-  session: { mode: "offline" | "preview"; channelID: string; nickname: string };
+  session: {
+    mode:
+      | "offline"
+      | "preview"
+      | "connecting"
+      | "connected"
+      | "failed"
+      | "disconnecting";
+    channelID: string;
+    nickname: string;
+    serverID: string;
+    serverName: string;
+    identityUID: string;
+    selfID: string;
+    error: string;
+  };
   channels: Channel[];
+  users: User[];
   messages: Message[];
 }
 interface Bridge {
@@ -31,6 +55,8 @@ interface Bridge {
   LeavePreview(): Promise<Workspace>;
   SelectChannel(id: string): Promise<Workspace>;
   SendMessage(text: string): Promise<Workspace>;
+  ConnectServer(id: string, password: string): Promise<Workspace>;
+  DisconnectServer(): Promise<Workspace>;
 }
 declare global {
   interface Window {
@@ -41,14 +67,45 @@ declare global {
 const storageKey = "resona.browser.workspace.v1";
 export const browserPreview = !window.go?.main?.App;
 const channels: Channel[] = [
-  { id: "lobby", name: "大厅", description: "本地预览", members: 1 },
-  { id: "music", name: "音乐", description: "本地预览", members: 0 },
-  { id: "workshop", name: "工作间", description: "本地预览", members: 0 },
+  {
+    id: "lobby",
+    name: "大厅",
+    description: "本地预览",
+    members: 1,
+    parentID: "",
+    order: "0",
+  },
+  {
+    id: "music",
+    name: "音乐",
+    description: "本地预览",
+    members: 0,
+    parentID: "",
+    order: "lobby",
+  },
+  {
+    id: "workshop",
+    name: "工作间",
+    description: "本地预览",
+    members: 0,
+    parentID: "",
+    order: "music",
+  },
 ];
 const emptyWorkspace = (): Workspace => ({
   servers: [],
-  session: { mode: "offline", channelID: "", nickname: "Resona" },
+  session: {
+    mode: "offline",
+    channelID: "",
+    nickname: "Resona",
+    serverID: "",
+    serverName: "",
+    identityUID: "",
+    selfID: "",
+    error: "",
+  },
   channels: [],
+  users: [],
   messages: [],
 });
 let local = emptyWorkspace();
@@ -161,13 +218,18 @@ const browserBridge: Bridge = {
   },
   async OpenPreview() {
     if (local.session.mode === "preview") return result();
-    local.session = { mode: "preview", channelID: "lobby", nickname: "Resona" };
+    local.session = {
+      ...emptyWorkspace().session,
+      mode: "preview",
+      channelID: "lobby",
+      nickname: "Resona",
+    };
     local.channels = structuredClone(channels);
     local.messages = [];
     return result();
   },
   async LeavePreview() {
-    local.session = { mode: "offline", channelID: "", nickname: "Resona" };
+    local.session = emptyWorkspace().session;
     local.channels = [];
     local.messages = [];
     return result();
@@ -200,8 +262,64 @@ const browserBridge: Bridge = {
     local.messages = local.messages.slice(-500);
     return result();
   },
+  async ConnectServer() {
+    throw new Error("真实连接仅在桌面应用中可用");
+  },
+  async DisconnectServer() {
+    throw new Error("真实连接仅在桌面应用中可用");
+  },
 };
-export const api: Bridge = window.go?.main?.App ?? browserBridge;
+
+function normalizeWorkspace(value: Workspace): Workspace {
+  const fallback = emptyWorkspace();
+  const session = value?.session ?? fallback.session;
+  return {
+    servers: value?.servers ?? [],
+    session: {
+      mode: session.mode ?? "offline",
+      channelID: session.channelID ?? "",
+      nickname: session.nickname ?? "",
+      serverID: session.serverID ?? "",
+      serverName: session.serverName ?? "",
+      identityUID: session.identityUID ?? "",
+      selfID: session.selfID ?? "",
+      error: session.error ?? "",
+    },
+    channels: (value?.channels ?? []).map((channel) => ({
+      ...channel,
+      description: channel.description ?? "",
+      members: channel.members ?? 0,
+      parentID: channel.parentID ?? "",
+      order: channel.order ?? "",
+    })),
+    users: value?.users ?? [],
+    messages: value?.messages ?? [],
+  };
+}
+
+function normalizeBridge(bridge: Bridge): Bridge {
+  return {
+    GetWorkspace: async () => normalizeWorkspace(await bridge.GetWorkspace()),
+    SaveServer: async (server) =>
+      normalizeWorkspace(await bridge.SaveServer(server)),
+    DeleteServer: async (id) =>
+      normalizeWorkspace(await bridge.DeleteServer(id)),
+    OpenPreview: async () => normalizeWorkspace(await bridge.OpenPreview()),
+    LeavePreview: async () => normalizeWorkspace(await bridge.LeavePreview()),
+    SelectChannel: async (id) =>
+      normalizeWorkspace(await bridge.SelectChannel(id)),
+    SendMessage: async (message) =>
+      normalizeWorkspace(await bridge.SendMessage(message)),
+    ConnectServer: async (id, password) =>
+      normalizeWorkspace(await bridge.ConnectServer(id, password)),
+    DisconnectServer: async () =>
+      normalizeWorkspace(await bridge.DisconnectServer()),
+  };
+}
+
+export const api: Bridge = normalizeBridge(
+  window.go?.main?.App ?? browserBridge,
+);
 export function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   return typeof error === "string" ? error : "操作失败，请重试。";

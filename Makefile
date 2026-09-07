@@ -1,6 +1,6 @@
 WAILS := go run github.com/wailsapp/wails/v2/cmd/wails@v2.15.0
 
-.PHONY: dev build frontend test
+.PHONY: dev build frontend test test-protocol
 
 dev:
 	$(WAILS) dev
@@ -13,3 +13,6 @@ frontend:
 
 test:
 	go test ./internal/...
+
+test-protocol:
+	cd third_party/teamspeak-go && go test -race ./...

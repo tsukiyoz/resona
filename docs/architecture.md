@@ -1,6 +1,6 @@
 # 架构设计
 
-日期：2026-09-07。当前实现范围是 M0；以下明确标注未来组件。
+日期：2026-09-07。当前实现范围为 M0 和 M1 的只读连接切片；以下明确标注未来组件。
 
 ## 产品与部署边界
 
@@ -13,7 +13,9 @@ Resona 首先是本地桌面 GUI 应用。使用 Wails v2 承载 React/TypeScrip
 | 位置 | 职责 | 依赖限制 |
 | --- | --- | --- |
 | `main.go` / `app.go` | 窗口、生命周期、Go 与 GUI 桥接 | 不实现 TS3 协议 |
-| `internal/client` | 本地会话、预览频道和消息、输入校验 | 不导入 Wails、React 或 HTTP |
+| `internal/client` | 本地预览、真实连接生命周期、状态快照、输入校验 | 不导入 Wails、React 或具体协议库 |
+| `internal/protocol/ts3` | 持久身份、TS3 连接、服务器推送的有序归并 | 实现 client.RemoteConnector，不向 GUI 暴露上游类型 |
+| `third_party/teamspeak-go` | 固定版本上游快照与最小接收观察接口补丁 | 保留上游模块、MIT 许可与来源说明 |
 | `internal` 中的配置存储包 | 书签加载和原子保存 | 不保存密码、身份密钥 |
 | `frontend/src` | GUI、视图状态和错误呈现 | 经集中 bridge 调用核心 |
 | `frontend` 浏览器适配 | 前端开发预览 | 不声称真实 TS3 接入 |
@@ -25,12 +27,12 @@ M0 操作流：界面命令 -> Wails 绑定 -> Go 应用服务 -> 校验 / 存�
 ## 数据与会话
 
 - `ServerProfile`：ID、显示名、地址、昵称。地址校验只代表输入有效，不代表服务器可达或协议兼容。
-- `Workspace`：服务器书签、会话、频道、消息。
-- 会话模式仅有 `offline` 和 `preview`。预览不会伪装成 `connected`。
+- `Workspace`：服务器书签、会话、频道、可见成员、消息。
+- 会话模式：`offline`、`preview`、`connecting`、`connected`、`disconnecting`、`failed`。预览不会伪装成 `connected`。
 - 预览仅当前频道包含本人；没有假远端用户、机器人回复或网络延迟。
 - 预览消息只保存在进程内存。书签独立保存，退出预览不会删除书签。
 
-真实接入时新增显式状态机：disconnected、connecting、connected、reconnecting、disconnecting、failed。请求取消与资源释放属于会话所有者；窗口销毁应终止会话和音频资源。
+连接有 30 秒超时；取消、断开和窗口退出由会话所有者回收资源。每次连接分配 generation，迟到事件不能改写新的会话。首次 `initserver`、`channellistfinished` 和本人所在频道信息到齐才完成连接；频道与成员通过同步观察接口按接收顺序归并。GUI 每秒读取快照，音频不经过此轮询。自动重连留待后续。
 
 ## 配置与错误
 
@@ -38,7 +40,7 @@ M0 操作流：界面命令 -> Wails 绑定 -> Go 应用服务 -> 校验 / 存�
 
 读取失败或 JSON 损坏必须返回错误，保留原文件，不能当作空配置覆盖。表单错误、存储错误、未来网络错误由 GUI 显示；操作失败时保留用户输入。
 
-TS3 身份密钥和密码尚未实现。接入前另立 ADR，选择 OS keychain / credential store 或明确的安全文件策略。
+TS3 身份密钥保存为同目录 `identity.key`，权限 0600，完整临时文件通过不覆盖的原子链接发布；并发创建复用胜出的身份，损坏文件报错且保留。密码只存在连接流程内存，不进入书签或浏览器存储。当前尚未接入系统钥匙串，详见 ADR-0005。
 
 ## 未来协议与音频边界
 

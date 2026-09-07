@@ -20,6 +20,7 @@ func main() {
 		BackgroundColour: &options.RGBA{R: 20, G: 24, B: 26, A: 255},
 		AssetServer:      &assetserver.Options{Assets: assets},
 		Bind:             []interface{}{app},
+		OnShutdown:       app.shutdown,
 	})
 	if err != nil {
 		log.Fatal(err)

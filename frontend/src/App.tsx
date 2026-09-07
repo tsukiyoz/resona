@@ -12,6 +12,8 @@ import {
   ChevronDown,
   Headphones,
   Info,
+  LogIn,
+  LogOut,
   Menu,
   MessageSquare,
   MicOff,
@@ -20,6 +22,7 @@ import {
   Pencil,
   Plus,
   Radio,
+  RefreshCw,
   Send,
   Server,
   Settings,
@@ -34,6 +37,7 @@ import {
   api,
   browserPreview,
   errorMessage,
+  type Channel,
   type ServerProfile,
   type Workspace,
 } from "./api";
@@ -77,6 +81,77 @@ const newServer = (): ServerProfile => ({
   nickname: "Resona",
 });
 
+const remoteModes = new Set([
+  "connecting",
+  "connected",
+  "failed",
+  "disconnecting",
+]);
+const activeModes = new Set(["connecting", "connected", "disconnecting"]);
+const sessionLabels: Record<Workspace["session"]["mode"], string> = {
+  offline: "离线",
+  preview: "本地预览",
+  connecting: "正在连接",
+  connected: "在线",
+  failed: "连接失败",
+  disconnecting: "正在断开",
+};
+
+function orderedChannels(
+  channels: Channel[],
+): { channel: Channel; depth: number }[] {
+  const ids = new Set(channels.map((channel) => channel.id));
+  const groups = new Map<string, Channel[]>();
+  for (const channel of channels) {
+    const parent =
+      channel.parentID && ids.has(channel.parentID) ? channel.parentID : "";
+    groups.set(parent, [...(groups.get(parent) ?? []), channel]);
+  }
+  const orderSiblings = (siblings: Channel[]): Channel[] => {
+    const byPredecessor = new Map<string, Channel[]>();
+    for (const channel of siblings) {
+      const predecessor = channel.order || "0";
+      byPredecessor.set(predecessor, [
+        ...(byPredecessor.get(predecessor) ?? []),
+        channel,
+      ]);
+    }
+    const result: Channel[] = [];
+    const seen = new Set<string>();
+    const appendAfter = (predecessor: string) => {
+      for (const channel of byPredecessor.get(predecessor) ?? []) {
+        if (seen.has(channel.id)) continue;
+        seen.add(channel.id);
+        result.push(channel);
+        appendAfter(channel.id);
+      }
+    };
+    appendAfter("0");
+    for (const channel of siblings) {
+      if (seen.has(channel.id)) continue;
+      seen.add(channel.id);
+      result.push(channel);
+      appendAfter(channel.id);
+    }
+    return result;
+  };
+  const result: { channel: Channel; depth: number }[] = [];
+  const seen = new Set<string>();
+  const visit = (parentID: string, depth: number) => {
+    for (const channel of orderSiblings(groups.get(parentID) ?? [])) {
+      if (seen.has(channel.id)) continue;
+      seen.add(channel.id);
+      result.push({ channel, depth });
+      visit(channel.id, depth + 1);
+    }
+  };
+  visit("", 0);
+  for (const channel of channels) {
+    if (!seen.has(channel.id)) result.push({ channel, depth: 0 });
+  }
+  return result;
+}
+
 export default function App() {
   const [workspace, setWorkspace] = useState<Workspace>();
   const [pending, setPending] = useState(false);
@@ -84,6 +159,9 @@ export default function App() {
   const [page, setPage] = useState<"chat" | "settings">("chat");
   const [editing, setEditing] = useState<ServerProfile | null>(null);
   const [deleting, setDeleting] = useState<ServerProfile | null>(null);
+  const [connectingTo, setConnectingTo] = useState<ServerProfile | null>(null);
+  const [password, setPassword] = useState("");
+  const [connectError, setConnectError] = useState("");
   const [selectedServer, setSelectedServer] = useState("");
   const [draft, setDraft] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -94,19 +172,79 @@ export default function App() {
     () => readPreference("resona.compact", "false") === "true",
   );
   const messagesEnd = useRef<HTMLDivElement>(null);
-  const isPreview = workspace?.session.mode === "preview";
+  const pendingRef = useRef(false);
+  const workspaceRef = useRef<Workspace>();
+  const actionRevision = useRef(0);
+  const pollError = useRef("");
+  const mode = workspace?.session.mode ?? "offline";
+  const isPreview = mode === "preview";
+  const isConnected = mode === "connected";
+  const isRemote = remoteModes.has(mode);
   const channel = workspace?.channels.find(
     (c) => c.id === workspace.session.channelID,
   );
   const messages =
     workspace?.messages.filter((m) => m.channelID === channel?.id) ?? [];
   const server = workspace?.servers.find((s) => s.id === selectedServer);
+  const serverIsCurrent =
+    !!server && workspace?.session.serverID === server.id && isRemote;
+  const anotherSessionIsActive =
+    !!server &&
+    activeModes.has(mode) &&
+    workspace?.session.serverID !== server.id;
+  const channelUsers =
+    workspace?.users.filter((user) => user.channelID === channel?.id) ?? [];
+  const channels = orderedChannels(workspace?.channels ?? []);
+  const sessionLabel = sessionLabels[mode];
+  const statusClass =
+    mode === "connected"
+      ? "online"
+      : mode === "preview"
+        ? "preview"
+        : mode === "failed"
+          ? "failed"
+          : mode === "connecting" || mode === "disconnecting"
+            ? "working"
+            : "";
 
   useEffect(() => {
-    api
-      .GetWorkspace()
-      .then(setWorkspace)
-      .catch((e) => setError(errorMessage(e)));
+    let cancelled = false;
+    let timer = 0;
+    const refresh = async () => {
+      if (!pendingRef.current) {
+        const revision = actionRevision.current;
+        try {
+          const next = await api.GetWorkspace();
+          if (
+            !cancelled &&
+            revision === actionRevision.current &&
+            !pendingRef.current
+          ) {
+            workspaceRef.current = next;
+            setWorkspace(next);
+            pollError.current = "";
+            if (next.session.serverID)
+              setSelectedServer((current) => current || next.session.serverID);
+          }
+        } catch (e) {
+          const message = errorMessage(e);
+          if (
+            !cancelled &&
+            !workspaceRef.current &&
+            pollError.current !== message
+          ) {
+            pollError.current = message;
+            setError(message);
+          }
+        }
+      }
+      if (!cancelled) timer = window.setTimeout(refresh, 1000);
+    };
+    void refresh();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
   }, []);
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -126,6 +264,9 @@ export default function App() {
       if (e.key === "Escape" && !pending) {
         setEditing(null);
         setDeleting(null);
+        setConnectingTo(null);
+        setPassword("");
+        setConnectError("");
         setSidebarOpen(false);
       }
     };
@@ -134,15 +275,20 @@ export default function App() {
   }, [pending]);
 
   async function run(action: () => Promise<Workspace>, after?: () => void) {
-    if (pending) return;
+    if (pendingRef.current) return;
+    actionRevision.current += 1;
+    pendingRef.current = true;
     setPending(true);
     setError("");
     try {
-      setWorkspace(await action());
+      const next = await action();
+      workspaceRef.current = next;
+      setWorkspace(next);
       after?.();
     } catch (e) {
       setError(errorMessage(e));
     } finally {
+      pendingRef.current = false;
       setPending(false);
     }
   }
@@ -161,6 +307,49 @@ export default function App() {
         setPage("chat");
         setDraft("");
       },
+    );
+  }
+  function openConnect(target: ServerProfile) {
+    setPassword("");
+    setConnectError("");
+    setConnectingTo(target);
+  }
+  function closeConnect() {
+    if (pendingRef.current) return;
+    setPassword("");
+    setConnectError("");
+    setConnectingTo(null);
+  }
+  async function connect(event: FormEvent) {
+    event.preventDefault();
+    if (!connectingTo || pendingRef.current) return;
+    const target = connectingTo;
+    const submittedPassword = password;
+    setPassword("");
+    setConnectError("");
+    setError("");
+    actionRevision.current += 1;
+    pendingRef.current = true;
+    setPending(true);
+    try {
+      const next = await api.ConnectServer(target.id, submittedPassword);
+      workspaceRef.current = next;
+      setWorkspace(next);
+      setConnectingTo(null);
+      setSelectedServer(target.id);
+      setPage("chat");
+      setSidebarOpen(false);
+    } catch (e) {
+      setConnectError(errorMessage(e));
+    } finally {
+      pendingRef.current = false;
+      setPending(false);
+    }
+  }
+  function disconnect() {
+    void run(
+      () => api.DisconnectServer(),
+      () => setDraft(""),
     );
   }
 
@@ -244,9 +433,15 @@ export default function App() {
                   </span>
                   <span className="row-copy">
                     <strong>{s.name}</strong>
-                    <small>未连接</small>
+                    <small>
+                      {workspace?.session.serverID === s.id && isRemote
+                        ? sessionLabel
+                        : "未连接"}
+                    </small>
                   </span>
-                  <span className="status-dot" />
+                  <span
+                    className={`status-dot ${workspace?.session.serverID === s.id ? statusClass : ""}`}
+                  />
                 </button>
               ))
             ) : (
@@ -263,34 +458,86 @@ export default function App() {
             )}
           </div>
           {server && (
-            <div className="bookmark-actions">
-              <span title={server.address}>{server.address}</span>
-              <IconButton
-                label={`编辑 ${server.name}`}
-                onClick={() => setEditing({ ...server })}
-              >
-                <Pencil size={14} />
-              </IconButton>
-              <IconButton
-                label={`删除 ${server.name}`}
-                onClick={() => setDeleting(server)}
-              >
-                <Trash2 size={14} />
-              </IconButton>
-            </div>
+            <>
+              <div className="bookmark-actions">
+                <span title={server.address}>{server.address}</span>
+                <IconButton
+                  label={`编辑 ${server.name}`}
+                  onClick={() => setEditing({ ...server })}
+                >
+                  <Pencil size={14} />
+                </IconButton>
+                <IconButton
+                  label={`删除 ${server.name}`}
+                  onClick={() => setDeleting(server)}
+                >
+                  <Trash2 size={14} />
+                </IconButton>
+              </div>
+              <div className="server-session-actions">
+                {serverIsCurrent && mode === "connected" ? (
+                  <button
+                    className="secondary-button compact-button"
+                    aria-label={`断开 ${server.name}`}
+                    disabled={pending}
+                    onClick={disconnect}
+                  >
+                    <LogOut size={14} />
+                    断开
+                  </button>
+                ) : serverIsCurrent && mode === "connecting" ? (
+                  <button
+                    className="secondary-button compact-button"
+                    aria-label={`取消连接 ${server.name}`}
+                    disabled={pending}
+                    onClick={disconnect}
+                  >
+                    <X size={14} />
+                    取消连接
+                  </button>
+                ) : serverIsCurrent && mode === "disconnecting" ? (
+                  <button className="secondary-button compact-button" disabled>
+                    <RefreshCw size={14} />
+                    断开中…
+                  </button>
+                ) : (
+                  <button
+                    className="primary-button compact-button"
+                    aria-label={`${mode === "failed" && serverIsCurrent ? "重新连接" : "连接"} ${server.name}`}
+                    title={
+                      browserPreview
+                        ? "在桌面应用中连接"
+                        : anotherSessionIsActive
+                          ? "请先断开当前服务器"
+                          : undefined
+                    }
+                    disabled={
+                      browserPreview || anotherSessionIsActive || pending
+                    }
+                    onClick={() => openConnect(server)}
+                  >
+                    <LogIn size={14} />
+                    {mode === "failed" && serverIsCurrent ? "重新连接" : "连接"}
+                  </button>
+                )}
+              </div>
+            </>
           )}
 
           <div className="section-label channel-section">
             <span>频道</span>
             <ChevronDown size={14} />
           </div>
-          {isPreview ? (
+          {(isPreview || isConnected) && workspace?.channels.length ? (
             <div className="channel-list">
-              {workspace?.channels.map((c) => (
+              {channels.map(({ channel: c, depth }) => (
                 <button
                   key={c.id}
                   className={`channel-row ${channel?.id === c.id ? "selected" : ""}`}
-                  onClick={() =>
+                  aria-disabled={isConnected || pending}
+                  title={isConnected ? "频道切换暂未开放" : undefined}
+                  onClick={() => {
+                    if (!isPreview || pending) return;
                     void run(
                       () => api.SelectChannel(c.id),
                       () => {
@@ -298,41 +545,71 @@ export default function App() {
                         setSidebarOpen(false);
                         setDraft("");
                       },
-                    )
-                  }
-                  disabled={pending}
+                    );
+                  }}
                 >
-                  {c.id === "music" ? (
-                    <Music2 size={17} />
-                  ) : (
-                    <Volume2 size={17} />
-                  )}
-                  <span>{c.name}</span>
-                  <small>{c.members}</small>
+                  <span
+                    className="channel-main"
+                    style={{ paddingLeft: `${depth * 14}px` }}
+                  >
+                    {c.id === "music" && isPreview ? (
+                      <Music2 size={17} />
+                    ) : (
+                      <Volume2 size={17} />
+                    )}
+                    <span>{c.name}</span>
+                  </span>
+                  {isPreview && <small>{c.members}</small>}
                 </button>
               ))}
             </div>
           ) : (
-            <div className="channels-empty">未连接</div>
+            <div className="channels-empty">
+              {mode === "connecting" || mode === "connected"
+                ? "正在同步频道…"
+                : isRemote
+                  ? "暂无可见频道"
+                  : "未连接"}
+            </div>
           )}
         </div>
         <div className="preview-control">
-          <span className={`status-dot ${isPreview ? "preview" : ""}`} />
-          <span>{isPreview ? "本地预览" : "离线"}</span>
-          <button
-            className="text-button"
-            disabled={pending || !workspace}
-            onClick={changePreview}
-          >
-            {isPreview ? "结束预览" : "本地预览"}
-            <ArrowUpRight size={14} />
-          </button>
+          <span className={`status-dot ${statusClass}`} />
+          <span>{sessionLabel}</span>
+          {mode === "connecting" || mode === "connected" ? (
+            <button
+              className="text-button"
+              disabled={pending}
+              onClick={disconnect}
+            >
+              {mode === "connecting" ? "取消连接" : "断开"}
+              <LogOut size={14} />
+            </button>
+          ) : mode === "disconnecting" ? (
+            <button className="text-button" disabled>
+              正在断开
+              <RefreshCw size={14} />
+            </button>
+          ) : !isRemote ? (
+            <button
+              className="text-button"
+              disabled={pending || !workspace}
+              onClick={changePreview}
+            >
+              {isPreview ? "结束预览" : "本地预览"}
+              <ArrowUpRight size={14} />
+            </button>
+          ) : null}
         </div>
         <div className="identity">
           <div className="avatar">我</div>
           <div className="identity-copy">
             <strong>{workspace?.session.nickname || "我"}</strong>
-            <small>{isPreview ? "本地预览" : "离线"}</small>
+            <small>
+              {isRemote && workspace?.session.serverName
+                ? workspace.session.serverName
+                : sessionLabel}
+            </small>
           </div>
           <IconButton label="语音设备尚未接入" disabled>
             <MicOff size={18} />
@@ -374,9 +651,11 @@ export default function App() {
           </div>
           <div className="header-status">
             {browserPreview && <span className="browser-tag">浏览器预览</span>}
-            <span className={`connection-label ${isPreview ? "preview" : ""}`}>
-              <span className={`status-dot ${isPreview ? "preview" : ""}`} />
-              {isPreview ? "本地预览" : "离线"}
+            <span className={`connection-label ${statusClass}`}>
+              <span className={`status-dot ${statusClass}`} />
+              {isConnected && workspace?.session.serverName
+                ? `${workspace.session.serverName} · 在线`
+                : sessionLabel}
             </span>
           </div>
         </header>
@@ -463,7 +742,7 @@ export default function App() {
                       </button>
                     )}
                   </div>
-                ) : !isPreview ? (
+                ) : !isPreview && !isRemote ? (
                   <div className="empty-state">
                     <div className="empty-symbol">
                       <Radio size={31} />
@@ -479,6 +758,72 @@ export default function App() {
                       <Radio size={16} />
                       本地预览
                     </button>
+                  </div>
+                ) : mode === "connecting" || mode === "disconnecting" ? (
+                  <div className="empty-state">
+                    <div className="empty-symbol working">
+                      <RefreshCw size={30} />
+                    </div>
+                    <h1>{sessionLabel}</h1>
+                    <p>{workspace.session.serverName || server?.name}</p>
+                    {mode === "connecting" && (
+                      <button
+                        className="secondary-button"
+                        disabled={pending}
+                        onClick={disconnect}
+                      >
+                        <X size={15} />
+                        取消连接
+                      </button>
+                    )}
+                  </div>
+                ) : mode === "failed" ? (
+                  <div className="empty-state failure-state">
+                    <div className="empty-symbol failed">
+                      <Info size={30} />
+                    </div>
+                    <h1>连接失败</h1>
+                    <p role="alert">
+                      {workspace.session.error || "无法连接服务器，请重试。"}
+                    </p>
+                    {server && (
+                      <button
+                        className="primary-button"
+                        disabled={pending || browserPreview}
+                        onClick={() => openConnect(server)}
+                      >
+                        <RefreshCw size={15} />
+                        重新连接
+                      </button>
+                    )}
+                  </div>
+                ) : isConnected && !channel ? (
+                  <div className="empty-state">
+                    <div className="empty-symbol">
+                      <Radio size={31} />
+                    </div>
+                    <h1>
+                      {workspace.channels.length
+                        ? "正在同步频道"
+                        : "暂无可见频道"}
+                    </h1>
+                    <p>{workspace.session.serverName}</p>
+                  </div>
+                ) : isConnected ? (
+                  <div className="empty-state channel-empty">
+                    <div className="empty-symbol online">
+                      <Volume2 size={29} />
+                    </div>
+                    <h1>{channel?.name}</h1>
+                    <p>
+                      {channelUsers.length
+                        ? `${channelUsers.length} 位可见成员`
+                        : "当前频道暂无可见成员"}
+                    </p>
+                    <span className="online-badge">
+                      <span className="status-dot online" />
+                      {workspace.session.serverName || "远程服务器"}
+                    </span>
                   </div>
                 ) : !messages.length ? (
                   <div className="empty-state channel-empty">
@@ -536,7 +881,11 @@ export default function App() {
                 <textarea
                   aria-label="消息"
                   placeholder={
-                    isPreview ? `发送到 ${channel?.name || "频道"}` : "未连接"
+                    isPreview
+                      ? `发送到 ${channel?.name || "频道"}`
+                      : isRemote
+                        ? "文字发送尚未开放"
+                        : "未连接"
                   }
                   value={draft}
                   onChange={(e) => setDraft(e.target.value)}
@@ -556,7 +905,11 @@ export default function App() {
                 />
                 <div className="composer-footer">
                   <span>
-                    {isPreview ? "本地预览" : "离线"}
+                    {isPreview
+                      ? "本地预览"
+                      : isRemote
+                        ? "远程会话 · 只读"
+                        : "离线"}
                     {draft.length > 1800 && ` · ${draft.length}/2000`}
                   </span>
                   <button
@@ -573,7 +926,13 @@ export default function App() {
               <footer className="conversation-footer">
                 <Signal size={12} />
                 <span>
-                  {isPreview ? "本地预览 · 未连接远程服务器" : "未连接服务器"}
+                  {isPreview
+                    ? "本地预览 · 未连接远程服务器"
+                    : isConnected
+                      ? `${workspace?.session.serverName || "远程服务器"} · 在线`
+                      : isRemote
+                        ? sessionLabel
+                        : "未连接服务器"}
                 </span>
               </footer>
             </section>
@@ -593,12 +952,26 @@ export default function App() {
                 <div>
                   <dt>状态</dt>
                   <dd>
-                    <span
-                      className={`status-dot ${isPreview ? "preview" : ""}`}
-                    />
-                    {isPreview ? "本地预览" : "离线"}
+                    <span className={`status-dot ${statusClass}`} />
+                    {sessionLabel}
                   </dd>
                 </div>
+                {isRemote && (
+                  <div>
+                    <dt>服务器</dt>
+                    <dd className="detail-value">
+                      {workspace?.session.serverName || "-"}
+                    </dd>
+                  </div>
+                )}
+                {isRemote && (
+                  <div>
+                    <dt>身份 UID</dt>
+                    <dd className="detail-value">
+                      {workspace?.session.identityUID || "-"}
+                    </dd>
+                  </div>
+                )}
                 <div>
                   <dt>语音</dt>
                   <dd>未接入</dd>
@@ -607,7 +980,9 @@ export default function App() {
               <div className="members-heading">
                 <Users size={15} />
                 <span>成员</span>
-                <span>{channel?.members ?? 0}</span>
+                <span>
+                  {isConnected ? channelUsers.length : (channel?.members ?? 0)}
+                </span>
               </div>
               {isPreview ? (
                 <div className="member">
@@ -618,6 +993,16 @@ export default function App() {
                   </div>
                   <MicOff size={15} />
                 </div>
+              ) : isConnected && channelUsers.length ? (
+                channelUsers.map((user) => (
+                  <div className="member" key={user.id}>
+                    <div className="avatar">{user.nickname.slice(0, 1)}</div>
+                    <div>
+                      <strong>{user.nickname}</strong>
+                      <small>{user.self ? "当前用户" : "远程成员"}</small>
+                    </div>
+                  </div>
+                ))
               ) : (
                 <p className="no-members">暂无成员</p>
               )}
@@ -626,6 +1011,42 @@ export default function App() {
         )}
       </main>
 
+      {connectingTo && (
+        <Modal title={`连接 ${connectingTo.name}`} close={closeConnect}>
+          <p className="connect-copy">{connectingTo.address}</p>
+          <form onSubmit={connect}>
+            <label>
+              服务器密码（可选）
+              <input
+                autoFocus
+                type="password"
+                autoComplete="off"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+              />
+            </label>
+            {connectError && (
+              <p className="form-error" role="alert">
+                {connectError}
+              </p>
+            )}
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={pending}
+                onClick={closeConnect}
+              >
+                取消
+              </button>
+              <button className="primary-button" disabled={pending}>
+                <LogIn size={15} />
+                {pending ? "连接中…" : "连接服务器"}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
       {editing && (
         <Modal
           title={editing.id ? "编辑服务器" : "添加服务器"}

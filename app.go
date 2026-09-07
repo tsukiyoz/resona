@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"sync"
 
 	"github.com/tsukiyoz/resona/internal/client"
 	"github.com/tsukiyoz/resona/internal/config"
+	"github.com/tsukiyoz/resona/internal/protocol/ts3"
 )
 
 type App struct {
@@ -22,7 +24,36 @@ func loadService() (*client.Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return client.New(store)
+	connector, err := ts3.NewDefault()
+	if err != nil {
+		return nil, err
+	}
+	return client.NewWithConnector(store, connector)
+}
+
+func (a *App) shutdown(context.Context) {
+	a.mu.Lock()
+	service := a.service
+	a.mu.Unlock()
+	if service != nil {
+		service.Shutdown()
+	}
+}
+
+func (a *App) ConnectServer(id, password string) (client.Workspace, error) {
+	service, err := a.backend()
+	if err != nil {
+		return client.Workspace{}, err
+	}
+	return service.ConnectServer(id, password)
+}
+
+func (a *App) DisconnectServer() (client.Workspace, error) {
+	service, err := a.backend()
+	if err != nil {
+		return client.Workspace{}, err
+	}
+	return service.DisconnectServer()
 }
 
 func (a *App) backend() (*client.Service, error) {

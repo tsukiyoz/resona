@@ -4,5 +4,5 @@
 /frontend/wailsjs/
 /frontend/test-results/
 /frontend/playwright-report/
-/.DS_Store
+.DS_Store
 *.log
