@@ -1,0 +1,51 @@
+name: Windows build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/windows-build.yml'
+      - 'build-windows.cmd'
+      - 'desktop/**'
+      - 'cmd/resona-core/**'
+      - 'internal/**'
+      - 'third_party/**'
+      - 'go.mod'
+      - 'go.sum'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Set up UCRT64 compiler
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          install: mingw-w64-ucrt-x86_64-gcc
+      - name: Build and test
+        shell: pwsh
+        env:
+          RESONA_MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
+        run: ./desktop/scripts/build-windows.ps1 -Msys2Root $env:RESONA_MSYS2_ROOT
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Resona-win-x64-${{ github.sha }}
+          path: desktop/dist/Resona-win-x64.zip
+          if-no-files-found: error
+          retention-days: 14

@@ -18,7 +18,9 @@ CGO_ENABLED=1 go build -o ../build/bin/resona-core ../cmd/resona-core
 ./scripts/package-macos.sh
 ```
 
-For Windows x64 prerequisites and commands from the repository root, see
+For Windows x64, run `build-windows.cmd` from the repository root after installing
+the tools once, or download an artifact from the **Windows build** GitHub Action.
+For prerequisites and detailed commands, see
 [Windows build instructions](../docs/windows-build.md). The Go audio core uses
 CGO/GCC; the Rust GUI uses the MSVC toolchain. Do not pass the Go GCC override
 to the Rust build. Windows packaging is implemented but still requires native
