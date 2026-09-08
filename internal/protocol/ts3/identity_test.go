@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 )
@@ -40,7 +41,7 @@ func TestIdentityPersistsAcrossConcurrentLoads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0600 {
 		t.Fatalf("identity permissions: %v", info.Mode())
 	}
 	id, err := loadIdentity(context.Background(), path)

@@ -72,6 +72,7 @@ if ($LASTEXITCODE -ne 0) { throw "Desktop packaging failed" }
 
 ## 运行与问题定位
 
+- Windows 使用 ACL，Go 的 `0600/0700` 模式位不代表 Windows 的访问隔离；当前文件继承所在用户目录的 ACL。权限位断言仅在 Unix 平台执行，Windows 仍运行持久化、并发身份加载及缓存行为测试。身份文件在发布前同步内容，Windows 跳过不支持的目录同步，因此不承诺断电时目录元数据的持久化。
 - 一键脚本还会收集本机 GCC 运行库与许可文件；旧 package-windows.ps1 只打包两个 exe。目标机可能仍需 Microsoft Visual C++ 2015-2022 x64 Redistributable。尚未完成干净 Windows 机器的免安装验收；如报告缺少运行库，应检查 exe 的 DLL 依赖，不从不明网站下载 DLL。
 - `gcc not found`：核对 UCRT64 安装路径与 CC。`link.exe`/Windows SDK 错误：确认使用 VS Developer PowerShell 和 MSVC Rust，且已经清除 CC/CXX 的 GCC 覆盖。不要将 MSYS2 的 `usr/bin` 放到 MSVC 链接器前面。
 - 更新显卡驱动；当前 GPUI Windows 后端使用 Direct3D 11。首次先测试离线界面和本地麦克风回放，按系统提示授权麦克风。
