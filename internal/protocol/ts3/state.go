@@ -21,6 +21,10 @@ type reducer struct {
 	iconCache                  map[string]string
 	serverUID                  string
 	voice                      map[string]voiceChannel
+	channelDetails             map[string]client.ChannelDetails
+	userDetails                map[string]client.UserDetails
+	entityVersions             map[string]uint64
+	entitySequence             uint64
 	serverVoiceEncryptionMode  uint8
 	serverVoiceEncryptionKnown bool
 }
@@ -39,7 +43,8 @@ type channelMetadata struct {
 
 func newReducer(uid string) *reducer {
 	return &reducer{state: client.RemoteState{IdentityUID: uid},
-		channels: make(map[string]client.Channel), users: make(map[string]client.User), presentation: make(map[string]channelMetadata), iconCache: make(map[string]string), voice: make(map[string]voiceChannel)}
+		channels: make(map[string]client.Channel), users: make(map[string]client.User), presentation: make(map[string]channelMetadata), iconCache: make(map[string]string), voice: make(map[string]voiceChannel),
+		channelDetails: make(map[string]client.ChannelDetails), userDetails: make(map[string]client.UserDetails), entityVersions: make(map[string]uint64)}
 }
 
 func (r *reducer) apply(command teamspeak.IncomingCommand) bool {
@@ -75,6 +80,10 @@ func (r *reducer) apply(command teamspeak.IncomingCommand) bool {
 			return false
 		}
 		ch := r.channels[id]
+		if ch.ID == "" {
+			r.entitySequence++
+			r.entityVersions["channel:"+id] = r.entitySequence
+		}
 		meta, exists := r.presentation[id]
 		if !exists {
 			meta.name = ch.Name
@@ -107,8 +116,12 @@ func (r *reducer) apply(command teamspeak.IncomingCommand) bool {
 		if v, ok := p["channel_icon_id"]; ok {
 			ch.IconID = normalizeIconID(v)
 		}
-		ch.IconDataURL = r.iconCache[ch.IconID]
+		ch.IconRef = r.iconCache[ch.IconID]
 		r.channels[id] = ch
+		details := r.channelDetails[id]
+		details.ID, details.Name = id, ch.Name
+		mergeChannelDetails(&details, p)
+		r.channelDetails[id] = details
 		voice := r.voice[id]
 		if v, ok := p["channel_codec"]; ok {
 			codec, err := strconv.ParseUint(v, 10, 8)
@@ -121,6 +134,8 @@ func (r *reducer) apply(command teamspeak.IncomingCommand) bool {
 	case "channellistfinished":
 		r.listed = true
 	case "notifychanneldeleted":
+		delete(r.entityVersions, "channel:"+p["cid"])
+		delete(r.channelDetails, p["cid"])
 		delete(r.channels, p["cid"])
 		delete(r.presentation, p["cid"])
 		delete(r.voice, p["cid"])
@@ -132,6 +147,10 @@ func (r *reducer) apply(command teamspeak.IncomingCommand) bool {
 			return false
 		}
 		u := r.users[id]
+		if u.ID == "" || command.Name == "notifycliententerview" {
+			r.entitySequence++
+			r.entityVersions["user:"+id] = r.entitySequence
+		}
 		u.ID = id
 		if v, ok := p["client_nickname"]; ok {
 			u.Nickname = v
@@ -140,6 +159,10 @@ func (r *reducer) apply(command teamspeak.IncomingCommand) bool {
 			u.ChannelID = v
 		}
 		r.users[id] = u
+		details := r.userDetails[id]
+		details.ID, details.Nickname, details.ChannelID = id, u.Nickname, u.ChannelID
+		mergeUserDetails(&details, p)
+		r.userDetails[id] = details
 		if wasReady && id != r.state.SelfID && command.Name != "notifyclientupdated" && memberChangeReason(p["reasonid"]) {
 			if knownUser && previousUser.ChannelID == currentChannel && u.ChannelID != currentChannel {
 				r.memberEvent("member_left", id, currentChannel)
@@ -148,6 +171,8 @@ func (r *reducer) apply(command teamspeak.IncomingCommand) bool {
 			}
 		}
 	case "notifyclientleftview":
+		delete(r.entityVersions, "user:"+p["clid"])
+		delete(r.userDetails, p["clid"])
 		delete(r.users, p["clid"])
 		if wasReady && p["clid"] != r.state.SelfID && knownUser && previousUser.ChannelID == currentChannel && memberChangeReason(p["reasonid"]) {
 			r.memberEvent("member_left", p["clid"], currentChannel)

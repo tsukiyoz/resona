@@ -66,7 +66,7 @@ async function installChat(page: Page) {
       align: "left",
       repeat: false,
       iconID: "",
-      iconDataURL: "",
+      iconRef: "",
       description: "频道讨论",
       members: 1,
       passwordRequired: false,
@@ -101,7 +101,7 @@ async function installChat(page: Page) {
         {
           ...makeChannel("lobby", "大厅", "heading"),
           iconID: "1001",
-          iconDataURL: canvas.toDataURL(),
+          iconRef: "valid-icon",
         },
         {
           ...makeChannel("line", "=", "lobby"),
@@ -113,11 +113,11 @@ async function installChat(page: Page) {
         {
           ...makeChannel("broken", "图标缺失", "blank"),
           iconID: "1002",
-          iconDataURL: "data:image/png;base64,AAAA",
+          iconRef: "broken-icon",
         },
         {
           ...makeChannel("unsafe", "外部图标", "broken"),
-          iconDataURL: "https://untrusted.invalid/icon.png",
+          iconRef: "unsafe-icon",
         },
       ],
       users: [
@@ -198,6 +198,10 @@ async function installChat(page: Page) {
       },
     };
     const app = {
+      async GetIconResource(sessionID: string, ref: string) {
+        if (sessionID !== state.session.id) throw new Error("会话已改变");
+        return {ref, dataURL: ref === "valid-icon" ? canvas.toDataURL() : ref === "broken-icon" ? "data:image/png;base64,AAAA" : "https://untrusted.invalid/icon.png"};
+      },
       async GetWorkspace() {
         return snapshot();
       },

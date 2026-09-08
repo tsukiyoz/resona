@@ -47,7 +47,7 @@ type Channel struct {
 	Align            string `json:"align"`
 	Repeat           bool   `json:"repeat"`
 	IconID           string `json:"iconID"`
-	IconDataURL      string `json:"iconDataURL"`
+	IconRef          string `json:"iconRef"`
 	ID               string `json:"id"`
 	Name             string `json:"name"`
 	Description      string `json:"description"`
@@ -90,22 +90,29 @@ type ProfileStore interface {
 }
 
 type Service struct {
-	mu             sync.Mutex
-	lifecycleMu    sync.Mutex
-	credentialMu   sync.Mutex
-	passwords      PasswordStore
-	store          ProfileStore
-	connector      RemoteConnector
-	state          Workspace
-	subscribers    map[chan struct{}]struct{}
-	voiceMu        sync.Mutex
-	voice          voiceEngine
-	voiceState     VoiceState
-	voiceEpoch     uint64
-	voiceOperation uint64
-	retiredVoices  []voiceEngine
-	voiceCancel    context.CancelFunc
-	newVoice       func(audio.Transport, func(audio.VoiceState)) voiceEngine
+	mu                     sync.Mutex
+	lifecycleMu            sync.Mutex
+	credentialMu           sync.Mutex
+	passwords              PasswordStore
+	store                  ProfileStore
+	connector              RemoteConnector
+	state                  Workspace
+	subscribers            map[chan struct{}]struct{}
+	activeReads            int
+	voiceMu                sync.Mutex
+	voice                  voiceEngine
+	voiceState             VoiceState
+	voiceEpoch             uint64
+	voiceOperation         uint64
+	retiredVoices          []voiceEngine
+	voiceCancel            context.CancelFunc
+	newVoice               func(audio.Transport, func(audio.VoiceState)) voiceEngine
+	microphoneTestMu       sync.Mutex
+	microphoneTest         voiceEngine
+	microphoneTestState    VoiceState
+	microphoneTestCancel   context.CancelFunc
+	retiredMicrophoneTests []voiceEngine
+	newMicrophoneTest      func(func(audio.VoiceState)) voiceEngine
 
 	connection      RemoteConnection
 	connectCancel   context.CancelFunc

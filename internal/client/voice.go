@@ -17,6 +17,8 @@ type VoiceState struct {
 	Busy              bool        `json:"busy"`
 	SpeakingClientIDs []string    `json:"speakingClientIDs,omitempty"`
 	LocalSpeaking     bool        `json:"localSpeaking"`
+	PushToTalkPressed bool        `json:"pushToTalkPressed"`
+	InputLevelDB      int         `json:"inputLevelDB"`
 }
 
 type voiceEngine interface {
@@ -27,7 +29,7 @@ type voiceEngine interface {
 }
 
 func defaultVoiceConfig() audio.VoiceConfig {
-	return audio.VoiceConfig{Muted: true, Volume: 100}
+	return audio.VoiceConfig{Muted: true, Volume: 100, ActivationMode: "continuous", VADThresholdDB: -40, NoiseSuppression: "off"}
 }
 
 func (s *Service) GetVoiceState() VoiceState {
@@ -56,10 +58,29 @@ func (s *Service) GetAudioDevices() ([]audio.Device, error) { return audio.Devic
 // ConfigureVoice returns a pending state; opening devices never blocks the GUI
 // command reader. Session/engine epochs suppress late hardware completions.
 func (s *Service) ConfigureVoice(config audio.VoiceConfig) (VoiceState, error) {
-	if config.Volume < 0 || config.Volume > 100 {
-		return VoiceState{}, errors.New("输出音量必须在 0 到 100 之间")
+	return s.configureVoice(config, nil)
+}
+
+// ConfigureDefaultVoice opens only playback for the just-connected generation.
+func (s *Service) ConfigureDefaultVoice(generation uint64) (VoiceState, error) {
+	return s.configureVoice(audio.VoiceConfig{}, &generation)
+}
+
+func (s *Service) configureVoice(config audio.VoiceConfig, expectedGeneration *uint64) (VoiceState, error) {
+	if err := audio.ValidateConfig(config); err != nil {
+		return VoiceState{}, err
 	}
 	s.mu.Lock()
+	if expectedGeneration != nil {
+		_, supported := s.connection.(audio.Transport)
+		if *expectedGeneration != s.generation || s.state.Session.Mode != "connected" || !supported || s.voice != nil || s.voiceState.Busy {
+			state := s.voiceState
+			s.mu.Unlock()
+			return state, nil
+		}
+		config = s.voiceState.VoiceConfig
+		config.Enabled, config.Muted, config.Deafened = true, true, false
+	}
 	if s.shutdown {
 		s.mu.Unlock()
 		return VoiceState{}, errors.New("客户端已经关闭")
@@ -149,7 +170,7 @@ func voiceSnapshot(next audio.VoiceState) VoiceState {
 	for _, id := range next.SpeakingClientIDs {
 		ids = append(ids, strconv.FormatUint(uint64(id), 10))
 	}
-	return VoiceState{VoiceConfig: next.Config, Active: next.Active, ChannelCodec: next.ChannelCodec, Error: next.Error, SpeakingClientIDs: ids, LocalSpeaking: next.LocalSpeaking}
+	return VoiceState{VoiceConfig: next.Config, Active: next.Active, ChannelCodec: next.ChannelCodec, Error: next.Error, SpeakingClientIDs: ids, LocalSpeaking: next.LocalSpeaking, PushToTalkPressed: next.PushToTalkPressed, InputLevelDB: next.InputLevelDB}
 }
 
 func (s *Service) applyVoiceState(epoch, generation uint64, _ audio.VoiceState) {
@@ -178,8 +199,8 @@ func (s *Service) detachVoiceLocked() voiceEngine {
 		s.retiredVoices = append(s.retiredVoices, engine)
 	}
 	s.voice = nil
-	config := defaultVoiceConfig()
-	config.InputDeviceID, config.OutputDeviceID, config.Volume = s.voiceState.InputDeviceID, s.voiceState.OutputDeviceID, s.voiceState.Volume
+	config := s.voiceState.VoiceConfig
+	config.Enabled, config.Muted, config.Deafened = false, true, false
 	s.voiceState = VoiceState{VoiceConfig: config}
 	s.notifyChangedLocked()
 	return engine

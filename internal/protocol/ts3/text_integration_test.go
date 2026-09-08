@@ -136,7 +136,7 @@ func TestLiveDedicatedChannelText(t *testing.T) {
 		}
 		if customIconID(ch.IconID) {
 			custom++
-			if ch.IconDataURL != "" {
+			if ch.IconRef != "" {
 				loaded++
 			}
 		}

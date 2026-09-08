@@ -7,6 +7,7 @@ import (
 	"github.com/tsukiyoz/resona/internal/client"
 	"github.com/tsukiyoz/resona/internal/config"
 	"github.com/tsukiyoz/resona/internal/credentials"
+	"github.com/tsukiyoz/resona/internal/iconcache"
 	"github.com/tsukiyoz/resona/internal/protocol/ts3"
 )
 
@@ -25,7 +26,7 @@ func loadService() (*client.Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	connector, err := ts3.NewDefault()
+	connector, err := ts3.NewDefault(iconcache.NewDefault())
 	if err != nil {
 		return nil, err
 	}
@@ -38,6 +39,14 @@ func (a *App) GetServerCredentialStatus(id string) (client.CredentialStatus, err
 		return client.CredentialStatus{}, err
 	}
 	return service.GetServerCredentialStatus(id)
+}
+
+func (a *App) GetIconResource(sessionID, ref string) (client.IconResource, error) {
+	service, err := a.backend()
+	if err != nil {
+		return client.IconResource{}, err
+	}
+	return service.GetIconResource(context.Background(), sessionID, ref)
 }
 
 func (a *App) ConnectSavedServer(id string) (client.Workspace, error) {

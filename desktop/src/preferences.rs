@@ -6,6 +6,16 @@ use std::{fs, path::PathBuf};
 pub struct Preferences {
     pub notifications_enabled: bool,
     pub notification_volume: u8,
+    pub activation_mode: String,
+    pub vad_threshold_db: i32,
+    pub noise_suppression: String,
+    pub echo_cancellation: bool,
+    pub echo_suppression: bool,
+    pub ducking: bool,
+    pub input_device_id: String,
+    pub output_device_id: String,
+    pub global_push_to_talk: bool,
+    pub push_to_talk_shortcut: String,
 }
 
 impl Default for Preferences {
@@ -13,6 +23,16 @@ impl Default for Preferences {
         Self {
             notifications_enabled: true,
             notification_volume: 35,
+            activation_mode: "continuous".into(),
+            vad_threshold_db: -40,
+            noise_suppression: "off".into(),
+            echo_cancellation: false,
+            echo_suppression: false,
+            ducking: false,
+            input_device_id: String::new(),
+            output_device_id: String::new(),
+            global_push_to_talk: true,
+            push_to_talk_shortcut: "F8".into(),
         }
     }
 }

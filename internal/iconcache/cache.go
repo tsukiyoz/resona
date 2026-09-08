@@ -84,10 +84,32 @@ func NewDefault() *Cache {
 // Get tries memory, disk, then fetch. Concurrent callers share an attempt;
 // canceled callers leave promptly. Failed attempts are never cached.
 func (c *Cache) Get(ctx context.Context, key Key, fetch func(context.Context) (string, error)) (string, error) {
+	return c.get(ctx, key.hash(), fetch)
+}
+
+// Reference loads a validated thumbnail and returns its opaque, scoped handle.
+func (c *Cache) Reference(ctx context.Context, key Key, fetch func(context.Context) (string, error)) (string, error) {
+	if _, err := c.Get(ctx, key, fetch); err != nil {
+		return "", err
+	}
+	return key.hash(), nil
+}
+
+// Read never downloads. The session owner must authorize the reference first.
+func (c *Cache) Read(ctx context.Context, ref string) (string, error) {
+	decoded, err := hex.DecodeString(ref)
+	if err != nil || len(decoded) != sha256.Size || strings.ToLower(ref) != ref {
+		return "", errors.New("invalid icon reference")
+	}
+	return c.get(ctx, ref, func(context.Context) (string, error) {
+		return "", errors.New("icon resource is no longer cached")
+	})
+}
+
+func (c *Cache) get(ctx context.Context, hash string, fetch func(context.Context) (string, error)) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	hash := key.hash()
 	c.mu.Lock()
 	if item := c.items[hash]; item != nil {
 		e := item.Value.(entry)

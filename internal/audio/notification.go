@@ -25,8 +25,15 @@ var notificationFiles = map[string]string{
 // PlayNotification plays one bundled local notification through the default
 // shared output device. It never opens an input device or sends network audio.
 func PlayNotification(ctx context.Context, kind string, volume int) error {
+	return playNotification(ctx, kind, volume, defaultDevices)
+}
+
+func playNotification(ctx context.Context, kind string, volume int, devices deviceFactory) error {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if volume < 0 || volume > 100 {
 		return errors.New("提示音音量必须在 0 到 100 之间")
@@ -49,9 +56,14 @@ func PlayNotification(ctx context.Context, kind string, volume int) error {
 		stereo[i*2], stereo[i*2+1] = sample*gain, sample*gain
 	}
 	var position atomic.Uint64
-	session, err := defaultDevices.Open(VoiceConfig{Volume: volume}, true, false, deviceCallbacks{playback: func(output []float32) {
+	consumed := make(chan struct{}, 1)
+	session, err := devices.Open(VoiceConfig{Volume: volume}, true, false, deviceCallbacks{playback: func(output []float32) {
 		start := int(position.Load())
 		if start >= len(stereo) {
+			select {
+			case consumed <- struct{}{}:
+			default:
+			}
 			return
 		}
 		n := copy(output, stereo[start:])
@@ -60,7 +72,7 @@ func PlayNotification(ctx context.Context, kind string, volume int) error {
 	if err != nil {
 		return err
 	}
-	duration := time.Duration(float64(len(mono))/SampleRate*float64(time.Second)) + 100*time.Millisecond
+	duration := time.Duration(float64(len(mono))/SampleRate*float64(time.Second)) + 2*time.Second
 	timer := time.NewTimer(duration)
 	defer timer.Stop()
 	select {
@@ -68,7 +80,20 @@ func PlayNotification(ctx context.Context, kind string, volume int) error {
 		_ = session.Close()
 		return ctx.Err()
 	case <-timer.C:
-		return session.Close()
+		_ = session.Close()
+		return errors.New("提示音输出设备未完成播放")
+	case <-consumed:
+		// A callback after the final buffer confirms that the device consumed it.
+		// Leave a bounded drain margin for the backend's queued hardware output.
+		drain := time.NewTimer(100 * time.Millisecond)
+		defer drain.Stop()
+		select {
+		case <-ctx.Done():
+			_ = session.Close()
+			return ctx.Err()
+		case <-drain.C:
+			return session.Close()
+		}
 	}
 }
 

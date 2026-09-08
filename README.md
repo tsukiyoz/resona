@@ -2,7 +2,7 @@
 
 以 Go 为核心的桌面语音客户端与服务端项目，先以 TeamSpeak 3 作为第一个兼容协议，逐步发展自己的扩展、机器人和 Go 生态。未来可在测量与设计验证后增加自研协议。
 
-桌面端以游戏期间的低资源常驻为目标。当前 Wails GUI 用作功能与性能基线，Rust 原生界面候选与测量计划见 [桌面 UI 评估](docs/frontend-evaluation.md)；尚未验证整体性能优于 TS3。
+桌面端以游戏期间的低资源常驻为目标。新 GUI 功能集中于 `desktop/` GPUI；Wails/React 冻结为可构建的性能与回退基线，不再同步新功能。macOS 首轮实测及后续验收门槛见 [桌面 UI 评估](docs/frontend-evaluation.md)；尚未验证整体性能优于 TS3。
 
 正在开发 [GPUI 原生实验版](desktop/README.md)与 Go 音频核心（`cmd/resona-core`、`internal/audio`）。macOS 设备采集、播放与静音启停、两个 Resona 客户端通过真实 TS3 服务器双向 Opus 转发已实测；原生窗口验收仍在进行。Windows 提供实现与本机构建路径，运行验收待用户测试。具体状态见 [验证记录](docs/verification.md)，不要把实验入口视为已完成日用语音版本。
 

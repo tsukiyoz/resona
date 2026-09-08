@@ -30,6 +30,7 @@ type Engine struct {
 	run       *engineRun
 	state     VoiceState
 	closed    bool
+	monitor   bool
 	notify    func(VoiceState)
 	notifyCh  chan VoiceState
 	notifyWG  sync.WaitGroup
@@ -126,6 +127,12 @@ func (e *Engine) configureLocked(ctx context.Context, config VoiceConfig) error 
 	if err != nil {
 		return e.configurationFailed(ctx, config, codec, err)
 	}
+	run.config = config
+	run.processor, err = newSpeechProcessor(config)
+	if err != nil {
+		run.stop()
+		return e.configurationFailed(ctx, config, codec, err)
+	}
 	needPlayback := true
 	needCapture := !config.Muted
 	run.devices, err = e.factory.Open(config, needPlayback, needCapture, deviceCallbacks{capture: run.capture, playback: run.playback})
@@ -151,7 +158,7 @@ func (e *Engine) configureLocked(ctx context.Context, config VoiceConfig) error 
 	e.run = run
 	e.mu.Unlock()
 	e.transport.SetVoiceHandler(run.enqueue)
-	e.setState(VoiceState{Config: config, Active: true, ChannelCodec: codec})
+	e.setState(VoiceState{Config: config, Active: true, ChannelCodec: codec, InputLevelDB: -60})
 	run.start()
 	run.allowSend.Store(needCapture)
 	return nil
@@ -291,6 +298,9 @@ func (e *Engine) applyRunActivity(run *engineRun, version uint64, local bool, cl
 	}
 	run.appliedActivityVersion = version
 	state := e.state
+	if run.config.ActivationMode == "ptt" && !run.ptt.Load() {
+		local = false
+	}
 	if state.LocalSpeaking == local && uint16SlicesEqual(state.SpeakingClientIDs, clients) {
 		return
 	}
@@ -389,6 +399,15 @@ type engineRun struct {
 	decodeError            string
 	decodeErrorSender      uint16
 	decodeFailures         map[uint16]decodeFailure
+	config                 VoiceConfig
+	processor              speechProcessor
+	referencePCM           *sampleRing
+	ptt                    atomic.Bool
+	sendMu                 sync.Mutex
+	captureMu              sync.Mutex
+	captureEpoch           atomic.Uint64
+	lastMeter              time.Time
+	vadUntil               time.Time
 }
 
 func newEngineRun(engine *Engine, codec Codec, volume int) (*engineRun, error) {
@@ -399,6 +418,10 @@ func newEngineRun(engine *Engine, codec Codec, volume int) (*engineRun, error) {
 		capturePCM: newSampleRing(FrameSamples * pcmBufferFrames), playbackPCM: newSampleRing(FrameSamples * 2 * pcmBufferFrames),
 		remoteUntil:    make(map[uint16]time.Time),
 		decodeFailures: make(map[uint16]decodeFailure),
+		referencePCM:   newSampleRing(FrameSamples * 2 * pcmBufferFrames),
+	}
+	if engine.monitor {
+		return r, nil
 	}
 	channels := 1
 	application := gopus.ApplicationVoIP
@@ -421,6 +444,11 @@ func newEngineRun(engine *Engine, codec Codec, volume int) (*engineRun, error) {
 }
 
 func (r *engineRun) start() {
+	if r.engine.monitor {
+		r.wg.Add(1)
+		go func() { defer r.wg.Done(); r.encodeLoop() }()
+		return
+	}
 	r.wg.Add(2)
 	go func() { defer r.wg.Done(); r.encodeLoop() }()
 	go func() { defer r.wg.Done(); r.mixLoop() }()
@@ -433,9 +461,14 @@ func (r *engineRun) stop() {
 		if r.devices != nil {
 			_ = r.devices.Close()
 		}
+		r.captureMu.Lock()
 		r.capturePCM.Reset()
+		r.captureMu.Unlock()
 		r.playbackPCM.Reset()
 		r.wg.Wait()
+		if r.processor != nil {
+			r.processor.Close()
+		}
 	})
 }
 
@@ -461,7 +494,18 @@ func (r *engineRun) capture(samples []float32) {
 	if !r.allowSend.Load() || r.ctx.Err() != nil {
 		return
 	}
+	if !r.engine.monitor && r.config.ActivationMode == "ptt" && !r.ptt.Load() {
+		return
+	}
+	if !r.captureMu.TryLock() {
+		return
+	}
+	if !r.allowSend.Load() || (!r.engine.monitor && r.config.ActivationMode == "ptt" && !r.ptt.Load()) {
+		r.captureMu.Unlock()
+		return
+	}
 	r.capturePCM.Push(samples)
+	r.captureMu.Unlock()
 	select {
 	case r.captureWake <- struct{}{}:
 	default:
@@ -469,10 +513,14 @@ func (r *engineRun) capture(samples []float32) {
 }
 
 func (r *engineRun) playback(samples []float32) {
+	clear(samples)
 	if r.ctx.Err() != nil {
 		return
 	}
 	r.playbackPCM.Pop(samples)
+	if r.processor != nil {
+		r.referencePCM.Push(samples)
+	}
 }
 
 func (r *engineRun) encodeLoop() {
@@ -483,6 +531,8 @@ func (r *engineRun) encodeLoop() {
 	mono := make([]float32, FrameSamples)
 	pcm := make([]float32, FrameSamples*channels)
 	encoded := make([]byte, MaxOpusPacketSize)
+	referenceStereo := make([]float32, FrameSamples*2)
+	reference := make([]float32, FrameSamples)
 	for {
 		select {
 		case <-r.ctx.Done():
@@ -491,10 +541,43 @@ func (r *engineRun) encodeLoop() {
 		}
 		for r.capturePCM.Available() >= FrameSamples {
 			if r.ctx.Err() != nil || !r.allowSend.Load() {
+				r.captureMu.Lock()
 				r.capturePCM.Reset()
+				r.captureMu.Unlock()
 				break
 			}
+			r.captureMu.Lock()
+			if r.capturePCM.Available() < FrameSamples {
+				r.captureMu.Unlock()
+				break
+			}
+			epoch := r.captureEpoch.Load()
 			r.capturePCM.Pop(mono)
+			r.captureMu.Unlock()
+			if r.processor != nil {
+				clear(referenceStereo)
+				r.referencePCM.Pop(referenceStereo)
+				for i := range reference {
+					reference[i] = (referenceStereo[i*2] + referenceStereo[i*2+1]) / 2
+				}
+				r.processor.Process(mono, reference)
+			}
+			now := time.Now()
+			level := inputLevelDB(mono)
+			if r.engine.monitor && now.Sub(r.lastMeter) >= 100*time.Millisecond {
+				r.lastMeter = now
+				r.engine.setInputLevel(r, level)
+			}
+			if r.engine.monitor {
+				for i, sample := range mono {
+					referenceStereo[i*2], referenceStereo[i*2+1] = sample*r.volume, sample*r.volume
+				}
+				r.playbackPCM.Push(referenceStereo)
+				continue
+			}
+			if !r.activationOpen(level, now) {
+				continue
+			}
 			active := pcmHasActivity(mono)
 			if channels == 1 {
 				copy(pcm, mono)
@@ -508,10 +591,14 @@ func (r *engineRun) encodeLoop() {
 				r.fail(fmt.Errorf("Opus 编码失败: %w", encodeErr), true)
 				return
 			}
-			if r.ctx.Err() != nil || !r.allowSend.Load() {
+			r.sendMu.Lock()
+			if r.ctx.Err() != nil || !r.allowSend.Load() || (r.config.ActivationMode == "ptt" && (!r.ptt.Load() || epoch != r.captureEpoch.Load())) {
+				r.sendMu.Unlock()
 				break
 			}
-			if sendErr := r.engine.transport.SendVoice(encoded[:n], r.codec); sendErr != nil {
+			sendErr := r.engine.transport.SendVoice(encoded[:n], r.codec)
+			r.sendMu.Unlock()
+			if sendErr != nil {
 				r.fail(fmt.Errorf("语音发送失败: %w", sendErr), true)
 				return
 			}
@@ -595,8 +682,16 @@ func (r *engineRun) mixLoop() {
 				mixed = mixed || ok
 			}
 			if mixed {
+				gain := float32(1)
+				if r.config.Ducking {
+					r.activityMu.Lock()
+					if r.localUntil.After(now) {
+						gain = 0.25
+					}
+					r.activityMu.Unlock()
+				}
 				for i := range mix {
-					mix[i] = max(-1, min(1, mix[i]))
+					mix[i] = max(-1, min(1, mix[i]*gain))
 				}
 				r.playbackPCM.Push(mix)
 			}

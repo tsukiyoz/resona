@@ -52,6 +52,9 @@ func voiceService(t *testing.T, e *fakeVoiceEngine) *Service {
 		t.Fatal(err)
 	}
 	waitForMode(t, s, "connected")
+	if e.configure == nil {
+		waitVoice(t, s, func(v VoiceState) bool { return v.Active && !v.Busy })
+	}
 	t.Cleanup(s.Shutdown)
 	return s
 }
@@ -138,14 +141,11 @@ func TestSpeakingStateClearsForUnavailableVoiceAndChannelTransitions(t *testing.
 	}
 }
 
-func TestVoiceRequiresExplicitMutedStartAndDoesNotAlterTextSession(t *testing.T) {
+func TestVoiceAutomaticallyStartsMutedAndDoesNotAlterTextSession(t *testing.T) {
 	e := &fakeVoiceEngine{}
 	s := voiceService(t, e)
-	if state := s.GetVoiceState(); state.Enabled || !state.Muted {
+	if state := s.GetVoiceState(); !state.Enabled || !state.Muted || !state.Active {
 		t.Fatalf("unsafe default: %+v", state)
-	}
-	if _, err := s.ConfigureVoice(audio.VoiceConfig{Enabled: true, Volume: 100}); err == nil {
-		t.Fatal("automatic unmuted start accepted")
 	}
 	if _, err := s.ConfigureVoice(audio.VoiceConfig{Enabled: true, Muted: true, Volume: 70}); err != nil {
 		t.Fatal(err)
@@ -175,9 +175,6 @@ func TestDisconnectCancelsVoiceStartupAndIgnoresLateCompletion(t *testing.T) {
 	started := make(chan struct{})
 	e := &fakeVoiceEngine{configure: func(ctx context.Context, _ audio.VoiceConfig) error { close(started); <-ctx.Done(); return ctx.Err() }}
 	s := voiceService(t, e)
-	if _, err := s.ConfigureVoice(audio.VoiceConfig{Enabled: true, Muted: true, Volume: 100}); err != nil {
-		t.Fatal(err)
-	}
 	<-started
 	if _, err := s.DisconnectServer(); err != nil {
 		t.Fatal(err)
@@ -185,6 +182,19 @@ func TestDisconnectCancelsVoiceStartupAndIgnoresLateCompletion(t *testing.T) {
 	v := s.GetVoiceState()
 	if v.Enabled || v.Active || v.Busy || !v.Muted || e.closed.Load() != 1 {
 		t.Fatalf("late startup survived disconnect: %+v", v)
+	}
+}
+
+func TestDefaultVoiceRejectsStaleGeneration(t *testing.T) {
+	e := &fakeVoiceEngine{}
+	s := voiceService(t, e)
+	_, _ = s.ConfigureVoice(audio.VoiceConfig{})
+	s.cleanupWG.Wait()
+	if _, err := s.ConfigureDefaultVoice(s.generation + 1); err != nil {
+		t.Fatal(err)
+	}
+	if state := s.GetVoiceState(); state.Enabled || state.Busy {
+		t.Fatal("stale connection activated voice")
 	}
 }
 

@@ -962,7 +962,7 @@ export default function App() {
                         {c.id === "music" && isPreview ? (
                           <Music2 size={17} />
                         ) : (
-                          <ChannelIcon channel={c} />
+                          <ChannelIcon channel={c} sessionID={workspace.session.id} />
                         )}
                         <span>{c.name}</span>
                       </span>
@@ -1089,7 +1089,7 @@ export default function App() {
             {page === "settings" ? (
               <Settings size={20} />
             ) : channel ? (
-              <ChannelIcon channel={channel} size={21} />
+              <ChannelIcon channel={channel} sessionID={workspace?.session.id ?? ""} size={21} />
             ) : (
               <Volume2 size={21} />
             )}
@@ -1576,7 +1576,7 @@ export default function App() {
                 </div>
                 <div className="detail-channel-icon">
                   {channel ? (
-                    <ChannelIcon channel={channel} size={23} />
+                    <ChannelIcon channel={channel} sessionID={workspace?.session.id ?? ""} size={23} />
                   ) : (
                     <Volume2 size={23} />
                   )}

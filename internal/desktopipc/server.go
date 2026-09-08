@@ -53,6 +53,8 @@ func Run(ctx context.Context, service *client.Service, input io.ReadCloser, outp
 		cancel()
 	}
 	var workers sync.WaitGroup
+	readSlots := make(chan struct{}, 4)
+	var shutdownResult *shutdownStatus
 	workers.Add(3)
 	go func() {
 		defer workers.Done()
@@ -86,6 +88,7 @@ func Run(ctx context.Context, service *client.Service, input io.ReadCloser, outp
 		defer workers.Done()
 		var previous *client.Workspace
 		var previousVoice *client.VoiceState
+		var previousTest *client.VoiceState
 		for {
 			select {
 			case <-ctx.Done():
@@ -95,6 +98,7 @@ func Run(ctx context.Context, service *client.Service, input io.ReadCloser, outp
 			writerMu.Lock()
 			workspace, err := service.GetWorkspace()
 			voice := service.GetVoiceState()
+			microphoneTest := service.GetMicrophoneTest()
 			if err == nil && (previous == nil || !reflect.DeepEqual(*previous, workspace)) {
 				err = encoder.Encode(envelope{Event: "workspace", Result: workspace})
 				previous = &workspace
@@ -102,6 +106,10 @@ func Run(ctx context.Context, service *client.Service, input io.ReadCloser, outp
 			if err == nil && (previousVoice == nil || !reflect.DeepEqual(*previousVoice, voice)) {
 				err = encoder.Encode(envelope{Event: "voice", Result: voice})
 				previousVoice = &voice
+			}
+			if err == nil && (previousTest == nil || !reflect.DeepEqual(*previousTest, microphoneTest)) {
+				err = encoder.Encode(envelope{Event: "microphoneTest", Result: microphoneTest})
+				previousTest = &microphoneTest
 			}
 			writerMu.Unlock()
 			if err != nil {
@@ -121,6 +129,63 @@ func Run(ctx context.Context, service *client.Service, input io.ReadCloser, outp
 				return nil
 			}
 		case req := <-requests:
+			if req.Method == "GetIconResource" || req.Method == "GetChannelDetails" || req.Method == "GetUserDetails" {
+				select {
+				case readSlots <- struct{}{}:
+				default:
+					writerMu.Lock()
+					err := encoder.Encode(envelope{ID: req.ID, Error: "资源读取繁忙，请稍后重试"})
+					writerMu.Unlock()
+					if err != nil {
+						return errors.New("desktop response unavailable")
+					}
+					continue
+				}
+				workers.Add(1)
+				go func(req request) {
+					defer workers.Done()
+					defer func() { <-readSlots }()
+					result, err := dispatchRead(ctx, service, req)
+					response := envelope{ID: req.ID, Result: result}
+					if err != nil {
+						response.Result = nil
+						response.Error = err.Error()
+					}
+					writerMu.Lock()
+					writeErr := encoder.Encode(response)
+					writerMu.Unlock()
+					if writeErr != nil {
+						fail(errors.New("desktop response unavailable"))
+					}
+				}(req)
+				continue
+			}
+			if req.Method == "PrepareShutdown" {
+				var p struct {
+					NotificationEnabled bool `json:"notificationEnabled"`
+					NotificationVolume  int  `json:"notificationVolume"`
+				}
+				err := decodeParams(req.Params, &p)
+				if err == nil && (p.NotificationVolume < 0 || p.NotificationVolume > 100) {
+					err = errors.New("提示音音量无效")
+				}
+				if err == nil && shutdownResult == nil {
+					sounds.stop()
+					status := prepareShutdown(ctx, service, p.NotificationEnabled, p.NotificationVolume, audio.PlayNotification)
+					shutdownResult = &status
+				}
+				response := envelope{ID: req.ID, Result: shutdownResult}
+				if err != nil {
+					response.Error = err.Error()
+				}
+				writerMu.Lock()
+				writeErr := encoder.Encode(response)
+				writerMu.Unlock()
+				if writeErr != nil {
+					return errors.New("desktop response unavailable")
+				}
+				continue
+			}
 			writerMu.Lock()
 			var result any
 			var err error
@@ -179,12 +244,34 @@ func dispatch(s *client.Service, req request) (any, error) {
 		Text           string               `json:"text"`
 		AllowDuplicate bool                 `json:"allowDuplicate"`
 	}
-	if req.Method == "ConfigureVoice" {
+	if req.Method == "ConfigureVoice" || req.Method == "SetVoicePreferences" {
 		config := audio.VoiceConfig{Muted: true, Volume: 100}
 		if err := decodeParams(req.Params, &config); err != nil {
 			return nil, err
 		}
+		if req.Method == "SetVoicePreferences" {
+			return s.SetVoicePreferences(config)
+		}
 		return s.ConfigureVoice(config)
+	}
+	if req.Method == "ConfigureMicrophoneTest" {
+		config := audio.VoiceConfig{Volume: 35, ActivationMode: "continuous", VADThresholdDB: -40, NoiseSuppression: "off"}
+		if err := decodeParams(req.Params, &config); err != nil {
+			return nil, err
+		}
+		if !config.Enabled {
+			return s.StopMicrophoneTest()
+		}
+		return s.StartMicrophoneTest(config)
+	}
+	if req.Method == "SetPushToTalk" {
+		var p struct {
+			Pressed bool `json:"pressed"`
+		}
+		if err := decodeParams(req.Params, &p); err != nil {
+			return nil, err
+		}
+		return s.SetPushToTalk(p.Pressed)
 	}
 	if err := decodeParams(req.Params, &p); err != nil {
 		return nil, err
@@ -196,6 +283,8 @@ func dispatch(s *client.Service, req request) (any, error) {
 		return s.GetWorkspace()
 	case "GetVoiceState":
 		return s.GetVoiceState(), nil
+	case "GetMicrophoneTestState":
+		return s.GetMicrophoneTest(), nil
 	case "GetAudioDevices":
 		return s.GetAudioDevices()
 	case "SaveServer":

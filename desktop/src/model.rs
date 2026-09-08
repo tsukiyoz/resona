@@ -52,6 +52,7 @@ pub struct Channel {
     pub repeat: bool,
     #[serde(rename = "iconID")]
     pub icon_id: String,
+    pub icon_ref: String,
     #[serde(rename = "iconDataURL")]
     pub icon_data_url: String,
 }
@@ -121,6 +122,16 @@ pub struct VoiceState {
     #[serde(rename = "speakingClientIDs")]
     pub speaking_client_ids: Vec<String>,
     pub local_speaking: bool,
+    pub activation_mode: String,
+    #[serde(rename = "vadThresholdDB")]
+    pub vad_threshold_db: i32,
+    pub noise_suppression: String,
+    pub echo_cancellation: bool,
+    pub echo_suppression: bool,
+    pub ducking: bool,
+    pub push_to_talk_pressed: bool,
+    #[serde(rename = "inputLevelDB")]
+    pub input_level_db: i32,
 }
 
 impl Default for VoiceState {
@@ -138,6 +149,14 @@ impl Default for VoiceState {
             busy: false,
             speaking_client_ids: Vec::new(),
             local_speaking: false,
+            activation_mode: "continuous".into(),
+            vad_threshold_db: -40,
+            noise_suppression: "off".into(),
+            echo_cancellation: false,
+            echo_suppression: false,
+            ducking: false,
+            push_to_talk_pressed: false,
+            input_level_db: -60,
         }
     }
 }
@@ -210,11 +229,8 @@ mod tests {
         assert_eq!(workspace.session.self_id, "user-1");
         assert_eq!(workspace.channels[0].parent_id, "parent-1");
         assert_eq!(workspace.channels[0].icon_id, "1001");
-        assert!(
-            workspace.channels[0]
-                .icon_data_url
-                .starts_with("data:image/png")
-        );
+        assert!(!workspace.channels[0].icon_ref.is_empty());
+        assert!(workspace.channels[0].icon_data_url.is_empty());
         assert_eq!(workspace.users[0].channel_id, "channel-1");
         assert_eq!(workspace.messages[0].author_id, "user-1");
         assert_eq!(workspace.messages[0].channel_id, "channel-1");
