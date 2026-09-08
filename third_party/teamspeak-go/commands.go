@@ -2,6 +2,7 @@ package teamspeak
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -16,6 +17,8 @@ import (
 	"github.com/honeybbq/teamspeak-go/handshake"
 	"github.com/honeybbq/teamspeak-go/transport"
 )
+
+const maxVoiceDataBytes = 1275
 
 var (
 	errTeamSpeakCommand = errors.New("TeamSpeak server error")
@@ -124,9 +127,33 @@ func (c *Client) handlePacket(p *transport.Packet) {
 		dataStr := string(p.Data)
 		c.logger.Debug("received command data", slog.String("data", dataStr))
 		c.handleCommandLines(dataStr)
-	case transport.PacketTypeVoice, transport.PacketTypeVoiceWhisper, transport.PacketTypePing,
-		transport.PacketTypePong, transport.PacketTypeAck, transport.PacketTypeAckLow:
+	case transport.PacketTypeVoice, transport.PacketTypeVoiceWhisper:
+		c.handleVoicePacket(p)
+	case transport.PacketTypePing, transport.PacketTypePong, transport.PacketTypeAck, transport.PacketTypeAckLow:
 		return
+	}
+}
+
+func (c *Client) handleVoicePacket(p *transport.Packet) {
+	// Server voice payload: voice sequence, sender client ID, codec, Opus data.
+	if len(p.Data) < 5 || len(p.Data)-5 > maxVoiceDataBytes {
+		c.logger.Warn("dropping malformed voice packet", slog.Int("length", len(p.Data)))
+		return
+	}
+	packet := VoicePacket{
+		ReceivedAt: p.ReceivedAt,
+		Sequence:   binary.BigEndian.Uint16(p.Data[0:2]),
+		SenderID:   binary.BigEndian.Uint16(p.Data[2:4]),
+		Codec:      p.Data[4],
+		Data:       append([]byte(nil), p.Data[5:]...),
+		Whisper:    p.Type() == transport.PacketTypeVoiceWhisper,
+		Encrypted:  !p.IsUnencrypted(),
+		End:        len(p.Data) == 5,
+	}
+	for _, observer := range c.voiceObservers {
+		observed := packet
+		observed.Data = append([]byte(nil), packet.Data...)
+		observer(observed)
 	}
 }
 
@@ -237,6 +264,12 @@ func (c *Client) ExecCommand(cmd string, timeout time.Duration) error {
 func (c *Client) ExecCommandContext(ctx context.Context, cmd string) error {
 	_, err := c.execCommandWithResponse(ctx, cmd)
 	return err
+}
+
+// ExecCommandWithResponseContext waits for response rows and command completion
+// until ctx ends. Cancellation cannot retract a command already sent.
+func (c *Client) ExecCommandWithResponseContext(ctx context.Context, cmd string) ([]map[string]string, error) {
+	return c.execCommandWithResponse(ctx, cmd)
 }
 
 // ExecCommandWithResponse sends a command and waits for its return_code response and data.

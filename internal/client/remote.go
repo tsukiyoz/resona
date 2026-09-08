@@ -92,6 +92,7 @@ func (s *Service) connectServerLocked(id, password string, remember bool, expect
 	}
 	s.clearRemoteCollectionsLocked()
 	s.state.Notifications = []Notification{}
+	s.notifyChangedLocked()
 	state := s.snapshot()
 	connector := s.connector
 	s.mu.Unlock()
@@ -133,6 +134,7 @@ func (s *Service) connect(ctx context.Context, connector RemoteConnector, profil
 			s.state.Session.Error = "连接服务器失败，请检查地址、密码和网络"
 		}
 		s.clearRemoteCollectionsLocked()
+		s.notifyChangedLocked()
 		s.mu.Unlock()
 		if connection != nil {
 			_ = connection.Close()
@@ -143,6 +145,7 @@ func (s *Service) connect(ctx context.Context, connector RemoteConnector, profil
 	s.state.Session.Mode = "connected"
 	s.state.Session.Error = ""
 	s.addNotificationLocked("connected", s.state.Session.ChannelID)
+	s.notifyChangedLocked()
 	s.mu.Unlock()
 	if remember {
 		s.rememberSuccessfulPassword(profile, password, generation)
@@ -169,7 +172,9 @@ func (s *Service) applyRemoteState(generation uint64, remote RemoteState) {
 	s.state.Channels = cloneChannels(remote.Channels)
 	s.state.Users = cloneUsers(remote.Users)
 	var connection RemoteConnection
+	var voice voiceEngine
 	if remote.Closed {
+		voice = s.detachVoiceLocked()
 		if wasConnected {
 			s.addNotificationLocked("disconnected", previousChannel)
 		}
@@ -185,19 +190,28 @@ func (s *Service) applyRemoteState(generation uint64, remote RemoteState) {
 		}
 		s.clearRemotePresenceLocked()
 	} else {
+		if wasConnected && previousChannel != remote.ChannelID {
+			s.voiceChannelChangedLocked()
+		}
 		s.appendRemoteMessagesLocked(remote.Messages)
 		if wasConnected {
 			s.applyRemoteEventsLocked(remote.Events)
 		}
 	}
-	if connection != nil {
+	if connection != nil || voice != nil {
 		s.cleanupWG.Add(1)
 	}
+	s.notifyChangedLocked()
 	s.mu.Unlock()
-	if connection != nil {
+	if connection != nil || voice != nil {
 		go func() {
 			defer s.cleanupWG.Done()
-			_ = connection.Close()
+			if voice != nil {
+				s.closeRetiredVoices()
+			}
+			if connection != nil {
+				_ = connection.Close()
+			}
 		}()
 	}
 }
@@ -227,11 +241,13 @@ func (s *Service) disconnectRemote() (Workspace, error) {
 	}
 	s.generation++
 	s.state.Session.Mode = "disconnecting"
+	s.notifyChangedLocked()
 	s.cancelMoveLocked()
 	s.cancelMessageLocked()
 	cancel := s.connectCancel
 	done := s.connectDone
 	connection := s.connection
+	voice := s.detachVoiceLocked()
 	s.connectCancel = nil
 	s.connectDone = nil
 	s.connection = nil
@@ -244,6 +260,9 @@ func (s *Service) disconnectRemote() (Workspace, error) {
 		<-done
 	}
 	var closeErr error
+	if voice != nil {
+		s.closeRetiredVoices()
+	}
 	if connection != nil {
 		closeErr = connection.Close()
 	}
@@ -301,6 +320,7 @@ func (s *Service) clearRemoteCollectionsLocked() {
 }
 
 func (s *Service) setOfflineLocked() {
+	defer s.notifyChangedLocked()
 	if s.state.Session.ID != "" {
 		s.state.Session.Mode = "offline"
 		s.state.Session.Error = ""

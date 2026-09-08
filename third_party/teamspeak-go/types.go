@@ -1,5 +1,7 @@
 package teamspeak
 
+import "time"
+
 // IncomingCommand contains an already-unescaped command and independently owned parameters.
 type IncomingCommand struct {
 	Name   string
@@ -9,6 +11,23 @@ type IncomingCommand struct {
 // CommandObserver runs synchronously in receive order, before normal dispatch.
 // Observers must return promptly and must not wait for network commands.
 type CommandObserver func(IncomingCommand)
+
+// VoicePacket is a decoded server-to-client Voice or VoiceWhisper payload.
+// Data owns its bytes and remains valid after the observer returns.
+type VoicePacket struct {
+	ReceivedAt time.Time
+	Data       []byte
+	Sequence   uint16
+	SenderID   uint16
+	Codec      byte
+	Whisper    bool
+	Encrypted  bool
+	End        bool
+}
+
+// VoiceObserver runs synchronously on the transport receive loop. Observers
+// must return promptly and must not block on audio decoding or device I/O.
+type VoiceObserver func(VoicePacket)
 
 // TextMessage is an incoming notifytextmessage payload.
 type TextMessage struct {

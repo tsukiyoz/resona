@@ -3,8 +3,10 @@ module github.com/tsukiyoz/resona
 go 1.26.0
 
 require (
+	github.com/gen2brain/malgo v0.11.26
 	github.com/honeybbq/teamspeak-go v0.0.0
 	github.com/keybase/go-keychain v0.0.1
+	github.com/thesyncim/gopus v0.1.1
 	github.com/wailsapp/wails/v2 v2.15.0
 	golang.org/x/image v0.41.0
 )

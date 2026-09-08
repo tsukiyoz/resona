@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"bytes"
 	"encoding/binary"
 	"io"
 	"log/slog"
@@ -479,6 +480,47 @@ func TestHandlerSendVoicePacket_SequenceIncreases(t *testing.T) {
 	seq1 := binary.BigEndian.Uint16(pkt1[13:15])
 	if seq1 != seq0+1 {
 		t.Errorf("expected seq1 = seq0+1 = %d, got %d", seq0+1, seq1)
+	}
+}
+
+func TestHandlerSendVoicePacket_EncryptedFormat(t *testing.T) {
+	h, serverConn := newTestHandler(t)
+	defer func() { _ = h.Close() }()
+	_ = readPacket(t, serverConn)
+	voiceData := []byte{0x10, 0x20, 0x30}
+	if err := h.SendVoicePacket(voiceData, 5, true); err != nil {
+		t.Fatal(err)
+	}
+	pkt := readPacket(t, serverConn)
+	if pkt[12]&byte(PacketFlagUnencrypted) != 0 {
+		t.Fatal("encrypted voice packet has Unencrypted flag")
+	}
+	if bytes.Equal(pkt[:8], h.TsCrypt.FakeSignature) || bytes.Contains(pkt[13:], voiceData) {
+		t.Fatal("encrypted voice packet exposed its fake signature or plaintext")
+	}
+	eax, err := crypto.NewEAX(handlerTestDummyKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plaintext, err := eax.Decrypt(handlerTestDummyNonce, pkt[8:13], pkt[13:], pkt[:8])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plaintext[2] != 5 || !bytes.Equal(plaintext[3:], voiceData) {
+		t.Fatalf("encrypted payload = %x", plaintext)
+	}
+}
+
+func TestVoiceReceiveGenerationAdvancesAcrossWrap(t *testing.T) {
+	id, _ := crypto.IdentityFromString(testIdentityForHandler)
+	h := NewPacketHandler(crypto.NewCrypt(id), slog.Default())
+	h.recvWindowVoice.SyncTo(65535)
+	if got := h.resolvePacketGeneration(&Packet{ID: 65535, TypeFlagged: byte(PacketTypeVoice)}); got != 0 {
+		t.Fatalf("generation before wrap = %d", got)
+	}
+	h.updatePostReceiveState(&Packet{ID: 65535, TypeFlagged: byte(PacketTypeVoice)})
+	if got := h.resolvePacketGeneration(&Packet{ID: 0, TypeFlagged: byte(PacketTypeVoice)}); got != 1 {
+		t.Fatalf("generation after wrap = %d", got)
 	}
 }
 

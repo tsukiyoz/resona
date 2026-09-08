@@ -14,7 +14,8 @@ covered in observer_test.go. Observers receive already-unescaped parameters and 
 block waiting for network operations.
 
 commands.go also adds ExecCommandContext for cancellable throttling and response
-waiting, and CommandError with a numeric ID and the existing error text/sentinel.
+waiting, ExecCommandWithResponseContext for cancellable typed response rows, and
+CommandError with a numeric ID and the existing error text/sentinel.
 The duration-based command methods share the same implementation and preserve
 the command-timeout sentinel; their deadline now includes throttling. Canceling
 does not retract an already-sent command. Tracker cleanup removes collected rows,
@@ -40,8 +41,30 @@ with a ten-second deadline. The transfer tracker retires the first notification
 before delivery so duplicate notifications cannot block the packet reader.
 Covered in transfer_test.go; used for bounded, read-only channel icon downloads.
 
+The voice patch adds constructor-only VoiceObserver registration and independently
+owned VoicePacket payloads. Incoming server voice parses the 16-bit voice sequence,
+16-bit sender client ID, codec, encryption flag, and bounded payload before returning
+promptly to the packet loop. Malformed and oversized payloads are dropped. Resona's
+audio decode, jitter, mixing, and devices remain outside this module.
+The five-byte server voice header with no following audio is preserved as an explicit
+end-of-stream packet. A six-byte packet has one byte of Opus data and remains an audio
+packet because one-byte Opus packets can be valid; Opus framing validation belongs to
+the audio engine. This follows the TS3 protocol's empty-audio end marker and avoids
+feeding an empty packet into the Opus decoder.
+
+SendVoice and SendVoiceEncrypted accept only TS3 Opus Voice (4) and Opus Music (5)
+payloads within the configured bound. The transport emits the proper encrypted or
+unencrypted packet flag, applies the TS3 crypto path for encrypted voice, and tracks
+separate receive generations for voice and whisper sequences, including uint16 wrap.
+Initial client mute state is explicit through WithInitialMute so connecting never
+briefly advertises a live microphone. The unit suite covers parsing and observer
+ownership, encrypted wire decrypt, generation wrap, packet validation, and initial
+mute. Resona additionally verifies codec 4 mono and codec 5 stereo encode/decode,
+actual server-forwarded bidirectional packets, and device lifecycle separately.
+
 Resona uses these interfaces for login snapshots, ordered membership updates,
-channel text messages, and custom channel icons. It does not claim full voice or long-running compatibility.
+channel text messages, custom channel icons, and bounded channel voice. It does not
+claim whisper, legacy codec, or long-running compatibility.
 See docs/adr/0005-read-only-ts3-session.md in the Resona root.
 
 Run tests here separately: `go test -race ./...`. The parent module's tests do

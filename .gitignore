@@ -1,4 +1,6 @@
 /build/bin/
+/desktop/target/
+/desktop/dist/
 /frontend/node_modules/
 /frontend/dist/
 /frontend/wailsjs/

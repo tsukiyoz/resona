@@ -133,8 +133,8 @@ func (c *Client) handleInitServer(cmd *commands.Command) {
 
 	go func() {
 		updateCmd := commands.BuildCommand("clientupdate", map[string]string{
-			"client_input_muted":  "0",
-			"client_output_muted": "0",
+			"client_input_muted":  boolString(c.clientInitOptions.inputMuted),
+			"client_output_muted": boolString(c.clientInitOptions.outputMuted),
 		})
 		_ = c.SendCommandNoWait(updateCmd)
 	}()
@@ -142,6 +142,13 @@ func (c *Client) handleInitServer(cmd *commands.Command) {
 	for _, h := range handlers {
 		go h()
 	}
+}
+
+func boolString(v bool) string {
+	if v {
+		return "1"
+	}
+	return "0"
 }
 
 func (c *Client) sendClientInit() {

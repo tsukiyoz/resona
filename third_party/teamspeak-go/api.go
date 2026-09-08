@@ -50,7 +50,12 @@ func (c *Client) Poke(clid uint16, message string) error {
 
 // SendVoice sends a raw Opus frame. Codec values: 4 = Opus voice, 5 = Opus music.
 func (c *Client) SendVoice(data []byte, codec byte) error {
-	return c.handler.SendVoicePacket(data, codec)
+	return c.handler.SendVoicePacket(data, codec, false)
+}
+
+// SendVoiceEncrypted sends a raw Opus frame with TS3 packet encryption enabled.
+func (c *Client) SendVoiceEncrypted(data []byte, codec byte) error {
+	return c.handler.SendVoicePacket(data, codec, true)
 }
 
 // ClientID returns the client's own ID assigned by the server.
