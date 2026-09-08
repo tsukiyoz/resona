@@ -10,6 +10,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -72,12 +73,12 @@ func TestMemoryThenDiskAvoidNetwork(t *testing.T) {
 	}
 	for _, path := range []string{filepath.Dir(dir), dir} {
 		info, err := os.Stat(path)
-		if err != nil || info.Mode().Perm() != 0700 {
+		if err != nil || !info.IsDir() || (runtime.GOOS != "windows" && info.Mode().Perm() != 0700) {
 			t.Fatalf("directory permission: %v, %v", info, err)
 		}
 	}
 	info, err := os.Stat(filepath.Join(dir, diskName(key.hash())))
-	if err != nil || info.Mode().Perm() != 0600 {
+	if err != nil || !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm() != 0600) {
 		t.Fatalf("file permission: %v, %v", info, err)
 	}
 }
@@ -313,6 +314,9 @@ func TestUnavailableDiskFallsBackToMemoryAndNetwork(t *testing.T) {
 }
 
 func TestReadonlyCacheDirectoryFallsBack(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows Chmod does not implement Unix directory write permissions")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses filesystem permissions")
 	}

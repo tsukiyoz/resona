@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/honeybbq/teamspeak-go/crypto"
@@ -85,6 +86,11 @@ func loadIdentity(ctx context.Context, path string) (*crypto.Identity, error) {
 }
 
 func syncIdentityDirectory(path string) error {
+	// Windows cannot flush the read-only directory handle opened by os.Open.
+	// The identity file is synced before its non-replacing hard-link publication.
+	if runtime.GOOS == "windows" {
+		return nil
+	}
 	dir, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("open identity directory: %w", err)

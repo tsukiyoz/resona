@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 
 	"github.com/tsukiyoz/resona/internal/client"
@@ -32,7 +33,7 @@ func TestPersistenceRoundTripAndPermissions(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if info.Mode().Perm() != entry.mode {
+		if runtime.GOOS != "windows" && info.Mode().Perm() != entry.mode {
 			t.Errorf("%s mode %o, want %o", entry.path, info.Mode().Perm(), entry.mode)
 		}
 	}
