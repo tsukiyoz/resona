@@ -1,5 +1,21 @@
 # Windows x64 构建
 
+## 最省事：下载云端构建
+
+打开仓库 **Actions -> Windows build**，选择成功的构建，在 **Artifacts** 下载 `Resona-win-x64-<commit>`，解压后再解压其中的 `Resona-win-x64.zip`，运行 `resona-desktop.exe`。不需要在自己电脑安装 Go、Rust 或 GCC。也可点击 **Run workflow** 手动构建指定分支；主分支相关代码变化会自动构建。只有 workflow 已推送且运行成功后才会出现产物；构建成功不代表麦克风、显卡和游戏后台已实机验收。
+
+## 本地单命令
+
+工具链安装一次后，在仓库根目录运行：
+
+```powershell
+.\build-windows.cmd
+```
+
+脚本自动初始化 VS 环境、选择 MSVC Rust、设置 CGO/GCC、执行 Go/Rust 测试、构建两个 exe 并生成 `desktop/dist/Resona-win-x64.zip`。不必手动打开 Developer PowerShell、设置 CC 或切换工具链。MSYS2 自定义路径可用 `build-windows.cmd -Msys2Root D:\msys64`；本地快速构建可加 `-SkipTests`，CI 默认执行测试。缺少工具时会报告具体项目；脚本不会擅自安装 Visual Studio 或修改系统环境。
+
+云端与本地共用同一个脚本。当前方案使用 Windows 原生构建机，未提供 Linux Docker 交叉构建：Rust MSVC 和 Windows SDK 仍需 Windows 工具链，容器不会自动消除这部分要求。
+
 构建当前 GPUI 客户端，不需要 Node.js、npm、Wails 或 WebView2。请在 Windows 本机执行，下面所有项目命令均从仓库根目录运行。当前 macOS 已验证；Windows 本机构建、设备、后台按键及游戏负载仍待实测，不将脚本存在等同于 Windows 验收通过。
 
 ## 一次性准备
@@ -56,7 +72,7 @@ if ($LASTEXITCODE -ne 0) { throw "Desktop packaging failed" }
 
 ## 运行与问题定位
 
-- 保持 GCC 的 `ucrt64/bin` 在本次终端 PATH，先验证本机运行。脚本目前只打包两个 exe，不声明已完成免安装分发；如其他机器报告缺少运行库，应检查 exe 的 DLL 依赖，不从不明网站下载 DLL。
+- 一键脚本还会收集本机 GCC 运行库与许可文件；旧 package-windows.ps1 只打包两个 exe。目标机可能仍需 Microsoft Visual C++ 2015-2022 x64 Redistributable。尚未完成干净 Windows 机器的免安装验收；如报告缺少运行库，应检查 exe 的 DLL 依赖，不从不明网站下载 DLL。
 - `gcc not found`：核对 UCRT64 安装路径与 CC。`link.exe`/Windows SDK 错误：确认使用 VS Developer PowerShell 和 MSVC Rust，且已经清除 CC/CXX 的 GCC 覆盖。不要将 MSYS2 的 `usr/bin` 放到 MSVC 链接器前面。
 - 更新显卡驱动；当前 GPUI Windows 后端使用 Direct3D 11。首次先测试离线界面和本地麦克风回放，按系统提示授权麦克风。
 - 连接后自动收听、麦克风默认静音。真实服务器验证只在 Resona 专用测试频道进行；不能把默认登录频道当作测试频道。
