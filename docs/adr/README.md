@@ -12,5 +12,7 @@
 | [0008](0008-server-navigation-and-credentials.md) | 成员可见范围、服务器进入与系统钥匙串凭据 | Accepted |
 | [0009](0009-channel-text-and-presentation.md) | 协议适配边界、频道文字与真实频道呈现 | Accepted |
 | [0010](0010-local-icon-cache.md) | 有限内存、本地图标缓存与网络回退 | Accepted |
+| [0011](0011-native-gpui.md) | GPUI 原生实验与 Go 子进程核心 | Accepted（实验） |
+| [0012](0012-voice-engine.md) | Go 语音与显式设备生命周期 | Accepted |
 
 状态可为 Proposed、Accepted、Superseded、Rejected。新增重大决定使用递增编号，注明日期和替代关系。

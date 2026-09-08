@@ -36,6 +36,7 @@ type RemoteMessage struct{ ChannelID, UserID, Author, Text string }
 func (s *Service) SendChannelMessage(sessionID, channelID, text string) (Workspace, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer s.notifyChangedLocked()
 	if sessionID == "" || sessionID != s.state.Session.ID || channelID != s.state.Session.ChannelID {
 		return Workspace{}, ErrMessageChannelChanged
 	}
@@ -55,6 +56,7 @@ func (s *Service) SendChannelMessage(sessionID, channelID, text string) (Workspa
 func (s *Service) RetryMessage(id string, allowDuplicate bool) (Workspace, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer s.notifyChangedLocked()
 	if err := s.canSendMessageLocked(); err != nil {
 		return Workspace{}, err
 	}
@@ -131,6 +133,7 @@ func (s *Service) startMessageLocked(id string) {
 		err := sender.SendChannelMessage(ctx, outgoing.ChannelID, outgoing.Text)
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		defer s.notifyChangedLocked()
 		if generation != s.generation || sequence != s.messageSequence {
 			return
 		}

@@ -52,6 +52,7 @@ func (s *Service) selectRemoteChannelLocked(id string) (Workspace, error) {
 		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		defer s.notifyChangedLocked()
 		if s.generation != generation || s.moveSequence != sequence || s.state.Session.Mode != "connected" {
 			return
 		}

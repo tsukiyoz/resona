@@ -13,6 +13,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/tsukiyoz/resona/internal/audio"
 )
 
 type ServerProfile struct {
@@ -88,13 +90,22 @@ type ProfileStore interface {
 }
 
 type Service struct {
-	mu           sync.Mutex
-	lifecycleMu  sync.Mutex
-	credentialMu sync.Mutex
-	passwords    PasswordStore
-	store        ProfileStore
-	connector    RemoteConnector
-	state        Workspace
+	mu             sync.Mutex
+	lifecycleMu    sync.Mutex
+	credentialMu   sync.Mutex
+	passwords      PasswordStore
+	store          ProfileStore
+	connector      RemoteConnector
+	state          Workspace
+	subscribers    map[chan struct{}]struct{}
+	voiceMu        sync.Mutex
+	voice          voiceEngine
+	voiceState     VoiceState
+	voiceEpoch     uint64
+	voiceOperation uint64
+	retiredVoices  []voiceEngine
+	voiceCancel    context.CancelFunc
+	newVoice       func(audio.Transport, func(audio.VoiceState)) voiceEngine
 
 	connection      RemoteConnection
 	connectCancel   context.CancelFunc
@@ -127,7 +138,7 @@ func NewWithPasswordStore(store ProfileStore, connector RemoteConnector, passwor
 	if profiles == nil {
 		profiles = []ServerProfile{}
 	}
-	return &Service{store: store, connector: connector, passwords: passwords, connectTimeout: 30 * time.Second, moveTimeout: 8 * time.Second, messageTimeout: 8 * time.Second, state: Workspace{
+	return &Service{store: store, connector: connector, passwords: passwords, voiceState: VoiceState{VoiceConfig: defaultVoiceConfig()}, connectTimeout: 30 * time.Second, moveTimeout: 8 * time.Second, messageTimeout: 8 * time.Second, state: Workspace{
 		Servers: profiles, Session: Session{Mode: "offline", Nickname: "Resona"},
 		Channels: []Channel{}, Users: []User{}, Messages: []Message{}, Notifications: []Notification{},
 	}}, nil
@@ -144,6 +155,7 @@ func (s *Service) SaveServer(profile ServerProfile) (Workspace, error) {
 	defer s.credentialMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer s.notifyChangedLocked()
 	profile.Name = strings.TrimSpace(profile.Name)
 	profile.Address = strings.TrimSpace(profile.Address)
 	profile.Nickname = strings.TrimSpace(profile.Nickname)
@@ -188,6 +200,7 @@ func (s *Service) DeleteServer(id string) (Workspace, error) {
 	defer s.credentialMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer s.notifyChangedLocked()
 	if s.remoteActiveLocked() && s.state.Session.ServerID == id {
 		return Workspace{}, errors.New("请先断开当前服务器，再删除该书签")
 	}
@@ -218,6 +231,7 @@ func (s *Service) DeleteServer(id string) (Workspace, error) {
 func (s *Service) OpenPreview() (Workspace, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer s.notifyChangedLocked()
 	if s.remoteActiveLocked() {
 		return Workspace{}, errors.New("请先断开当前服务器，再打开本地预览")
 	}
@@ -239,6 +253,7 @@ func (s *Service) OpenPreview() (Workspace, error) {
 func (s *Service) LeavePreview() (Workspace, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer s.notifyChangedLocked()
 	if s.remoteActiveLocked() {
 		return Workspace{}, errors.New("当前是远程会话，不能退出本地预览")
 	}
@@ -252,6 +267,7 @@ func (s *Service) LeavePreview() (Workspace, error) {
 func (s *Service) SelectChannel(id string) (Workspace, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer s.notifyChangedLocked()
 	if s.state.Session.Mode == "connected" {
 		return s.selectRemoteChannelLocked(id)
 	}
@@ -298,6 +314,7 @@ func (s *Service) SelectChannel(id string) (Workspace, error) {
 func (s *Service) SendMessage(text string) (Workspace, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer s.notifyChangedLocked()
 	if s.state.Session.Mode != "preview" {
 		if s.remoteActiveLocked() {
 			return Workspace{}, errors.New("真实服务器暂不支持发送消息")

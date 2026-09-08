@@ -40,6 +40,8 @@ type clientInitOptions struct {
 	serverPassword         string
 	defaultChannel         string
 	defaultChannelPassword string
+	inputMuted             bool
+	outputMuted            bool
 }
 
 // Client is the TeamSpeak 3 client.
@@ -61,6 +63,7 @@ type Client struct {
 	textMsgHandlers      []func(TextMessage)
 	cmdMiddlewares       []CommandMiddleware
 	commandObservers     []CommandObserver
+	voiceObservers       []VoiceObserver
 	eventMiddlewares     []EventMiddleware
 	clientEnterHandlers  []func(ClientInfo)
 	clientLeaveHandlers  []func(ClientLeftViewEvent)
@@ -115,6 +118,23 @@ func WithCommandObserver(observer CommandObserver) ClientOption {
 		if observer != nil {
 			c.commandObservers = append(c.commandObservers, observer)
 		}
+	}
+}
+
+// WithVoiceObserver registers a bounded raw Opus packet observer during construction.
+func WithVoiceObserver(observer VoiceObserver) ClientOption {
+	return func(c *Client) {
+		if observer != nil {
+			c.voiceObservers = append(c.voiceObservers, observer)
+		}
+	}
+}
+
+// WithInitialMute controls the clientupdate sent immediately after login.
+func WithInitialMute(inputMuted, outputMuted bool) ClientOption {
+	return func(c *Client) {
+		c.clientInitOptions.inputMuted = inputMuted
+		c.clientInitOptions.outputMuted = outputMuted
 	}
 }
 

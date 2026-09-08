@@ -1,6 +1,7 @@
 package ts3
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -11,14 +12,24 @@ import (
 
 // A reducer belongs to one connection and runs in the incoming command order.
 type reducer struct {
-	state        client.RemoteState
-	channels     map[string]client.Channel
-	users        map[string]client.User
-	initialized  bool
-	listed       bool
-	presentation map[string]channelMetadata
-	iconCache    map[string]string
-	serverUID    string
+	state                      client.RemoteState
+	channels                   map[string]client.Channel
+	users                      map[string]client.User
+	initialized                bool
+	listed                     bool
+	presentation               map[string]channelMetadata
+	iconCache                  map[string]string
+	serverUID                  string
+	voice                      map[string]voiceChannel
+	serverVoiceEncryptionMode  uint8
+	serverVoiceEncryptionKnown bool
+}
+
+type voiceChannel struct {
+	codec           uint8
+	codecKnown      bool
+	unencrypted     bool
+	encryptionKnown bool
 }
 
 type channelMetadata struct {
@@ -28,7 +39,7 @@ type channelMetadata struct {
 
 func newReducer(uid string) *reducer {
 	return &reducer{state: client.RemoteState{IdentityUID: uid},
-		channels: make(map[string]client.Channel), users: make(map[string]client.User), presentation: make(map[string]channelMetadata), iconCache: make(map[string]string)}
+		channels: make(map[string]client.Channel), users: make(map[string]client.User), presentation: make(map[string]channelMetadata), iconCache: make(map[string]string), voice: make(map[string]voiceChannel)}
 }
 
 func (r *reducer) apply(command teamspeak.IncomingCommand) bool {
@@ -46,6 +57,17 @@ func (r *reducer) apply(command teamspeak.IncomingCommand) bool {
 		r.state.SelfID = p["aclid"]
 		if r.state.SelfID == "" {
 			r.state.SelfID = p["clid"]
+		}
+		if v, ok := p["virtualserver_codec_encryption_mode"]; ok {
+			mode, err := strconv.ParseUint(v, 10, 8)
+			r.serverVoiceEncryptionMode = uint8(mode)
+			r.serverVoiceEncryptionKnown = err == nil && mode <= 2
+		}
+	case "notifyserveredited":
+		if v, ok := p["virtualserver_codec_encryption_mode"]; ok {
+			mode, err := strconv.ParseUint(v, 10, 8)
+			r.serverVoiceEncryptionMode = uint8(mode)
+			r.serverVoiceEncryptionKnown = err == nil && mode <= 2
 		}
 	case "channellist", "notifychannelcreated", "notifychanneledited", "notifychannelmoved":
 		id := p["cid"]
@@ -87,11 +109,21 @@ func (r *reducer) apply(command teamspeak.IncomingCommand) bool {
 		}
 		ch.IconDataURL = r.iconCache[ch.IconID]
 		r.channels[id] = ch
+		voice := r.voice[id]
+		if v, ok := p["channel_codec"]; ok {
+			codec, err := strconv.ParseUint(v, 10, 8)
+			voice.codec, voice.codecKnown = uint8(codec), err == nil
+		}
+		if v, ok := p["channel_codec_is_unencrypted"]; ok {
+			voice.unencrypted, voice.encryptionKnown = v == "1", v == "0" || v == "1"
+		}
+		r.voice[id] = voice
 	case "channellistfinished":
 		r.listed = true
 	case "notifychanneldeleted":
 		delete(r.channels, p["cid"])
 		delete(r.presentation, p["cid"])
+		delete(r.voice, p["cid"])
 	case "notifytextmessage":
 		return r.applyChannelText(p)
 	case "notifycliententerview", "notifyclientupdated", "notifyclientmoved":
@@ -133,6 +165,33 @@ func (r *reducer) apply(command teamspeak.IncomingCommand) bool {
 		return false
 	}
 	return true
+}
+
+func (r *reducer) currentVoiceChannel() (voiceChannel, error) {
+	self, ok := r.users[r.state.SelfID]
+	if !ok || !validID(self.ChannelID) {
+		return voiceChannel{}, errors.New("当前语音频道不可用")
+	}
+	voice, ok := r.voice[self.ChannelID]
+	if !ok || !voice.codecKnown {
+		return voiceChannel{}, errors.New("服务器未提供当前频道的语音编码")
+	}
+	return voice, nil
+}
+
+func (r *reducer) voiceEncryption(voice voiceChannel) (bool, error) {
+	if r.serverVoiceEncryptionKnown {
+		switch r.serverVoiceEncryptionMode {
+		case 1:
+			voice.unencrypted, voice.encryptionKnown = true, true
+		case 2:
+			voice.unencrypted, voice.encryptionKnown = false, true
+		}
+	}
+	if !voice.encryptionKnown {
+		return false, errors.New("服务器未提供当前频道的语音加密状态")
+	}
+	return voice.unencrypted, nil
 }
 
 // Subscription snapshots are not live joins, even after our own login is ready.

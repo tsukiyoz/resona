@@ -133,6 +133,7 @@ func (s *Service) prepareCredentials(id, expectedAddress, password string, remem
 		return "", errors.New("无法保存密码偏好，连接尚未切换")
 	}
 	s.state.Servers = profiles
+	s.notifyChangedLocked()
 	return password, nil
 }
 
@@ -151,6 +152,7 @@ func (s *Service) rememberSuccessfulPassword(profile ServerProfile, password str
 	defer s.mu.Unlock()
 	if generation == s.generation && err != nil {
 		s.state.Session.CredentialError = "已连接，但密码未保存，请检查系统钥匙串"
+		s.notifyChangedLocked()
 	}
 }
 
@@ -159,6 +161,7 @@ func (s *Service) ForgetServerPassword(id string) (Workspace, error) {
 	defer s.credentialMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer s.notifyChangedLocked()
 	profile, ok := s.profileLocked(id)
 	if !ok {
 		return Workspace{}, errors.New("服务器书签不存在")

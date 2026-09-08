@@ -29,6 +29,7 @@ const (
 	headerSize              = 5
 	tagSize                 = 8
 	voiceHeaderSize         = 3
+	maxVoiceDataSize        = 1275
 	ackDataSize             = 2
 )
 
@@ -71,6 +72,8 @@ type PacketHandler struct {
 	stopCh               chan struct{}
 	recvWindowCommand    *GenerationWindow
 	recvWindowCommandLow *GenerationWindow
+	recvWindowVoice      *GenerationWindow
+	recvWindowWhisper    *GenerationWindow
 	sendWindowCommand    *GenerationWindow
 	sendWindowCommandLow *GenerationWindow
 	ackManager           map[uint32]*resendPacket
@@ -116,6 +119,8 @@ func NewPacketHandler(tsCrypt *crypto.Crypt, logger *slog.Logger) *PacketHandler
 		stopCh:               make(chan struct{}),
 		recvWindowCommand:    NewGenerationWindow(1<<16, ReceivePacketWindowSize),
 		recvWindowCommandLow: NewGenerationWindow(1<<16, ReceivePacketWindowSize),
+		recvWindowVoice:      NewGenerationWindow(1<<16, ReceivePacketWindowSize),
+		recvWindowWhisper:    NewGenerationWindow(1<<16, ReceivePacketWindowSize),
 		sendWindowCommand:    NewGenerationWindow(1<<16, ReceivePacketWindowSize),
 		sendWindowCommandLow: NewGenerationWindow(1<<16, ReceivePacketWindowSize),
 		commandQueue:         make(map[uint16]*Packet),
@@ -415,6 +420,10 @@ func (h *PacketHandler) resolvePacketGeneration(p *Packet) uint32 {
 	var gen uint32
 	h.mu.Lock()
 	switch p.Type() {
+	case PacketTypeVoice:
+		gen = h.recvWindowVoice.GetGeneration(int(p.ID))
+	case PacketTypeVoiceWhisper:
+		gen = h.recvWindowWhisper.GetGeneration(int(p.ID))
 	case PacketTypeCommand:
 		gen = h.recvWindowCommand.GetGeneration(int(p.ID))
 	case PacketTypeCommandLow:
@@ -423,7 +432,7 @@ func (h *PacketHandler) resolvePacketGeneration(p *Packet) uint32 {
 		gen = h.sendWindowCommand.GetGeneration(int(p.ID))
 	case PacketTypeAckLow:
 		gen = h.sendWindowCommandLow.GetGeneration(int(p.ID))
-	case PacketTypeVoice, PacketTypeVoiceWhisper, PacketTypePing, PacketTypePong, PacketTypeInit1:
+	case PacketTypePing, PacketTypePong, PacketTypeInit1:
 		// No generation tracking for these packet types.
 	default:
 		// Unknown packet type, keep generation as zero.
@@ -562,6 +571,16 @@ func (h *PacketHandler) updatePostReceiveState(p *Packet) {
 		h.logger.Debug("received init1 response, cleared init packet check")
 		h.initPacketCheck = nil
 
+		return
+	}
+	if p.Type() == PacketTypeVoice || p.Type() == PacketTypeVoiceWhisper {
+		win := h.recvWindowVoice
+		if p.Type() == PacketTypeVoiceWhisper {
+			win = h.recvWindowWhisper
+		}
+		if win.IsInWindow(int(p.ID)) {
+			win.AdvanceToExcluded(int(p.ID))
+		}
 		return
 	}
 	if (p.Type() == PacketTypeAck || p.Type() == PacketTypeAckLow) && len(p.Data) >= 2 {
@@ -873,7 +892,13 @@ func (h *PacketHandler) doResend(rp *resendPacket, now time.Time) {
 	}
 }
 
-func (h *PacketHandler) SendVoicePacket(data []byte, codec byte) error {
+func (h *PacketHandler) SendVoicePacket(data []byte, codec byte, encryption ...bool) error {
+	if len(data) == 0 || len(data) > maxVoiceDataSize {
+		return errors.New("invalid Opus voice payload size")
+	}
+	if codec != 4 && codec != 5 {
+		return errors.New("unsupported voice codec")
+	}
 	h.mu.Lock()
 	pID := h.packetCounter[PacketTypeVoice]
 	pGen := h.generationCounter[PacketTypeVoice]
@@ -891,8 +916,13 @@ func (h *PacketHandler) SendVoicePacket(data []byte, codec byte) error {
 	voicePayload[2] = codec
 	copy(voicePayload[voiceHeaderSize:], data)
 
+	encrypted := len(encryption) > 0 && encryption[0]
+	flags := byte(0)
+	if !encrypted {
+		flags = byte(PacketFlagUnencrypted)
+	}
 	p := &Packet{
-		TypeFlagged:  byte(PacketTypeVoice) | byte(PacketFlagUnencrypted),
+		TypeFlagged:  byte(PacketTypeVoice) | flags,
 		ID:           pID,
 		GenerationID: pGen,
 		Data:         voicePayload,
@@ -903,9 +933,15 @@ func (h *PacketHandler) SendVoicePacket(data []byte, codec byte) error {
 
 	final := getPooledBytes(&bufPool, tagSize+headerSize+payloadLen)
 
-	copy(final[0:8], h.TsCrypt.FakeSignature)
+	ciphertext, tag, encryptErr := h.TsCrypt.Encrypt(byte(PacketTypeVoice), p.ID, p.GenerationID, header, voicePayload, !h.TsCrypt.CryptoInitComplete, !encrypted)
+	if encryptErr != nil {
+		putPooledBytes(&bufPool, final)
+		putPooledBytes(&voicePayloadPool, voicePayload)
+		return encryptErr
+	}
+	copy(final[0:8], tag)
 	copy(final[8:13], header)
-	copy(final[13:], voicePayload)
+	copy(final[13:], ciphertext)
 
 	_, err := h.conn.Write(final[:tagSize+headerSize+payloadLen])
 
