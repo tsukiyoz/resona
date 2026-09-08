@@ -37,7 +37,8 @@ func TestIconWorkersReuseConnectorCacheAcrossReconnectAndRestart(t *testing.T) {
 		loader.Request("1000")
 		select {
 		case got := <-published:
-			if got != data {
+			image, err := connector.icons.Read(ctx, got)
+			if err != nil || image != data {
 				t.Fatal("worker published incorrect cached image")
 			}
 		case <-time.After(time.Second):
@@ -78,13 +79,13 @@ func TestInitServerCachesServerIdentitySeparatelyFromClientIdentity(t *testing.T
 }
 
 func TestExplicitConnectorCachesDoNotShareMemory(t *testing.T) {
-	first, second := New("unused-a"), New("unused-b")
+	first, second := New("unused-a", iconcache.New("")), New("unused-b", iconcache.New(""))
 	if first.icons == nil || first.icons == second.icons {
 		t.Fatal("explicit connectors must own independent caches")
 	}
 }
 
-func TestConnectorConstructorsKeepExplicitPathsInMemoryAndDefaultOnDisk(t *testing.T) {
+func TestApplicationOwnsInjectedCache(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
@@ -101,7 +102,7 @@ func TestConnectorConstructorsKeepExplicitPathsInMemoryAndDefaultOnDisk(t *testi
 	key := iconcache.Key{Protocol: "ts3", Address: "localhost:9987", IconID: "1000", IdentityUID: "test", TransformVersion: iconTransformVersion}
 	downloads := 0
 	fetch := func(context.Context) (string, error) { downloads++; return data, nil }
-	explicit := New(filepath.Join(home, "identity.key"))
+	explicit := New(filepath.Join(home, "identity.key"), iconcache.New(""))
 	for range 2 {
 		if _, err := explicit.icons.Get(context.Background(), key, fetch); err != nil {
 			t.Fatal(err)
@@ -114,7 +115,7 @@ func TestConnectorConstructorsKeepExplicitPathsInMemoryAndDefaultOnDisk(t *testi
 		t.Fatal("explicit connector unexpectedly writes default cache")
 	}
 	for range 2 {
-		connector, err := NewDefault()
+		connector, err := NewDefault(iconcache.NewDefault())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -127,5 +128,18 @@ func TestConnectorConstructorsKeepExplicitPathsInMemoryAndDefaultOnDisk(t *testi
 	}
 	if _, err := os.Stat(dir); err != nil {
 		t.Fatal("default connector did not persist in OS cache directory:", err)
+	}
+}
+
+func TestConnectorWithoutInjectedStoreDoesNotAllocateCache(t *testing.T) {
+	if New("unused").icons != nil {
+		t.Fatal("connector allocated an implicit cache")
+	}
+	connector, err := NewDefault()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if connector.icons != nil {
+		t.Fatal("default connector allocated an implicit cache")
 	}
 }

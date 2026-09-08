@@ -50,17 +50,17 @@ func TestIconPublicationDoesNotReplayMessagesAndCachesForNewChannels(t *testing.
 	r.state.Events = []client.RemoteEvent{{Kind: "member_joined"}}
 	var published client.RemoteState
 	s := &connection{state: r, update: func(state client.RemoteState) { published = state }}
-	s.publishIcon("1234", "data:image/png;base64,test")
-	if len(published.Messages) != 0 || len(published.Events) != 0 || published.Channels[0].IconDataURL == "" {
+	s.publishIcon("1234", "opaque-reference")
+	if len(published.Messages) != 0 || len(published.Events) != 0 || published.Channels[0].IconRef == "" {
 		t.Fatal("icon update replayed transient events or omitted image")
 	}
 	r.apply(teamspeak.IncomingCommand{Name: "notifychannelcreated", Params: map[string]string{"cid": "21", "channel_name": "Another", "channel_icon_id": "1234"}})
-	if r.channels["21"].IconDataURL == "" {
+	if r.channels["21"].IconRef == "" {
 		t.Fatal("cached image not reused for new channel")
 	}
 	s.closing = true
 	s.publishIcon("1234", "changed-after-close")
-	if r.channels["20"].IconDataURL == "changed-after-close" {
+	if r.channels["20"].IconRef == "changed-after-close" {
 		t.Fatal("closed connection accepted late icon")
 	}
 }

@@ -53,6 +53,8 @@ fn main() -> Result<()> {
         gpui_component::init(cx);
         cx.bind_keys([
             KeyBinding::new("escape", ui::DismissModal, None),
+            KeyBinding::new("cmd-q", ui::Quit, None),
+            KeyBinding::new("ctrl-q", ui::Quit, None),
             KeyBinding::new("shift-enter", Enter { secondary: true }, Some("Input")),
         ]);
         let bounds = Bounds::centered(None, size(px(1240.), px(780.)), cx);
@@ -75,6 +77,12 @@ fn main() -> Result<()> {
             |window, cx| {
                 Theme::change(ThemeMode::Dark, Some(window), cx);
                 let view = cx.new(|cx| ui::ResonaApp::new(window, cx));
+                let close_view = view.downgrade();
+                window.on_window_should_close(cx, move |_, cx| {
+                    close_view
+                        .update(cx, |view, cx| view.begin_shutdown(cx))
+                        .is_err()
+                });
                 cx.new(|cx| Root::new(view, window, cx))
             },
         )

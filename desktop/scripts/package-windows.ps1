@@ -17,7 +17,7 @@ if ($env:CGO_ENABLED -ne "1") {
     throw "Set CGO_ENABLED=1 and build resona-core with a working C compiler before packaging voice support."
 }
 
-cargo build --manifest-path "$DesktopDirectory\Cargo.toml" --release --target x86_64-pc-windows-msvc
+cargo build --locked --manifest-path "$DesktopDirectory\Cargo.toml" --release --target x86_64-pc-windows-msvc
 if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE" }
 if ((Test-Path $OutputDirectory) -and -not (Test-Path "$OutputDirectory\.resona-package" -PathType Leaf)) {
     throw "Refusing to replace an unrecognized output directory: $OutputDirectory"

@@ -10,6 +10,7 @@ import (
 	"github.com/tsukiyoz/resona/internal/config"
 	"github.com/tsukiyoz/resona/internal/credentials"
 	"github.com/tsukiyoz/resona/internal/desktopipc"
+	"github.com/tsukiyoz/resona/internal/iconcache"
 	"github.com/tsukiyoz/resona/internal/protocol/ts3"
 )
 
@@ -25,7 +26,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("cannot open Resona profiles: %w", err)
 	}
-	connector, err := ts3.NewDefault()
+	connector, err := ts3.NewDefault(iconcache.NewDefault())
 	if err != nil {
 		return fmt.Errorf("cannot initialize Resona identity: %w", err)
 	}

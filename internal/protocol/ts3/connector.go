@@ -28,19 +28,21 @@ type Connector struct {
 	icons        *iconcache.Cache
 }
 
-// Explicit identity paths keep tests and embedding callers in memory only.
-func New(identityPath string) *Connector {
-	return &Connector{identityPath: identityPath, icons: iconcache.New("")}
+// The application owns the optional cache. Without one, custom icons are disabled.
+func New(identityPath string, stores ...*iconcache.Cache) *Connector {
+	c := &Connector{identityPath: identityPath}
+	if len(stores) > 0 {
+		c.icons = stores[0]
+	}
+	return c
 }
 
-func NewDefault() (*Connector, error) {
+func NewDefault(stores ...*iconcache.Cache) (*Connector, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return nil, err
 	}
-	c := New(filepath.Join(dir, "resona", "identity.key"))
-	c.icons = iconcache.NewDefault()
-	return c, nil
+	return New(filepath.Join(dir, "resona", "identity.key"), stores...), nil
 }
 
 func (c *Connector) Connect(ctx context.Context, profile client.ServerProfile, password string, update func(client.RemoteState)) (client.RemoteConnection, error) {
@@ -72,16 +74,19 @@ func (c *Connector) Connect(ctx context.Context, profile client.ServerProfile, p
 		stop()
 		return nil, errors.New("invalid resolved TS3 endpoint")
 	}
-	s.icons = newCachedIconLoader(lifetime, c.icons, func() iconcache.Key {
-		s.mu.Lock()
-		serverUID := s.state.serverUID
-		s.mu.Unlock()
-		return iconcache.Key{Protocol: "ts3", ServerUID: serverUID,
-			Address: strings.ToLower(strings.TrimSpace(profile.Address)), Endpoint: endpoint,
-			IdentityUID: identityUID(id)}
-	}, func(ctx context.Context, iconID string) (string, error) {
-		return downloadChannelIcon(ctx, host, iconID, s.client.FileTransferInitDownloadContext)
-	}, s.publishIcon)
+	s.iconStore = c.icons
+	if c.icons != nil {
+		s.icons = newCachedIconLoader(lifetime, c.icons, func() iconcache.Key {
+			s.mu.Lock()
+			serverUID := s.state.serverUID
+			s.mu.Unlock()
+			return iconcache.Key{Protocol: "ts3", ServerUID: serverUID,
+				Address: strings.ToLower(strings.TrimSpace(profile.Address)), Endpoint: endpoint,
+				IdentityUID: identityUID(id)}
+		}, func(ctx context.Context, iconID string) (string, error) {
+			return downloadChannelIcon(ctx, host, iconID, s.client.FileTransferInitDownloadContext)
+		}, s.publishIcon)
+	}
 	s.client.OnDisconnected(func(error) { s.disconnected() })
 	// The endpoint is already numeric, so Connect does no blocking DNS work.
 	if err := s.client.Connect(); err != nil {
@@ -136,6 +141,7 @@ type connection struct {
 	subscribeStarted     bool
 	background           sync.WaitGroup
 	icons                *iconLoader
+	iconStore            *iconcache.Cache
 	voiceMu              sync.RWMutex
 	voiceHandler         func(audio.Packet)
 	voiceQueryRetryDelay time.Duration

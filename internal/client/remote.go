@@ -77,6 +77,7 @@ func (s *Service) connectServerLocked(id, password string, remember bool, expect
 		return Workspace{}, errors.New("服务器地址已更改，请重新连接")
 	}
 
+	s.stopMicrophoneTestLocked()
 	s.generation++
 	generation := s.generation
 	ctx, cancel := context.WithTimeout(context.Background(), s.connectTimeout)
@@ -147,6 +148,7 @@ func (s *Service) connect(ctx context.Context, connector RemoteConnector, profil
 	s.addNotificationLocked("connected", s.state.Session.ChannelID)
 	s.notifyChangedLocked()
 	s.mu.Unlock()
+	_, _ = s.ConfigureDefaultVoice(generation)
 	if remember {
 		s.rememberSuccessfulPassword(profile, password, generation)
 	}
@@ -282,6 +284,7 @@ func (s *Service) Shutdown() {
 	defer s.lifecycleMu.Unlock()
 	s.mu.Lock()
 	s.shutdown = true
+	s.stopMicrophoneTestLocked()
 	preview := s.state.Session.Mode == "preview"
 	s.mu.Unlock()
 	if preview {

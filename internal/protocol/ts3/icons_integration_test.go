@@ -15,6 +15,7 @@ import (
 
 	teamspeak "github.com/honeybbq/teamspeak-go"
 	"github.com/tsukiyoz/resona/internal/client"
+	"github.com/tsukiyoz/resona/internal/iconcache"
 )
 
 func TestLiveDedicatedChannelIcons(t *testing.T) {
@@ -38,7 +39,7 @@ func TestLiveDedicatedChannelIcons(t *testing.T) {
 	var mu sync.Mutex
 	var latest client.RemoteState
 	changed := make(chan struct{}, 1)
-	conn, err := New(identity).Connect(ctx, client.ServerProfile{Address: endpoint, Nickname: "Resona-IconVerify"}, os.Getenv("RESONA_TS_PASSWORD"), func(state client.RemoteState) {
+	conn, err := New(identity, iconcache.New("")).Connect(ctx, client.ServerProfile{Address: endpoint, Nickname: "Resona-IconVerify"}, os.Getenv("RESONA_TS_PASSWORD"), func(state client.RemoteState) {
 		mu.Lock()
 		latest = state
 		mu.Unlock()
@@ -83,8 +84,11 @@ func TestLiveDedicatedChannelIcons(t *testing.T) {
 			}
 			expected++
 			unique[ch.IconID] = true
-			if strings.HasPrefix(ch.IconDataURL, "data:image/png;base64,") {
-				loaded++
+			if ch.IconRef != "" {
+				resource, err := conn.(*connection).ReadIconResource(ctx, ch.IconRef)
+				if err == nil && strings.HasPrefix(resource.DataURL, "data:image/png;base64,") {
+					loaded++
+				}
 			}
 		}
 		if expected == 0 {
@@ -99,7 +103,7 @@ func TestLiveDedicatedChannelIcons(t *testing.T) {
 		case <-ctx.Done():
 			diagnostics := 0
 			for _, ch := range state.Channels {
-				if !customIconID(ch.IconID) || ch.IconDataURL != "" || diagnostics >= 3 {
+				if !customIconID(ch.IconID) || ch.IconRef != "" || diagnostics >= 3 {
 					continue
 				}
 				diagnostics++

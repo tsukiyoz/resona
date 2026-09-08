@@ -18,15 +18,8 @@ CGO_ENABLED=1 go build -o ../build/bin/resona-core ../cmd/resona-core
 ./scripts/package-macos.sh
 ```
 
-On Windows, build the Go core as `build/bin/resona-core.exe`, then run
-`scripts/package-windows.ps1`. Build it from a Developer PowerShell with a C
-compiler available; voice support requires CGO and the package script rejects
-an unset `CGO_ENABLED`:
-
-```powershell
-$env:CGO_ENABLED = "1"
-go build -o build/bin/resona-core.exe ./cmd/resona-core
-desktop/scripts/package-windows.ps1
-```
-
-Windows packaging is implemented but requires runtime verification on Windows.
+For Windows x64 prerequisites and commands from the repository root, see
+[Windows build instructions](../docs/windows-build.md). The Go audio core uses
+CGO/GCC; the Rust GUI uses the MSVC toolchain. Do not pass the Go GCC override
+to the Rust build. Windows packaging is implemented but still requires native
+build and runtime verification on Windows.

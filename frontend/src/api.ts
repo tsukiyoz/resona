@@ -16,7 +16,7 @@ export interface Channel {
   align: "left" | "center" | "right";
   repeat: boolean;
   iconID: string;
-  iconDataURL: string;
+  iconRef: string;
 }
 export interface User {
   id: string;
@@ -70,6 +70,7 @@ export interface Workspace {
   notifications: Notification[];
 }
 interface Bridge {
+  GetIconResource(sessionID: string, ref: string): Promise<{ref: string; dataURL: string}>;
   GetWorkspace(): Promise<Workspace>;
   SaveServer(server: ServerProfile): Promise<Workspace>;
   DeleteServer(id: string): Promise<Workspace>;
@@ -117,7 +118,7 @@ const channels: Channel[] = [
     align: "left",
     repeat: false,
     iconID: "",
-    iconDataURL: "",
+    iconRef: "",
   },
   {
     id: "music",
@@ -131,7 +132,7 @@ const channels: Channel[] = [
     align: "left",
     repeat: false,
     iconID: "",
-    iconDataURL: "",
+    iconRef: "",
   },
   {
     id: "workshop",
@@ -145,7 +146,7 @@ const channels: Channel[] = [
     align: "left",
     repeat: false,
     iconID: "",
-    iconDataURL: "",
+    iconRef: "",
   },
 ];
 const emptyWorkspace = (): Workspace => ({
@@ -246,6 +247,7 @@ function validAddress(address: string): boolean {
     );
 }
 const browserBridge: Bridge = {
+  async GetIconResource() { throw new Error("本地预览没有远程图标资源"); },
   async GetWorkspace() {
     loadBookmarks();
     return result();
@@ -386,7 +388,7 @@ function normalizeWorkspace(value: Workspace): Workspace {
       align: channel.align ?? "left",
       repeat: channel.repeat ?? false,
       iconID: channel.iconID ?? "",
-      iconDataURL: channel.iconDataURL ?? "",
+      iconRef: channel.iconRef ?? "",
     })),
     users: value?.users ?? [],
     messages: (value?.messages ?? []).map((message) => ({
@@ -401,6 +403,7 @@ function normalizeWorkspace(value: Workspace): Workspace {
 
 function normalizeBridge(bridge: Bridge): Bridge {
   return {
+    GetIconResource: (sessionID, ref) => bridge.GetIconResource(sessionID, ref),
     GetWorkspace: async () => normalizeWorkspace(await bridge.GetWorkspace()),
     SaveServer: async (server) =>
       normalizeWorkspace(await bridge.SaveServer(server)),

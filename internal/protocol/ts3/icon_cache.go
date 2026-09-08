@@ -14,6 +14,6 @@ func newCachedIconLoader(ctx context.Context, cache *iconcache.Cache, scope func
 	return newIconLoader(ctx, func(ctx context.Context, id string) (string, error) {
 		key := scope()
 		key.IconID, key.TransformVersion = id, iconTransformVersion
-		return cache.Get(ctx, key, func(ctx context.Context) (string, error) { return fetch(ctx, id) })
+		return cache.Reference(ctx, key, func(ctx context.Context) (string, error) { return fetch(ctx, id) })
 	}, publish)
 }

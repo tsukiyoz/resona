@@ -13,14 +13,14 @@ import (
 // The Rust model tests consume the same file. Comparing exact JSON keys here
 // catches acronym casing drift that Go's case-insensitive decoder would miss.
 func TestSharedNativeContractMatchesGoJSON(t *testing.T) {
-	const icon = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII="
+	const icon = "icon-ref-1"
 	value := struct {
 		Workspace client.Workspace  `json:"workspace"`
 		Voice     client.VoiceState `json:"voice"`
 	}{Workspace: client.Workspace{
 		Servers:       []client.ServerProfile{{ID: "server-1", Name: "Contract", Address: "localhost:9987", Nickname: "Tester", SkipPasswordStorage: true}},
 		Session:       client.Session{ID: "session-1", SendingMessageID: "message-1", Mode: "connected", ChannelID: "channel-1", Nickname: "Tester", ServerID: "server-1", ServerName: "Contract", IdentityUID: "identity-1", SelfID: "user-1", SwitchingChannelID: "channel-2", MemberSyncState: "ready"},
-		Channels:      []client.Channel{{Kind: "channel", Align: "left", IconID: "1001", IconDataURL: icon, ID: "channel-1", Name: "Voice", Description: "Contract channel", Members: 1, ParentID: "parent-1", Order: "0"}},
+		Channels:      []client.Channel{{Kind: "channel", Align: "left", IconID: "1001", IconRef: icon, ID: "channel-1", Name: "Voice", Description: "Contract channel", Members: 1, ParentID: "parent-1", Order: "0"}},
 		Users:         []client.User{{ID: "user-1", Nickname: "Tester", ChannelID: "channel-1", Self: true}},
 		Messages:      []client.Message{{AuthorID: "user-1", Status: "sending", ID: "message-1", ChannelID: "channel-1", Author: "Tester", Text: "Contract message", CreatedAt: "2026-09-08T00:00:00Z"}},
 		Notifications: []client.Notification{{ID: "notification-1", Kind: "connected", ChannelID: "channel-1", CreatedAt: "2026-09-08T00:00:00Z"}},

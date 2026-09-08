@@ -3,13 +3,14 @@ use async_channel::{Receiver, Sender, TrySendError};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
+    collections::HashMap,
     env,
     io::{BufRead, BufReader, Write},
     path::PathBuf,
     process::{Child, ChildStdin, Command, Stdio},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -26,6 +27,7 @@ pub enum Incoming {
     },
     Workspace(Value),
     Voice(Value),
+    MicrophoneTest(Value),
     ProtocolError(String),
     Exited(String),
 }
@@ -65,6 +67,8 @@ impl Drop for Process {
 pub struct CoreClient {
     process: Arc<Process>,
     next_id: Arc<AtomicU64>,
+    waiters: Arc<Mutex<HashMap<u64, Sender<Result<Value, String>>>>>,
+    shutting_down: Arc<AtomicBool>,
 }
 
 impl CoreClient {
@@ -88,7 +92,9 @@ impl CoreClient {
         let (request_tx, request_rx) = async_channel::bounded(32);
 
         spawn_stdin_writer(stdin, request_rx, tx.clone());
-        spawn_stdout_reader(stdout, tx.clone());
+        let waiters = Arc::new(Mutex::new(HashMap::new()));
+        let shutting_down = Arc::new(AtomicBool::new(false));
+        spawn_stdout_reader(stdout, tx.clone(), waiters.clone(), shutting_down.clone());
         thread::Builder::new()
             .name("resona-core-stderr".into())
             .spawn(move || {
@@ -105,6 +111,8 @@ impl CoreClient {
                     requests: Mutex::new(Some(request_tx)),
                 }),
                 next_id: Arc::new(AtomicU64::new(1)),
+                waiters,
+                shutting_down,
             },
             rx,
         ))
@@ -130,6 +138,54 @@ impl CoreClient {
             Err(TrySendError::Closed(_)) => return Err(anyhow!("核心进程已关闭")),
         }
         Ok(id)
+    }
+
+    pub fn finish_shutdown(&self) {
+        if let Ok(mut requests) = self.process.requests.lock() {
+            requests.take();
+        }
+        let child = self
+            .process
+            .child
+            .lock()
+            .ok()
+            .and_then(|mut child| child.take());
+        if let Some(mut child) = child {
+            // Reap before application exit; a detached reaper dies with the GUI.
+            let deadline = Instant::now() + Duration::from_millis(750);
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) => return,
+                    Ok(None) if Instant::now() < deadline => {
+                        thread::sleep(Duration::from_millis(15))
+                    }
+                    _ => break,
+                }
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    pub async fn prepare_shutdown(&self, enabled: bool, volume: u8) -> Result<Value> {
+        self.shutting_down.store(true, Ordering::Release);
+        let (tx, rx) = async_channel::bounded(1);
+        // Hold the waiter lock through enqueue so an immediate reply cannot race registration.
+        {
+            let mut waiters = self
+                .waiters
+                .lock()
+                .map_err(|_| anyhow!("shutdown waiters unavailable"))?;
+            let id = self.request(
+                "PrepareShutdown",
+                json!({"notificationEnabled": enabled, "notificationVolume": volume}),
+            )?;
+            waiters.insert(id, tx);
+        }
+        rx.recv()
+            .await
+            .map_err(|_| anyhow!("core closed before shutdown completed"))?
+            .map_err(|e| anyhow!(e))
     }
 }
 
@@ -163,7 +219,12 @@ fn core_executable() -> Result<PathBuf> {
     Ok(path)
 }
 
-fn spawn_stdout_reader(stdout: impl std::io::Read + Send + 'static, tx: Sender<Incoming>) {
+fn spawn_stdout_reader(
+    stdout: impl std::io::Read + Send + 'static,
+    tx: Sender<Incoming>,
+    waiters: Arc<Mutex<HashMap<u64, Sender<Result<Value, String>>>>>,
+    shutting_down: Arc<AtomicBool>,
+) {
     thread::Builder::new()
         .name("resona-core-stdout".into())
         .spawn(move || {
@@ -171,8 +232,14 @@ fn spawn_stdout_reader(stdout: impl std::io::Read + Send + 'static, tx: Sender<I
                 let line = match line {
                     Ok(line) => line,
                     Err(error) => {
-                        let _ = tx
-                            .send_blocking(Incoming::Exited(format!("核心输出读取失败：{error}")));
+                        if let Ok(mut pending) = waiters.lock() {
+                            pending.clear();
+                        }
+                        forward_incoming(
+                            &tx,
+                            Incoming::Exited(format!("核心输出读取失败：{error}")),
+                            &shutting_down,
+                        );
                         return;
                     }
                 };
@@ -181,16 +248,51 @@ fn spawn_stdout_reader(stdout: impl std::io::Read + Send + 'static, tx: Sender<I
                 }
                 match parse_line(&line) {
                     Ok(incoming) => {
-                        let _ = tx.send_blocking(incoming);
+                        if let Incoming::Response { id, result } = &incoming {
+                            if let Some(waiter) = waiters.lock().ok().and_then(|mut w| w.remove(id))
+                            {
+                                let _ = waiter.try_send(result.clone());
+                                continue;
+                            }
+                        }
+                        if shutting_down.load(Ordering::Acquire) {
+                            continue;
+                        }
+                        forward_incoming(&tx, incoming, &shutting_down);
                     }
                     Err(error) => {
-                        let _ = tx.send_blocking(Incoming::ProtocolError(error.to_string()));
+                        forward_incoming(
+                            &tx,
+                            Incoming::ProtocolError(error.to_string()),
+                            &shutting_down,
+                        );
                     }
                 }
             }
-            let _ = tx.send_blocking(Incoming::Exited("核心进程已退出".into()));
+            if let Ok(mut pending) = waiters.lock() {
+                pending.clear();
+            }
+            forward_incoming(
+                &tx,
+                Incoming::Exited("核心进程已退出".into()),
+                &shutting_down,
+            );
         })
         .expect("failed to start core stdout reader");
+}
+
+fn forward_incoming(tx: &Sender<Incoming>, mut incoming: Incoming, shutdown: &AtomicBool) {
+    loop {
+        match tx.try_send(incoming) {
+            Ok(()) | Err(TrySendError::Closed(_)) => return,
+            Err(TrySendError::Full(value)) => incoming = value,
+        }
+        if shutdown.load(Ordering::Acquire) {
+            return;
+        }
+        // Only wait under backpressure; exit must still reach its direct reply waiter.
+        thread::sleep(Duration::from_millis(5));
+    }
 }
 
 fn parse_line(line: &str) -> Result<Incoming> {
@@ -200,6 +302,7 @@ fn parse_line(line: &str) -> Result<Incoming> {
         return match event {
             "workspace" => Ok(Incoming::Workspace(result)),
             "voice" => Ok(Incoming::Voice(result)),
+            "microphoneTest" => Ok(Incoming::MicrophoneTest(result)),
             _ => Err(anyhow!("核心返回了未知事件：{event}")),
         };
     }
@@ -223,6 +326,22 @@ fn parse_line(line: &str) -> Result<Incoming> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn full_ui_queue_does_not_block_shutdown_reply_reader() {
+        let (tx, _rx) = async_channel::bounded(1);
+        tx.try_send(Incoming::Voice(Value::Null)).unwrap();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let flag = shutdown.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let reader = thread::spawn(move || {
+            forward_incoming(&tx, Incoming::Voice(Value::Null), &flag);
+            done_tx.send(()).unwrap();
+        });
+        shutdown.store(true, Ordering::Release);
+        done_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        reader.join().unwrap();
+    }
 
     #[test]
     fn parses_response_and_events() {
