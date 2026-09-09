@@ -25,7 +25,7 @@ use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
@@ -155,6 +155,13 @@ pub struct ResonaApp {
     closing: bool,
     connect_revision: u64,
     preferences: Preferences,
+    preference_revision: u64,
+    preference_save_order: Arc<Mutex<u64>>,
+    audio_settings_pending: bool,
+    queued_voice: Option<VoiceState>,
+    voice_target: Option<VoiceState>,
+    _audio_update: Option<gpui::Task<()>>,
+    _detail_update: Option<gpui::Task<()>>,
     seen_notifications: HashSet<String>,
     notification_order: VecDeque<String>,
     last_member_notification: Option<Instant>,
@@ -224,6 +231,7 @@ impl ResonaApp {
             }
         });
         let quit_subscription = cx.on_app_quit(|this, cx| {
+            this.flush_preferences();
             if let Some(core) = this.core.clone() {
                 this.clear_hotkey(cx);
                 this.closing = true;
@@ -263,6 +271,13 @@ impl ResonaApp {
             closing: false,
             connect_revision: 0,
             preferences,
+            preference_revision: 0,
+            preference_save_order: Arc::new(Mutex::new(0)),
+            audio_settings_pending: false,
+            queued_voice: None,
+            voice_target: None,
+            _audio_update: None,
+            _detail_update: None,
             seen_notifications: HashSet::new(),
             notification_order: VecDeque::new(),
             last_member_notification: None,
@@ -411,6 +426,10 @@ impl ResonaApp {
     }
 
     fn clear_selected_details(&mut self) {
+        self._detail_update = None;
+        if self.core.is_some() && !self.closing {
+            self.request("CancelDetails", json!({}), Pending::Notification);
+        }
         self.detail_selection = None;
         self.detail_value = None;
         self.detail_error.clear();
@@ -656,8 +675,25 @@ impl ResonaApp {
                 }
             }
         }
+        self.flush_queued_voice(cx);
         self.sync_hotkey(cx);
         cx.notify();
+    }
+
+    fn flush_queued_voice(&mut self, cx: &mut Context<Self>) {
+        if self.closing
+            || self.voice.busy
+            || !self.workspace.session.switching_channel_id.is_empty()
+            || self.pending.values().any(|p| matches!(p, Pending::Voice))
+        {
+            return;
+        }
+        self.voice_target = None;
+        if let Some(next) = self.queued_voice.take() {
+            if self.workspace.connected() {
+                self.configure_voice(|v| *v = next, cx);
+            }
+        }
     }
 
     fn apply_workspace(&mut self, value: Value, window: &mut Window, cx: &mut Context<Self>) {
@@ -679,6 +715,9 @@ impl ResonaApp {
                     self.clear_selected_details();
                 }
                 if workspace.session.id != self.workspace.session.id {
+                    self.queued_voice = None;
+                    self.voice_target = None;
+                    self.voice = VoiceState::default();
                     self.icon_requested.clear();
                     self.icon_failures.clear();
                     self.icon_cache.clear();
@@ -765,6 +804,9 @@ impl ResonaApp {
         if self.closing {
             return;
         }
+        self._audio_update = None;
+        self._detail_update = None;
+        self.flush_preferences();
         self.clear_hotkey(cx);
         self.closing = true;
         self.device_menu = None;
@@ -890,6 +932,25 @@ impl ResonaApp {
         self.detail_value = None;
         self.detail_error.clear();
         self.detail_revision = self.detail_revision.wrapping_add(1);
+        let revision = self.detail_revision;
+        self._detail_update = Some(cx.spawn(async move |view, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(200))
+                .await;
+            let _ = view.update(cx, |this, cx| {
+                if !this.closing && this.detail_revision == revision && this.workspace.connected() {
+                    this.request_selected_details();
+                    cx.notify();
+                }
+            });
+        }));
+        cx.notify();
+    }
+
+    fn request_selected_details(&mut self) {
+        let Some(selection) = self.detail_selection.clone() else {
+            return;
+        };
         let session = self.workspace.session.id.clone();
         let (method, params) = match &selection {
             DetailSelection::Channel(id) => (
@@ -910,7 +971,27 @@ impl ResonaApp {
                 revision: self.detail_revision,
             },
         );
-        cx.notify();
+    }
+
+    fn join_channel(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.closing
+            || !self.workspace.session.switching_channel_id.is_empty()
+            || !self.workspace.session.sending_message_id.is_empty()
+            || self.workspace.session.channel_id == id
+            || self
+                .pending
+                .values()
+                .any(|p| matches!(p, Pending::Workspace("SelectChannel")))
+        {
+            return;
+        }
+        self.set_push_to_talk(false, cx);
+        self.error.clear();
+        self.request(
+            "SelectChannel",
+            json!({"id": id}),
+            Pending::Workspace("SelectChannel"),
+        );
     }
 
     fn register_submitted_draft(&mut self, value: &Value, submitted: SubmittedDraft) {
@@ -1113,10 +1194,35 @@ impl ResonaApp {
         }
     }
 
-    fn save_preferences(&mut self) {
-        if let Err(error) = self.preferences.save() {
+    fn flush_preferences(&mut self) {
+        self.preference_revision += 1;
+        if let Err(error) = self
+            .preferences
+            .save_ordered(self.preference_revision, &self.preference_save_order)
+        {
             self.error = format!("无法保存声音设置：{error}");
         }
+    }
+
+    fn save_preferences(&mut self, cx: &mut Context<Self>) {
+        self.preference_revision += 1;
+        let revision = self.preference_revision;
+        let preferences = self.preferences.clone();
+        let order = self.preference_save_order.clone();
+        let save = cx
+            .background_executor()
+            .spawn(async move { preferences.save_ordered(revision, &order) });
+        cx.spawn(async move |view, cx| {
+            if let Err(error) = save.await {
+                let _ = view.update(cx, |this, cx| {
+                    if this.preference_revision == revision {
+                        this.error = format!("无法保存声音设置：{error}");
+                        cx.notify();
+                    }
+                });
+            }
+        })
+        .detach();
     }
 
     fn open_server_form(
@@ -1373,20 +1479,36 @@ impl ResonaApp {
     }
 
     fn configure_voice(&mut self, change: impl FnOnce(&mut VoiceState), cx: &mut Context<Self>) {
-        let mut next = self.voice.clone();
+        let mut next = self
+            .queued_voice
+            .as_ref()
+            .or(self.voice_target.as_ref())
+            .unwrap_or(&self.voice)
+            .clone();
         self.apply_audio_preferences(&mut next);
         change(&mut next);
-        let stopping = self.voice.enabled && !next.enabled;
+        if self.preferences.input_device_id != next.input_device_id
+            || self.preferences.output_device_id != next.output_device_id
+        {
+            self.preferences.input_device_id = next.input_device_id.clone();
+            self.preferences.output_device_id = next.output_device_id.clone();
+            self.save_preferences(cx);
+        }
+        let stopping = !next.enabled;
+        if stopping {
+            self._audio_update = None;
+            self.audio_settings_pending = false;
+        }
         let request_pending = self
             .pending
             .values()
             .any(|pending| matches!(pending, Pending::Voice));
         if (self.voice.busy || request_pending) && !stopping {
+            self.queued_voice = Some(next);
+            cx.notify();
             return;
         }
-        self.preferences.input_device_id = next.input_device_id.clone();
-        self.preferences.output_device_id = next.output_device_id.clone();
-        self.save_preferences();
+        self.queued_voice = None;
         if !self.workspace.connected() {
             self.store_voice_preferences(None);
             cx.notify();
@@ -1402,6 +1524,7 @@ impl ResonaApp {
         if next.deafened && !self.voice.deafened {
             self.request("StopNotifications", json!({}), Pending::Notification);
         }
+        self.voice_target = Some(next.clone());
         self.request("ConfigureVoice", voice_params(&next), Pending::Voice);
         cx.notify();
     }
@@ -1422,14 +1545,72 @@ impl ResonaApp {
         change: impl FnOnce(&mut Preferences),
         cx: &mut Context<Self>,
     ) {
-        self.clear_hotkey(cx);
+        let previous = self.preferences.clone();
         change(&mut self.preferences);
-        self.save_preferences();
-        if self.workspace.connected() && self.voice.enabled {
-            self.configure_voice(|_| {}, cx);
-        } else {
-            self.store_voice_preferences(None);
+        self.audio_settings_pending = true;
+        if previous.activation_mode != self.preferences.activation_mode
+            || previous.global_push_to_talk != self.preferences.global_push_to_talk
+            || previous.push_to_talk_shortcut != self.preferences.push_to_talk_shortcut
+        {
+            self.clear_hotkey(cx);
         }
+        let original_session = self.workspace.session.id.clone();
+        self._audio_update = Some(cx.spawn(async move |view, cx| {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            cx.background_executor()
+                .timer(Duration::from_millis(120))
+                .await;
+            let _ = view.update(cx, |this, cx| this.save_preferences(cx));
+            loop {
+                let done = view
+                    .update(cx, |this, cx| {
+                        if this.closing {
+                            this.audio_settings_pending = false;
+                            return true;
+                        }
+                        if Instant::now() >= deadline {
+                            this.audio_settings_pending = false;
+                            this.error = "音频设置已保存，但尚未应用；请待语音就绪后重试".into();
+                            cx.notify();
+                            return true;
+                        }
+                        if this.workspace.session.id != original_session
+                            && this.workspace.connected()
+                            && !this.voice.enabled
+                            && this.voice.error.is_empty()
+                        {
+                            return false;
+                        }
+                        if this.voice.busy
+                            || matches!(
+                                this.workspace.session.mode.as_str(),
+                                "connecting" | "disconnecting"
+                            )
+                            || !this.workspace.session.switching_channel_id.is_empty()
+                            || this.pending.values().any(|p| {
+                                matches!(p, Pending::Voice | Pending::VoicePreferences { .. })
+                            })
+                        {
+                            return false;
+                        }
+                        this.audio_settings_pending = false;
+                        if this.workspace.connected() && this.voice.enabled {
+                            this.configure_voice(|_| {}, cx);
+                        } else {
+                            this.store_voice_preferences(None);
+                        }
+                        cx.notify();
+                        true
+                    })
+                    .unwrap_or(true);
+                if done {
+                    break;
+                }
+                cx.background_executor()
+                    .timer(Duration::from_millis(50))
+                    .await;
+            }
+        }));
         self.sync_hotkey(cx);
         cx.notify();
     }
@@ -1905,12 +2086,7 @@ impl ResonaApp {
                                     this.select_details(DetailSelection::Channel(id.clone()), cx);
                                     if !locked && (event.is_keyboard() || event.click_count() >= 2)
                                     {
-                                        this.set_push_to_talk(false, cx);
-                                        this.request(
-                                            "SelectChannel",
-                                            json!({"id": id.clone()}),
-                                            Pending::Workspace("SelectChannel"),
-                                        );
+                                        this.join_channel(&id, cx);
                                     }
                                     cx.notify();
                                 });
@@ -2364,7 +2540,16 @@ impl ResonaApp {
                                         let entity = entity.clone();
                                         move |_, _, cx| {
                                             entity.update(cx, |this, cx| {
-                                                this.configure_voice(|v| v.enabled = !v.enabled, cx)
+                                                let enabled = !this.voice.enabled;
+                                                this.configure_voice(
+                                                    |v| {
+                                                        v.enabled = enabled;
+                                                        if enabled {
+                                                            v.muted = true;
+                                                        }
+                                                    },
+                                                    cx,
+                                                )
                                             });
                                         }
                                     }),
@@ -2416,7 +2601,8 @@ impl ResonaApp {
                                         let entity = entity.clone();
                                         move |_, _, cx| {
                                             entity.update(cx, |this, cx| {
-                                                this.configure_voice(|v| v.muted = !v.muted, cx)
+                                                let muted = !this.voice.muted;
+                                                this.configure_voice(|v| v.muted = muted, cx)
                                             })
                                         }
                                     }),
@@ -2439,10 +2625,8 @@ impl ResonaApp {
                                         let entity = entity.clone();
                                         move |_, _, cx| {
                                             entity.update(cx, |this, cx| {
-                                                this.configure_voice(
-                                                    |v| v.deafened = !v.deafened,
-                                                    cx,
-                                                )
+                                                let deafened = !this.voice.deafened;
+                                                this.configure_voice(|v| v.deafened = deafened, cx)
                                             })
                                         }
                                     }),
@@ -2460,7 +2644,7 @@ impl ResonaApp {
                                 Button::new("volume-down")
                                     .icon(IconName::Minus)
                                     .ghost()
-                                    .disabled(controls_disabled)
+                                    .disabled(!connected || !self.voice.enabled || self.closing)
                                     .on_click({
                                         let entity = entity.clone();
                                         move |_, _, cx| {
@@ -2482,7 +2666,13 @@ impl ResonaApp {
                                     .child(
                                         div()
                                             .h_full()
-                                            .w(px(self.voice.volume as f32))
+                                            .w(px(self
+                                                .queued_voice
+                                                .as_ref()
+                                                .or(self.voice_target.as_ref())
+                                                .unwrap_or(&self.voice)
+                                                .volume
+                                                as f32))
                                             .rounded_full()
                                             .bg(rgb(ICE)),
                                     ),
@@ -2493,13 +2683,20 @@ impl ResonaApp {
                                     .text_right()
                                     .text_size(px(9.))
                                     .text_color(rgb(TEXT))
-                                    .child(self.voice.volume.to_string()),
+                                    .child(
+                                        self.queued_voice
+                                            .as_ref()
+                                            .or(self.voice_target.as_ref())
+                                            .unwrap_or(&self.voice)
+                                            .volume
+                                            .to_string(),
+                                    ),
                             )
                             .child(
                                 Button::new("volume-up")
                                     .icon(IconName::Plus)
                                     .ghost()
-                                    .disabled(controls_disabled)
+                                    .disabled(!connected || !self.voice.enabled || self.closing)
                                     .on_click({
                                         let entity = entity.clone();
                                         move |_, _, cx| {
@@ -2762,9 +2959,7 @@ impl ResonaApp {
                             .tooltip("关闭资料")
                             .on_click(move |_, _, cx| {
                                 entity.update(cx, |this, cx| {
-                                    this.detail_selection = None;
-                                    this.detail_value = None;
-                                    this.detail_error.clear();
+                                    this.clear_selected_details();
                                     cx.notify();
                                 });
                             }),
@@ -2782,7 +2977,7 @@ impl ResonaApp {
                 .child(
                     div()
                         .text_xs()
-                        .text_color(rgb(RED))
+                        .text_color(rgb(AMBER))
                         .child(self.detail_error.clone()),
                 )
                 .child(
@@ -2885,12 +3080,7 @@ impl ResonaApp {
                     .disabled(locked || self.speaking_transition_pending())
                     .on_click(move |_, _, cx| {
                         entity.update(cx, |this, cx| {
-                            this.set_push_to_talk(false, cx);
-                            this.request(
-                                "SelectChannel",
-                                json!({"id": id}),
-                                Pending::Workspace("SelectChannel"),
-                            );
+                            this.join_channel(&id, cx);
                             cx.notify();
                         });
                     }),
@@ -2914,6 +3104,14 @@ impl ResonaApp {
                 )
             });
         let disabled = busy || !self.capabilities.voice;
+        let preferences_disabled = self.closing
+            || !self.capabilities.voice
+            || matches!(
+                self.workspace.session.mode.as_str(),
+                "connecting" | "disconnecting"
+            )
+            || self.microphone_test.enabled
+            || self.microphone_test.busy;
         let entity = view.clone();
         let mut content = div()
             .flex()
@@ -2925,6 +3123,13 @@ impl ResonaApp {
                     .items_center()
                     .gap_3()
                     .child(div().flex_1().child(modal_title("语音与设备")))
+                    .child(div().w(px(72.)).text_xs().text_color(rgb(MUTED)).child(
+                        if self.audio_settings_pending || self.voice.busy {
+                            "应用中"
+                        } else {
+                            ""
+                        },
+                    ))
                     .child(
                         Button::new("open-notification-settings")
                             .label("提示音")
@@ -3042,7 +3247,7 @@ impl ResonaApp {
             Button::new(SharedString::from(format!("activation-{mode}")))
                 .label(label)
                 .selected(self.preferences.activation_mode == mode)
-                .disabled(disabled)
+                .disabled(preferences_disabled)
                 .on_click(move |_, _, cx| {
                     entity.update(cx, |this, cx| {
                         this.update_audio_preferences(|p| p.activation_mode = mode.into(), cx)
@@ -3146,7 +3351,7 @@ impl ResonaApp {
                             Button::new("vad-threshold-down")
                                 .icon(IconName::Minus)
                                 .ghost()
-                                .disabled(disabled)
+                                .disabled(preferences_disabled)
                                 .on_click({
                                     let entity = view.clone();
                                     move |_, _, cx| {
@@ -3173,7 +3378,7 @@ impl ResonaApp {
                             Button::new("vad-threshold-up")
                                 .icon(IconName::Plus)
                                 .ghost()
-                                .disabled(disabled)
+                                .disabled(preferences_disabled)
                                 .on_click({
                                     let entity = view.clone();
                                     move |_, _, cx| {
@@ -3203,7 +3408,7 @@ impl ResonaApp {
             Button::new(SharedString::from(format!("noise-{level}")))
                 .label(label)
                 .selected(self.preferences.noise_suppression == level)
-                .disabled(disabled)
+                .disabled(preferences_disabled)
                 .on_click(move |_, _, cx| {
                     entity.update(cx, |this, cx| {
                         this.update_audio_preferences(|p| p.noise_suppression = level.into(), cx)
@@ -3225,7 +3430,7 @@ impl ResonaApp {
                     "echo-cancellation",
                     "回声消除",
                     self.preferences.echo_cancellation,
-                    disabled,
+                    preferences_disabled,
                     |p, v| p.echo_cancellation = v,
                     view,
                 ))
@@ -3233,7 +3438,7 @@ impl ResonaApp {
                     "echo-suppression",
                     "残余回声抑制",
                     self.preferences.echo_suppression,
-                    disabled,
+                    preferences_disabled,
                     |p, v| p.echo_suppression = v,
                     view,
                 ))
@@ -3241,7 +3446,7 @@ impl ResonaApp {
                     "voice-ducking",
                     "发言时降低频道音量",
                     self.preferences.ducking,
-                    disabled,
+                    preferences_disabled,
                     |p, v| p.ducking = v,
                     view,
                 )),
@@ -3720,7 +3925,7 @@ impl ResonaApp {
                                                 Pending::Notification,
                                             );
                                         }
-                                        this.save_preferences();
+                                        this.save_preferences(cx);
                                         cx.notify();
                                     })
                                 }
@@ -3744,7 +3949,7 @@ impl ResonaApp {
                                                     .preferences
                                                     .notification_volume
                                                     .saturating_sub(5);
-                                                this.save_preferences();
+                                                this.save_preferences(cx);
                                                 cx.notify();
                                             })
                                         }
@@ -3785,7 +3990,7 @@ impl ResonaApp {
                                                     .notification_volume
                                                     .saturating_add(5)
                                                     .min(100);
-                                                this.save_preferences();
+                                                this.save_preferences(cx);
                                                 cx.notify();
                                             })
                                         }

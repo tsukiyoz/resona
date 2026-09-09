@@ -145,6 +145,7 @@ type connection struct {
 	voiceMu              sync.RWMutex
 	voiceHandler         func(audio.Packet)
 	voiceQueryRetryDelay time.Duration
+	detailCache          map[string]detailCacheEntry
 }
 
 func (s *connection) observe(cmd teamspeak.IncomingCommand) {
@@ -384,7 +385,11 @@ func (s *connection) SetVoiceMuted(ctx context.Context, inputMuted, outputMuted 
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		return errors.New("服务器拒绝更新语音状态")
+		var commandError *teamspeak.CommandError
+		if errors.As(err, &commandError) {
+			return fmt.Errorf("服务器拒绝更新语音状态（错误码 %d）", commandError.ID)
+		}
+		return errors.New("无法更新服务器语音状态，请检查网络后重试")
 	}
 	return nil
 }

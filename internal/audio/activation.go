@@ -40,7 +40,7 @@ func (r *engineRun) activationOpen(level int, now time.Time) bool {
 	case "ptt":
 		return r.ptt.Load()
 	case "vad":
-		if level >= r.config.VADThresholdDB {
+		if level >= r.currentConfig().VADThresholdDB {
 			r.vadUntil = now.Add(250 * time.Millisecond)
 		}
 		return r.vadUntil.After(now)

@@ -180,6 +180,10 @@ func (s *Service) applyVoiceState(epoch, generation uint64, _ audio.VoiceState) 
 		return
 	}
 	busy := s.voiceState.Busy
+	if busy {
+		// Superseded engine operations must not overwrite their replacement's pending state.
+		return
+	}
 	// Engine notifications are asynchronous; read the current state so a queued
 	// earlier configuration cannot overwrite a newer completed operation.
 	s.voiceState = voiceSnapshot(s.voice.Status())
