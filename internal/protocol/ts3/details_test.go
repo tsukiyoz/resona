@@ -73,6 +73,43 @@ func TestUserDetailsComeFromAuthorizedQuery(t *testing.T) {
 	}
 }
 
+func TestDetailsCacheBoundsRequestsAndInvalidatesEntityVersion(t *testing.T) {
+	s := detailConnection(t)
+	calls := 0
+	s.execCommandResponse = func(context.Context, string) ([]map[string]string, error) {
+		calls++
+		return []map[string]string{{"client_description": "description"}}, nil
+	}
+	for range 5 {
+		if _, err := s.ReadUserDetails(context.Background(), "1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("repeated selection queried %d times", calls)
+	}
+	s.mu.Lock()
+	s.state.entityVersions["user:1"]++
+	s.mu.Unlock()
+	if _, err := s.ReadUserDetails(context.Background(), "1"); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatal("reused ID returned cached occupant")
+	}
+	s.mu.Lock()
+	entry := s.detailCache["user:1"]
+	entry.expires = time.Now().Add(-time.Second)
+	s.detailCache["user:1"] = entry
+	s.mu.Unlock()
+	if _, err := s.ReadUserDetails(context.Background(), "1"); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 3 {
+		t.Fatal("expired metadata did not refresh")
+	}
+}
+
 func TestDetailQueryRejectsReusedClientID(t *testing.T) {
 	s := detailConnection(t)
 	s.execCommandResponse = func(_ context.Context, _ string) ([]map[string]string, error) {

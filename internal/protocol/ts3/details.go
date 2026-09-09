@@ -5,11 +5,19 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 
 	teamspeak "github.com/honeybbq/teamspeak-go"
 	"github.com/honeybbq/teamspeak-go/commands"
 	"github.com/tsukiyoz/resona/internal/client"
 )
+
+type detailCacheEntry struct {
+	version uint64
+	expires time.Time
+	row     map[string]string
+	err     error
+}
 
 func (s *connection) ReadChannelDetails(ctx context.Context, id string) (client.ChannelDetails, error) {
 	row, version, err := s.readDetails(ctx, "channel", id)
@@ -94,6 +102,13 @@ func (s *connection) readDetails(ctx context.Context, kind, id string) (map[stri
 	if !valid || ctx.Err() != nil {
 		return nil, 0, context.Canceled
 	}
+	cacheKey := kind + ":" + id
+	s.mu.Lock()
+	cached, found := s.detailCache[cacheKey]
+	s.mu.Unlock()
+	if found && cached.version == version && time.Now().Before(cached.expires) {
+		return cached.row, version, cached.err
+	}
 	command, key := "channelinfo", "cid"
 	if kind == "user" {
 		command, key = "clientinfo", "clid"
@@ -105,7 +120,9 @@ func (s *connection) readDetails(ctx context.Context, kind, id string) (map[stri
 		}
 		var commandError *teamspeak.CommandError
 		if errors.As(err, &commandError) {
-			return nil, 0, fmt.Errorf("服务器拒绝读取详情（错误码 %d）", commandError.ID)
+			err = fmt.Errorf("服务器拒绝读取详情（错误码 %d）", commandError.ID)
+			s.cacheDetails(cacheKey, version, nil, err, 2*time.Second)
+			return nil, 0, err
 		}
 		return nil, 0, errors.New("无法读取服务器详情")
 	}
@@ -119,7 +136,17 @@ func (s *connection) readDetails(ctx context.Context, kind, id string) (map[stri
 	if bytes > 64<<10 {
 		return nil, 0, errors.New("服务器详情超过大小限制")
 	}
+	s.cacheDetails(cacheKey, version, rows[0], nil, 10*time.Second)
 	return rows[0], version, nil
+}
+
+func (s *connection) cacheDetails(key string, version uint64, row map[string]string, err error, ttl time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.detailCache == nil || len(s.detailCache) >= 64 {
+		s.detailCache = make(map[string]detailCacheEntry)
+	}
+	s.detailCache[key] = detailCacheEntry{version: version, expires: time.Now().Add(ttl), row: row, err: err}
 }
 
 func mergeChannelDetails(d *client.ChannelDetails, p map[string]string) {

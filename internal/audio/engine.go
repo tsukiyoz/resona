@@ -2,6 +2,7 @@ package audio
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -66,7 +67,57 @@ func (e *Engine) Configure(ctx context.Context, config VoiceConfig) error {
 		return err
 	}
 	defer e.release()
-	return e.configureLocked(ctx, config)
+	if err := validateConfig(config); err != nil {
+		return err
+	}
+	e.mu.RLock()
+	run, active, closed := e.run, e.state.Active, e.closed
+	e.mu.RUnlock()
+	if !closed && active && run != nil && liveConfigCompatible(run.currentConfig(), config) {
+		return e.updateLiveConfig(ctx, run, config)
+	}
+	return e.configureLocked(ctx, config, true)
+}
+
+// Device and activation transitions retain the full stop/restart path.
+func liveConfigCompatible(a, b VoiceConfig) bool {
+	return a.Enabled == b.Enabled && a.Muted == b.Muted && a.Deafened == b.Deafened &&
+		a.InputDeviceID == b.InputDeviceID && a.OutputDeviceID == b.OutputDeviceID && a.ActivationMode == b.ActivationMode
+}
+
+func (e *Engine) updateLiveConfig(ctx context.Context, run *engineRun, config VoiceConfig) error {
+	previous := run.currentConfig()
+	var replacement speechProcessor
+	rebuild := previous.NoiseSuppression != config.NoiseSuppression || previous.EchoCancellation != config.EchoCancellation || previous.EchoSuppression != config.EchoSuppression
+	if rebuild {
+		var err error
+		replacement, err = newSpeechProcessor(config)
+		if err != nil {
+			return err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		if replacement != nil {
+			replacement.Close()
+		}
+		return err
+	}
+	run.processingMu.Lock()
+	if rebuild {
+		if run.processor != nil {
+			run.processor.Close()
+		}
+		run.processor = replacement
+		run.referencePCM.Reset()
+	}
+	run.liveConfig.Store(&config)
+	run.processingMu.Unlock()
+	e.mu.Lock()
+	state := e.state
+	state.Config = config
+	e.storeStateLocked(state)
+	e.mu.Unlock()
+	return nil
 }
 
 // ChannelChanged drops all old-channel audio and revalidates the channel codec
@@ -81,11 +132,12 @@ func (e *Engine) ChannelChanged(ctx context.Context) error {
 	defer e.release()
 	e.mu.RLock()
 	config := e.state.Config
+	updateServer := !e.state.Active
 	e.mu.RUnlock()
-	return e.configureLocked(ctx, config)
+	return e.configureLocked(ctx, config, updateServer)
 }
 
-func (e *Engine) configureLocked(ctx context.Context, config VoiceConfig) error {
+func (e *Engine) configureLocked(ctx context.Context, config VoiceConfig, updateServer bool) error {
 	if err := validateConfig(config); err != nil {
 		return err
 	}
@@ -116,7 +168,7 @@ func (e *Engine) configureLocked(ctx context.Context, config VoiceConfig) error 
 		return e.configurationFailed(ctx, config, codec, err)
 	}
 	if config.Deafened {
-		if err := e.transport.SetVoiceMuted(ctx, true, true); err != nil {
+		if err := e.updateServerMute(ctx, true, true, updateServer); err != nil {
 			return e.configurationFailed(ctx, config, codec, fmt.Errorf("无法更新服务器语音状态: %w", err))
 		}
 		e.setState(VoiceState{Config: config, Active: true, ChannelCodec: codec})
@@ -144,7 +196,7 @@ func (e *Engine) configureLocked(ctx context.Context, config VoiceConfig) error 
 		run.stop()
 		return e.configurationFailed(ctx, config, codec, err)
 	}
-	if err := e.transport.SetVoiceMuted(ctx, config.Muted || config.Deafened, config.Deafened); err != nil {
+	if err := e.updateServerMute(ctx, config.Muted || config.Deafened, config.Deafened, updateServer); err != nil {
 		run.stop()
 		return e.configurationFailed(ctx, config, codec, fmt.Errorf("无法更新服务器语音状态: %w", err))
 	}
@@ -164,10 +216,28 @@ func (e *Engine) configureLocked(ctx context.Context, config VoiceConfig) error 
 	return nil
 }
 
+func (e *Engine) updateServerMute(ctx context.Context, input, output, needed bool) error {
+	if !needed {
+		return ctx.Err()
+	}
+	return e.transport.SetVoiceMuted(ctx, input, output)
+}
+
 func (e *Engine) configurationFailed(ctx context.Context, config VoiceConfig, codec Codec, err error) error {
 	_ = e.transport.SetVoiceMuted(ctx, true, true)
-	e.setState(VoiceState{Config: config, ChannelCodec: codec, Error: err.Error()})
+	e.setState(VoiceState{Config: config, ChannelCodec: codec, Error: voiceErrorMessage(err)})
 	return err
+}
+
+func voiceErrorMessage(err error) string {
+	message := err.Error()
+	if errors.Is(err, context.Canceled) {
+		message = "语音操作已取消"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		message = "语音操作超时，请检查设备或网络后重试"
+	}
+	return message
 }
 
 func (e *Engine) Status() VoiceState {
@@ -275,7 +345,7 @@ func (e *Engine) runError(run *engineRun, err error, fatal bool) {
 		return
 	}
 	state := e.state
-	state.Error = err.Error()
+	state.Error = voiceErrorMessage(err)
 	if fatal {
 		state.Active = false
 		state.SpeakingClientIDs = nil
@@ -400,6 +470,8 @@ type engineRun struct {
 	decodeErrorSender      uint16
 	decodeFailures         map[uint16]decodeFailure
 	config                 VoiceConfig
+	liveConfig             atomic.Pointer[VoiceConfig]
+	processingMu           sync.Mutex
 	processor              speechProcessor
 	referencePCM           *sampleRing
 	ptt                    atomic.Bool
@@ -518,9 +590,17 @@ func (r *engineRun) playback(samples []float32) {
 		return
 	}
 	r.playbackPCM.Pop(samples)
-	if r.processor != nil {
+	config := r.currentConfig()
+	if config.EchoCancellation || config.EchoSuppression {
 		r.referencePCM.Push(samples)
 	}
+}
+
+func (r *engineRun) currentConfig() VoiceConfig {
+	if config := r.liveConfig.Load(); config != nil {
+		return *config
+	}
+	return r.config
 }
 
 func (r *engineRun) encodeLoop() {
@@ -554,6 +634,7 @@ func (r *engineRun) encodeLoop() {
 			epoch := r.captureEpoch.Load()
 			r.capturePCM.Pop(mono)
 			r.captureMu.Unlock()
+			r.processingMu.Lock()
 			if r.processor != nil {
 				clear(referenceStereo)
 				r.referencePCM.Pop(referenceStereo)
@@ -562,6 +643,7 @@ func (r *engineRun) encodeLoop() {
 				}
 				r.processor.Process(mono, reference)
 			}
+			r.processingMu.Unlock()
 			now := time.Now()
 			level := inputLevelDB(mono)
 			if r.engine.monitor && now.Sub(r.lastMeter) >= 100*time.Millisecond {
@@ -570,7 +652,8 @@ func (r *engineRun) encodeLoop() {
 			}
 			if r.engine.monitor {
 				for i, sample := range mono {
-					referenceStereo[i*2], referenceStereo[i*2+1] = sample*r.volume, sample*r.volume
+					volume := float32(r.currentConfig().Volume) / 100
+					referenceStereo[i*2], referenceStereo[i*2+1] = sample*volume, sample*volume
 				}
 				r.playbackPCM.Push(referenceStereo)
 				continue
@@ -664,7 +747,7 @@ func (r *engineRun) mixLoop() {
 					delete(speakers, id)
 					continue
 				}
-				ok, decoded, active, finished, err := speaker.render(mix, r.volume, now)
+				ok, decoded, active, finished, err := speaker.render(mix, float32(r.currentConfig().Volume)/100, now)
 				if err != nil {
 					delete(speakers, id)
 					r.recordDecodeFailure(now, id, speaker.codec, speaker.lastPacketBytes, err)
@@ -683,7 +766,7 @@ func (r *engineRun) mixLoop() {
 			}
 			if mixed {
 				gain := float32(1)
-				if r.config.Ducking {
+				if r.currentConfig().Ducking {
 					r.activityMu.Lock()
 					if r.localUntil.After(now) {
 						gain = 0.25

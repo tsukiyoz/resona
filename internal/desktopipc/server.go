@@ -55,6 +55,12 @@ func Run(ctx context.Context, service *client.Service, input io.ReadCloser, outp
 	var workers sync.WaitGroup
 	readSlots := make(chan struct{}, 4)
 	var shutdownResult *shutdownStatus
+	var cancelDetails context.CancelFunc
+	defer func() {
+		if cancelDetails != nil {
+			cancelDetails()
+		}
+	}()
 	workers.Add(3)
 	go func() {
 		defer workers.Done()
@@ -129,7 +135,27 @@ func Run(ctx context.Context, service *client.Service, input io.ReadCloser, outp
 				return nil
 			}
 		case req := <-requests:
+			isDetails := req.Method == "GetChannelDetails" || req.Method == "GetUserDetails"
+			if isDetails || req.Method == "SelectChannel" || req.Method == "CancelDetails" {
+				if cancelDetails != nil {
+					cancelDetails()
+					cancelDetails = nil
+				}
+			}
+			if req.Method == "CancelDetails" {
+				writerMu.Lock()
+				err := encoder.Encode(envelope{ID: req.ID, Result: true})
+				writerMu.Unlock()
+				if err != nil {
+					return errors.New("desktop response unavailable")
+				}
+				continue
+			}
 			if req.Method == "GetIconResource" || req.Method == "GetChannelDetails" || req.Method == "GetUserDetails" {
+				readContext := ctx
+				if isDetails {
+					readContext, cancelDetails = context.WithCancel(ctx)
+				}
 				select {
 				case readSlots <- struct{}{}:
 				default:
@@ -145,11 +171,11 @@ func Run(ctx context.Context, service *client.Service, input io.ReadCloser, outp
 				go func(req request) {
 					defer workers.Done()
 					defer func() { <-readSlots }()
-					result, err := dispatchRead(ctx, service, req)
+					result, err := dispatchRead(readContext, service, req)
 					response := envelope{ID: req.ID, Result: result}
 					if err != nil {
 						response.Result = nil
-						response.Error = err.Error()
+						response.Error = readErrorMessage(err)
 					}
 					writerMu.Lock()
 					writeErr := encoder.Encode(response)
@@ -220,6 +246,17 @@ func Run(ctx context.Context, service *client.Service, input io.ReadCloser, outp
 				return nil
 			}
 		}
+	}
+}
+
+func readErrorMessage(err error) string {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "详情读取已取消"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "读取超时，可稍后重试；服务器连接仍保留"
+	default:
+		return err.Error()
 	}
 }
 

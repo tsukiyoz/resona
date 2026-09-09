@@ -5,8 +5,48 @@ package audio
 import (
 	"context"
 	"math"
+	"sync"
 	"testing"
 )
+
+func TestLiveDSPReplacementDuringCaptureAndPlayback(t *testing.T) {
+	devices := &fakeDeviceFactory{}
+	e := newWithFactory(monitorTransport{}, nil, devices)
+	e.monitor = true
+	defer e.Close()
+	config := VoiceConfig{Enabled: true, Volume: 50}
+	if err := e.Configure(context.Background(), config); err != nil {
+		t.Fatal(err)
+	}
+	callbacks := devices.last().callbacks
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		input, output := make([]float32, FrameSamples), make([]float32, FrameSamples*2)
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			callbacks.capture(input)
+			callbacks.playback(output)
+		}
+	}()
+	defer func() { close(done); wg.Wait() }()
+	for i := range 30 {
+		config.NoiseSuppression = []string{"off", "low", "medium", "high"}[i%4]
+		config.EchoCancellation, config.EchoSuppression = i%2 == 0, i%3 == 0
+		if err := e.Configure(context.Background(), config); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(devices.opens) != 1 || e.Status().Config != config {
+		t.Fatal("DSP settings did not update in place")
+	}
+}
 
 func BenchmarkIdlePlaybackCallback(b *testing.B) {
 	r := &engineRun{ctx: context.Background(), playbackPCM: newSampleRing(FrameSamples * 2 * pcmBufferFrames)}

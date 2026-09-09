@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod core;
 mod model;
 mod preferences;
@@ -67,7 +69,7 @@ fn main() -> Result<()> {
         cx.open_window(
             WindowOptions {
                 titlebar: Some(gpui::TitlebarOptions {
-                    title: Some("Resona".into()),
+                    title: Some(concat!("Resona v", env!("CARGO_PKG_VERSION")).into()),
                     ..Default::default()
                 }),
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
