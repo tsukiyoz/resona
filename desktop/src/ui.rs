@@ -18,6 +18,7 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
     input::{Input, InputEvent, InputState},
+    menu::{ContextMenuExt, PopupMenuItem},
     scroll::ScrollableElement,
     tooltip::Tooltip,
 };
@@ -575,9 +576,8 @@ impl ResonaApp {
                             Err(error) => self.error = format!("无法读取密码状态：{error}"),
                         }
                     }
-                    (Some(Pending::Connect(server_id, keep_modal)), Ok(value)) => {
+                    (Some(Pending::Connect(_server_id, keep_modal)), Ok(value)) => {
                         self.apply_workspace(value, window, cx);
-                        self.selected_server = server_id;
                         if !keep_modal || self.workspace.connected() {
                             self.close_modal(window, cx);
                         }
@@ -804,7 +804,12 @@ impl ResonaApp {
                     self.chat_input
                         .update(cx, |input, cx| input.set_value(draft, window, cx));
                 }
-                if self.selected_server.is_empty() {
+                if self.selected_server != "__preview__"
+                    && !workspace
+                        .servers
+                        .iter()
+                        .any(|server| server.id == self.selected_server)
+                {
                     self.selected_server = if workspace.session.server_id.is_empty() {
                         workspace
                             .servers
@@ -1750,146 +1755,203 @@ impl ResonaApp {
         cx.notify();
     }
 
+    fn navigation_width(&self) -> f32 {
+        (if self.preferences.server_sidebar_collapsed {
+            52.
+        } else {
+            172.
+        }) + if self.preferences.channel_sidebar_collapsed {
+            44.
+        } else {
+            220.
+        }
+    }
+
     fn render_rail(&self, view: &Entity<Self>) -> AnyElement {
-        let mut servers = div()
-            .flex_1()
-            .min_w_0()
-            .h_full()
-            .flex()
-            .items_center()
-            .gap_2();
+        let collapsed = self.preferences.server_sidebar_collapsed;
+        let mut servers = div().flex().flex_col().gap_1().p_1().w_full();
         for server in &self.workspace.servers {
             let id = server.id.clone();
             let entity = view.clone();
+            let menu_entity = view.clone();
+            let menu_id = id.clone();
+            let keyboard_entity = view.clone();
+            let keyboard_id = id.clone();
+            let online = self.workspace.connected() && self.workspace.session.server_id == id;
+            let tooltip = format!("{}{}", server.name, if online { " · 在线" } else { "" });
             servers = servers.child(
                 div()
-                    .id(SharedString::from(format!("server-{id}")))
-                    .tab_index(0)
-                    .px_3()
-                    .py_2()
-                    .max_w(px(180.))
-                    .rounded(px(6.))
-                    .cursor_pointer()
-                    .bg(gpui::rgba(if self.selected_server == server.id {
-                        0xffffff14
-                    } else {
-                        0xffffff00
-                    }))
-                    .hover(|s| s.bg(rgb(HOVER)))
-                    .text_xs()
-                    .truncate()
-                    .on_click(move |event, _, cx| {
-                        entity.update(cx, |this, cx| {
-                            this.selected_server = id.clone();
-                            if event.is_keyboard() || event.click_count() >= 2 {
-                                this.begin_connect(id.clone(), cx);
+                    .id(SharedString::from(format!("server-menu-{id}")))
+                    .flex_shrink_0()
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("server-{id}")))
+                            .tab_index(0)
+                            .h(px(42.))
+                            .w_full()
+                            .flex_shrink_0()
+                            .px_2()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .rounded(px(6.))
+                            .cursor_pointer()
+                            .bg(gpui::rgba(if self.selected_server == id {
+                                0xffffff14
+                            } else {
+                                0xffffff00
+                            }))
+                            .hover(|s| s.bg(rgb(HOVER)))
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(tooltip.clone()).build(window, cx)
+                            })
+                            .on_key_down(move |event, window, cx| {
+                                if event.keystroke.key == "f2" {
+                                    keyboard_entity.update(cx, |this, cx| {
+                                        let profile = this
+                                            .workspace
+                                            .servers
+                                            .iter()
+                                            .find(|p| p.id == keyboard_id)
+                                            .cloned();
+                                        if let Some(profile) = profile {
+                                            this.open_server_form(Some(profile), window, cx);
+                                        }
+                                    });
+                                    cx.stop_propagation();
+                                }
+                            })
+                            .on_click(move |event, _, cx| {
+                                entity.update(cx, |this, cx| {
+                                    this.selected_server = id.clone();
+                                    if this.preferences.channel_sidebar_collapsed {
+                                        this.preferences.channel_sidebar_collapsed = false;
+                                        this.save_preferences(cx);
+                                    }
+                                    if (event.is_keyboard() || event.click_count() >= 2)
+                                        && !this.is_busy()
+                                    {
+                                        this.begin_connect(id.clone(), cx);
+                                    }
+                                    cx.notify();
+                                });
+                            })
+                            .child(
+                                div()
+                                    .size(px(24.))
+                                    .flex_shrink_0()
+                                    .rounded(px(5.))
+                                    .bg(rgb(0x303638))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_xs()
+                                    .text_color(rgb(if online { MINT } else { TEXT }))
+                                    .child(server.name.chars().next().unwrap_or('?').to_string()),
+                            )
+                            .when(!collapsed, |row| {
+                                row.child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .text_xs()
+                                        .truncate()
+                                        .child(server.name.clone()),
+                                )
+                                .when(online, |row| {
+                                    row.child(div().size(px(5.)).rounded_full().bg(rgb(MINT)))
+                                })
+                            })
+                            .context_menu(move |menu, _, _| {
+                                let editing = menu_id.clone();
+                                let deleting = menu_id.clone();
+                                let edit = menu_entity.clone();
+                                let delete = menu_entity.clone();
+                                menu.item(
+                                    PopupMenuItem::new("编辑服务器")
+                                        .icon(IconName::Settings2)
+                                        .on_click(move |_, window, cx| {
+                                            edit.update(cx, |this, cx| {
+                                                let profile = this
+                                                    .workspace
+                                                    .servers
+                                                    .iter()
+                                                    .find(|p| p.id == editing)
+                                                    .cloned();
+                                                if let Some(profile) = profile {
+                                                    this.open_server_form(
+                                                        Some(profile),
+                                                        window,
+                                                        cx,
+                                                    );
+                                                }
+                                            });
+                                        }),
+                                )
+                                .separator()
+                                .item(
+                                    PopupMenuItem::new("删除服务器")
+                                        .icon(IconName::Delete)
+                                        .on_click(move |_, _, cx| {
+                                            delete.update(cx, |this, cx| {
+                                                this.modal = Some(Modal::Delete {
+                                                    server_id: deleting.clone(),
+                                                });
+                                                cx.notify();
+                                            });
+                                        }),
+                                )
+                            }),
+                    ),
+            );
+        }
+        let toggle = view.clone();
+        let add = view.clone();
+        let mut footer = div().p_1().flex_shrink_0().flex().flex_col().gap_1();
+        #[cfg(debug_assertions)]
+        {
+            let preview = view.clone();
+            footer = footer.child(
+                Button::new("preview-navigation")
+                    .icon(IconName::Eye)
+                    .ghost()
+                    .when(!collapsed, |button| button.label("本地预览"))
+                    .tooltip("本地预览")
+                    .disabled(self.is_busy())
+                    .on_click(move |_, _, cx| {
+                        preview.update(cx, |this, cx| {
+                            this.selected_server = "__preview__".into();
+                            this.preferences.channel_sidebar_collapsed = false;
+                            this.save_preferences(cx);
+                            if this.workspace.session.mode != "preview"
+                                && !this.workspace.connected()
+                            {
+                                this.request(
+                                    "OpenPreview",
+                                    json!({}),
+                                    Pending::Workspace("OpenPreview"),
+                                );
                             }
                             cx.notify();
                         });
-                    })
-                    .child(server.name.clone()),
+                    }),
             );
         }
+        footer = footer.child(
+            Button::new("add-server")
+                .icon(IconName::Plus)
+                .ghost()
+                .when(!collapsed, |button| button.label("添加服务器"))
+                .tooltip("添加服务器")
+                .on_click(move |_, window, cx| {
+                    add.update(cx, |this, cx| this.open_server_form(None, window, cx));
+                }),
+        );
         div()
-            .h(px(56.))
-            .w_full()
-            .flex_shrink_0()
-            .px_5()
-            .flex()
-            .items_center()
-            .gap_4()
-            .bg(gpui::rgba(0xffffff04))
-            .border_b_1()
-            .border_color(gpui::rgba(0xffffff0c))
-            .child(
-                div()
-                    .w(px(204.))
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(img(self.logo.clone()).size(px(26.)))
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child("Resona"),
-                    ),
-            )
-            .child(servers.overflow_x_scrollbar())
-            .child(
-                Button::new("add-server")
-                    .icon(IconName::Plus)
-                    .ghost()
-                    .tooltip("添加服务器")
-                    .on_click({
-                        let entity = view.clone();
-                        move |_, window, cx| {
-                            entity.update(cx, |this, cx| this.open_server_form(None, window, cx));
-                        }
-                    }),
-            )
-            .into_any_element()
-    }
-
-    fn render_sidebar(&self, view: &Entity<Self>) -> AnyElement {
-        let profile = self.selected_profile().cloned();
-        let active_profile = self
-            .workspace
-            .servers
-            .iter()
-            .find(|s| s.id == self.workspace.session.server_id);
-        let title = if !self.workspace.channels.is_empty() {
-            if self.workspace.session.server_name.is_empty() {
-                active_profile
-                    .map(|s| s.name.clone())
-                    .unwrap_or_else(|| "Resona".into())
-            } else {
-                self.workspace.session.server_name.clone()
-            }
-        } else {
-            profile
-                .as_ref()
-                .map(|s| s.name.clone())
-                .unwrap_or_else(|| "Resona".into())
-        };
-        let mut actions = div().flex().gap_1();
-        if let Some(profile) = profile.clone() {
-            let editing = profile.clone();
-            let entity = view.clone();
-            actions = actions.child(
-                Button::new("edit-server")
-                    .icon(IconName::Settings2)
-                    .ghost()
-                    .tooltip("编辑服务器")
-                    .on_click(move |_, window, cx| {
-                        entity.update(cx, |this, cx| {
-                            this.open_server_form(Some(editing.clone()), window, cx)
-                        });
-                    }),
-            );
-            let id = profile.id;
-            let entity = view.clone();
-            actions = actions.child(
-                Button::new("delete-server")
-                    .icon(IconName::Delete)
-                    .ghost()
-                    .tooltip("删除服务器")
-                    .on_click(move |_, _, cx| {
-                        entity.update(cx, |this, cx| {
-                            this.modal = Some(Modal::Delete {
-                                server_id: id.clone(),
-                            });
-                            cx.notify();
-                        });
-                    }),
-            );
-        }
-        let mut sidebar = div()
-            .w(px(244.))
+            .w(px(if collapsed { 52. } else { 172. }))
             .h_full()
             .flex_shrink_0()
-            .bg(rgb(PANEL))
+            .bg(rgb(0x111315))
             .border_r_1()
             .border_color(rgb(LINE))
             .flex()
@@ -1897,143 +1959,204 @@ impl ResonaApp {
             .child(
                 div()
                     .h(px(62.))
-                    .px_4()
-                    .border_b_1()
-                    .border_color(rgb(LINE))
+                    .flex_shrink_0()
+                    .px_1()
                     .flex()
                     .items_center()
                     .justify_between()
+                    .when(!collapsed, |header| {
+                        header.child(
+                            div()
+                                .pl_2()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(img(self.logo.clone()).size(px(24.)))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .child("Resona"),
+                                ),
+                        )
+                    })
                     .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .min_w_0()
-                            .child(
-                                div()
-                                    .text_lg()
-                                    .font_weight(gpui::FontWeight::BOLD)
-                                    .text_color(rgb(TEXT))
-                                    .child(title),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(10.))
-                                    .text_color(rgb(MUTED))
-                                    .child(self.session_label()),
-                            ),
-                    )
-                    .child(actions),
+                        Button::new("toggle-server-sidebar")
+                            .icon(if collapsed {
+                                IconName::PanelLeftOpen
+                            } else {
+                                IconName::PanelLeftClose
+                            })
+                            .ghost()
+                            .tooltip(if collapsed {
+                                "展开服务器栏"
+                            } else {
+                                "收起服务器栏"
+                            })
+                            .on_click(move |_, _, cx| {
+                                toggle.update(cx, |this, cx| {
+                                    this.preferences.server_sidebar_collapsed =
+                                        !this.preferences.server_sidebar_collapsed;
+                                    this.save_preferences(cx);
+                                    cx.notify();
+                                });
+                            }),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(servers.overflow_y_scrollbar()),
+            )
+            .child(footer)
+            .into_any_element()
+    }
+
+    fn render_sidebar(&self, view: &Entity<Self>) -> AnyElement {
+        let collapsed = self.preferences.channel_sidebar_collapsed;
+        let preview_selected = self.selected_server == "__preview__";
+        let profile = self.selected_profile().cloned();
+        let showing_session = if self.workspace.session.mode == "preview" {
+            preview_selected || profile.is_none()
+        } else {
+            !preview_selected && self.selected_server == self.workspace.session.server_id
+        };
+        let title = if preview_selected
+            || (profile.is_none() && self.workspace.session.mode == "preview")
+        {
+            "本地预览".to_string()
+        } else {
+            profile
+                .as_ref()
+                .map(|p| p.name.clone())
+                .unwrap_or_else(|| "频道".into())
+        };
+        let toggle = view.clone();
+        let header = div()
+            .h(px(62.))
+            .flex_shrink_0()
+            .px_1()
+            .flex()
+            .items_center()
+            .gap_1()
+            .when(!collapsed, |header| {
+                header.child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .pl_2()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .truncate()
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(10.))
+                                .text_color(rgb(MUTED))
+                                .truncate()
+                                .child(if showing_session {
+                                    self.session_label()
+                                } else {
+                                    "未连接".into()
+                                }),
+                        ),
+                )
+            })
+            .child(
+                Button::new("toggle-channel-sidebar")
+                    .icon(if collapsed {
+                        IconName::ChevronRight
+                    } else {
+                        IconName::ChevronLeft
+                    })
+                    .ghost()
+                    .tooltip(if collapsed {
+                        "展开频道栏"
+                    } else {
+                        "收起频道栏"
+                    })
+                    .on_click(move |_, _, cx| {
+                        toggle.update(cx, |this, cx| {
+                            this.preferences.channel_sidebar_collapsed =
+                                !this.preferences.channel_sidebar_collapsed;
+                            this.save_preferences(cx);
+                            cx.notify();
+                        });
+                    }),
             );
-        if self.workspace.channels.is_empty() {
-            let entity = view.clone();
+        let mut sidebar = div()
+            .w(px(if collapsed { 44. } else { 220. }))
+            .h_full()
+            .flex_shrink_0()
+            .bg(rgb(PANEL))
+            .border_r_1()
+            .border_color(rgb(LINE))
+            .flex()
+            .flex_col()
+            .child(header);
+        if collapsed {
+            return sidebar.into_any_element();
+        }
+        if can_show_session_channels(&self.workspace, &self.selected_server) {
+            sidebar = sidebar.child(self.render_channels(view));
+        } else {
             let mut empty = div()
                 .flex_1()
-                .px_4()
+                .min_h_0()
+                .px_3()
                 .flex()
                 .flex_col()
                 .items_center()
                 .justify_center()
                 .gap_3()
                 .text_center()
-                .text_sm()
+                .text_xs()
                 .text_color(rgb(MUTED))
-                .child(if profile.is_some() {
-                    "此书签尚未连接"
+                .child(if preview_selected && self.workspace.connected() {
+                    "断开当前连接后可进入本地预览"
+                } else if profile.is_some() {
+                    "此服务器尚未连接"
                 } else {
-                    "添加服务器书签，或打开本地预览"
+                    "选择或添加服务器"
                 });
             if let Some(profile) = profile {
-                let id = profile.id;
+                let entity = view.clone();
                 empty = empty.child(
-                    Button::new("connect-server")
-                        .label("连接服务器")
+                    Button::new("connect-selected-server")
+                        .label(if self.workspace.connected() {
+                            "切换连接"
+                        } else {
+                            "连接服务器"
+                        })
                         .primary()
                         .disabled(self.is_busy())
                         .on_click(move |_, _, cx| {
-                            let entity = entity.clone();
-                            entity.update(cx, |this, cx| this.begin_connect(id.clone(), cx));
+                            entity
+                                .update(cx, |this, cx| this.begin_connect(profile.id.clone(), cx));
                         }),
                 );
             }
-            let entity = view.clone();
-            empty = empty.child(
-                Button::new("open-preview")
-                    .label("本地预览")
-                    .ghost()
-                    .on_click(move |_, _, cx| {
-                        entity.update(cx, |this, cx| {
-                            this.request(
-                                "OpenPreview",
-                                json!({}),
-                                Pending::Workspace("OpenPreview"),
-                            );
-                            cx.notify();
-                        });
-                    }),
-            );
             sidebar = sidebar.child(empty);
-        } else {
-            if let Some(selected) = profile.clone()
-                && (selected.id != self.workspace.session.server_id
-                    || matches!(
-                        self.workspace.session.mode.as_str(),
-                        "offline" | "failed" | "preview" | ""
-                    ))
-            {
-                let id = selected.id.clone();
-                let label = if self.workspace.session.server_id.is_empty()
-                    || self.workspace.session.mode == "failed"
-                {
-                    format!("连接 {}", selected.name)
-                } else {
-                    format!("切换到 {}", selected.name)
-                };
-                let entity = view.clone();
-                sidebar = sidebar.child(
-                    div()
-                        .px_3()
-                        .py_2()
-                        .border_b_1()
-                        .border_color(rgb(LINE))
-                        .child(
-                            Button::new("connect-selected-server")
-                                .label(label)
-                                .primary()
-                                .w_full()
-                                .disabled(self.is_busy())
-                                .on_click(move |_, _, cx| {
-                                    entity
-                                        .update(cx, |this, cx| this.begin_connect(id.clone(), cx));
-                                }),
-                        ),
-                );
-            }
-            sidebar = sidebar.child(self.render_channels(view));
         }
-        sidebar
-            .child(
+        if showing_session {
+            sidebar = sidebar.child(
                 div()
-                    .min_h(px(52.))
-                    .px_4()
+                    .px_3()
                     .py_2()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_size(px(11.))
-                            .text_color(rgb(self.status_color()))
-                            .child(self.session_label()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(10.))
-                            .text_color(rgb(MUTED))
-                            .child(self.status_detail()),
-                    ),
-            )
-            .into_any_element()
+                    .flex_shrink_0()
+                    .text_size(px(10.))
+                    .text_color(rgb(self.status_color()))
+                    .child(self.status_detail()),
+            );
+        }
+        sidebar.into_any_element()
     }
 
     fn render_channels(&self, view: &Entity<Self>) -> AnyElement {
@@ -2372,10 +2495,16 @@ impl ResonaApp {
                                 if self.workspace.session.mode == "preview" {
                                     "本地预览".to_owned()
                                 } else {
-                                    channel
+                                    let description = channel
                                         .as_ref()
-                                        .map(|c| c.description.clone())
-                                        .unwrap_or_default()
+                                        .map(|c| c.description.as_str())
+                                        .unwrap_or("");
+                                    format!(
+                                        "{}{}{}",
+                                        self.workspace.session.server_name,
+                                        if description.is_empty() { "" } else { " · " },
+                                        description
+                                    )
                                 },
                             )),
                     )
@@ -2421,7 +2550,11 @@ impl ResonaApp {
                     .child(div().text_xs().child(if channel.is_some() {
                         "消息只会发送到你当前所在的频道"
                     } else {
-                        "选择书签连接，或使用本地预览"
+                        if cfg!(debug_assertions) {
+                            "选择书签连接，或使用本地预览"
+                        } else {
+                            "选择或添加服务器"
+                        }
                     }))
                     .into_any_element()
             } else {
@@ -4062,13 +4195,13 @@ impl Render for ResonaApp {
             .bg(rgb(BG))
             .flex()
             .flex_col()
-            .child(self.render_rail(&view))
             .child(
                 div()
                     .flex_1()
                     .min_h_0()
                     .w_full()
                     .flex()
+                    .child(self.render_rail(&view))
                     .child(self.render_sidebar(&view))
                     .child(self.render_chat(&view))
                     .when(self.detail_selection.is_some(), |body| {
@@ -4081,7 +4214,7 @@ impl Render for ResonaApp {
                 root.child(
                     div()
                         .absolute()
-                        .left(px(260.))
+                        .left(px(self.navigation_width() + 16.))
                         .right(px(16.))
                         .top(px(64.))
                         .p_3()
@@ -4128,6 +4261,16 @@ impl Render for ResonaApp {
                 )
             })
     }
+}
+
+fn can_show_session_channels(workspace: &Workspace, selected: &str) -> bool {
+    if workspace.channels.is_empty() {
+        return false;
+    }
+    if workspace.session.mode == "preview" {
+        return selected == "__preview__" || !workspace.servers.iter().any(|s| s.id == selected);
+    }
+    workspace.connected() && selected == workspace.session.server_id
 }
 
 fn voice_params(voice: &VoiceState) -> Value {
@@ -4410,10 +4553,38 @@ fn ordered_channels(channels: &[crate::model::Channel]) -> Vec<(crate::model::Ch
 #[cfg(test)]
 mod tests {
     use super::{
-        DetailChange, DetailSelection, can_prepare_voice_preferences, detail_selection_change,
-        detail_text, ptt_can_send, remove_inserted_newline, user_is_speaking, voice_params,
+        DetailChange, DetailSelection, can_prepare_voice_preferences, can_show_session_channels,
+        detail_selection_change, detail_text, ptt_can_send, remove_inserted_newline,
+        user_is_speaking, voice_params,
     };
     use crate::model::{User, VoiceState, Workspace};
+
+    #[test]
+    fn viewed_bookmark_never_borrows_another_servers_channels() {
+        let mut workspace = Workspace::default();
+        workspace.servers = vec![
+            crate::model::ServerProfile {
+                id: "a".into(),
+                ..Default::default()
+            },
+            crate::model::ServerProfile {
+                id: "b".into(),
+                ..Default::default()
+            },
+        ];
+        workspace.channels.push(crate::model::Channel::default());
+        workspace.session.server_id = "a".into();
+        workspace.session.mode = "connected".into();
+        assert!(can_show_session_channels(&workspace, "a"));
+        assert!(!can_show_session_channels(&workspace, "b"));
+        assert!(!can_show_session_channels(&workspace, "__preview__"));
+        // Cached channels after a disconnect must not hide the reconnect action.
+        workspace.session.mode = "offline".into();
+        assert!(!can_show_session_channels(&workspace, "a"));
+        workspace.session.mode = "preview".into();
+        assert!(!can_show_session_channels(&workspace, "a"));
+        assert!(can_show_session_channels(&workspace, "__preview__"));
+    }
 
     #[test]
     fn reused_user_ids_refresh_details_and_departure_invalidates_selection() {
