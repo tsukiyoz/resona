@@ -1,5 +1,33 @@
 # 验证记录
 
+## 2026-09-10 macOS 应用图标
+
+修复打包遗漏：从共享 `build/appicon.png` 生成16至1024像素的标准iconset，再由macOS iconutil生成 `Contents/Resources/Resona.icns`，Info.plist增加CFBundleIconFile。release打包与plutil校验通过。iconutil在沙箱内报Invalid Iconset，获准在正常系统环境重跑成功。用户随后明确授权退出测试连接，已正常退出、重新打包并启动正式Resona.app；Dock观察工具超时，因此图标资源与引用已验证，但未宣称完成Dock截图验收。
+
+## 2026-09-10 GPUI 黑色界面与 Wails 退役
+
+在 `feature/tsukiyo/perf-20260909_windows-comparison` 实施用户确认的黑色原型：顶栏书签、频道树、聊天、按需资料、固定72px语音工具栏及分栏设置。Go IPC、音频配置队列与关闭清理保持原路径。删除 Wails 产品源码与依赖，HTML 设计工具移至独立 npm 包，见 ADR-0016。
+
+- `go test ./...` 通过，含 audio/client/desktopipc/protocol 及性能工具；首次沙箱内图标 TCP 测试无法监听，在获准沙箱外重跑通过。
+- Rust 14 项测试通过，release macOS 打包通过。现有上游 `block 0.1.6` 仍有 future-incompatibility 提示，本轮未升级上游依赖。
+- 实际 macOS 应用检查默认窗口与900×600内容区：顶栏、频道、消息输入、固定底栏、语音设置均在窗口内；本地预览消息按Enter发送成功。关闭设置与Cmd-Q正常退出，随后进程检查未发现测试bundle的GUI/Go核心残留。
+- 产品代码复核修正了长主题挤压聊天、重复消息确认框样式误改，补充查看对象独立标记；原生品牌位图复用缓存，避免每帧创建图像。
+- 独立 `docs/ui-prototype` npm安装、构建通过，不再依赖已删除的frontend。完整Go检查无需生成HTML资源。
+
+本轮没有进入真实TS3频道，未重新验证真实设备处理、在线网络失败、Windows UI或游戏负载。半透明表面采用原生静态颜色、边框与阴影，不声称等同网页实时背景模糊。版本及tag未变，没有创建commit或push。
+
+## 0.0.2 功能筹备（2026-09-10，未发版）
+
+本轮与 `tools/desktop-perf` 的 Windows 采集/CSV 分析工作处于同一功能分支。UI 整体优化随后单独推进；当前版本号仍为 0.0.1，未提交、推送或打 tag。
+
+- 用户报告四人频道中一个成员长期无声。合成回归确认：三个合法 10ms Opus 帧会留下不足 20ms 的 PCM；旧清理条件要求 PCM 为空，导致过期说话者及序号状态不回收，较小的新序号被一直拒绝。有效回归在修复前失败，移除残留 PCM 对超时回收的阻止后通过；追加三名远端发言者同时恢复的有声输出检查通过。没有现场接收记录，不能认定该缺陷就是用户昨天事故的根因。
+- 最终 `go test -race ./internal/...` 通过；随后加强的音频定向回归通过。覆盖在线测试本机回放、远端混音、零网络发送、原音量保留、静音/耳聋/停用意图恢复、启动取消、失败只恢复静音输出、停止与切频道竞争、启动中退出及单个说话者恢复。使用内存音频设备和传输，没有连接用户服务器，没有录音文件。
+- `cargo test --locked --offline --manifest-path desktop/Cargo.toml` 14 项通过。仍有原有依赖 `block v0.1.6` 的 Rust future-incompatibility 告警。
+- Windows 凭据测试成功交叉编译为 amd64 EXE；原生 Credential Manager 测试已加入 Windows CI，仅创建随机独立测试条目。尚未在 Windows 运行本次代码，不将交叉编译当作原生测试通过。
+- Windows 图标从已有应用 PNG 生成 9 个尺寸的 ICO，资源 ID 1 与 GPUI 0.2.2 窗口加载实现一致。打包增加 GUI 子系统与原生图标加载检查；EXE/任务栏/Alt+Tab 的实机视觉检查待 Windows 完成。
+- CGO Go 核心构建及 macOS release 打包通过，验收包为 `desktop/dist/Resona-review.app`。实际进程路径确认运行的是该新包；原生窗口打开书签表单，空名称按 Enter 出现核心校验错误，未写入书签；取消表单、音频设置布局、Cmd-Q 退出通过。未测试本轮真实设备在线回放、Windows IME 候选确认或真实密码登录。
+- 产品流程复查已纳入 `docs/product.md`，包含等待、失败、取消、退出和待验收边界。Windows 多人频道听测、系统凭据重启读取、按键释放与 UI 整体优化仍未验收。
+
 日期：2026-09-07。
 
 ## M0 验证范围

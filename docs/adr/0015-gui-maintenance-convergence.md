@@ -1,5 +1,7 @@
 # ADR-0015: GUI 开发收敛与冻结 Wails 基线
 
+2026-09-10：保留 Wails 的维护决定已被用户明确授权的 ADR-0016 替代。以下为历史依据；Windows 测量与验收要求仍有效。
+
 - 日期：2026-09-09
 - 状态：Accepted（可逆维护策略，不是最终删除或跨平台性能验收）
 - 关联：ADR-0002、ADR-0011；数据见 docs/frontend-evaluation.md。

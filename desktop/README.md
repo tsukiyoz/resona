@@ -18,6 +18,10 @@ CGO_ENABLED=1 go build -o ../build/bin/resona-core ../cmd/resona-core
 ./scripts/package-macos.sh
 ```
 
+The bundle includes a multi-resolution `Resona.icns` generated from
+`build/appicon.png` with macOS `sips` and `iconutil`. `CFBundleIconFile` supplies
+the Finder and Dock icon; launch the `.app`, not the bare Rust executable.
+
 For Windows x64, run `build-windows.cmd` from the repository root after installing
 the tools once, or download an artifact from the **Windows build** GitHub Action.
 For prerequisites and detailed commands, see

@@ -14,7 +14,7 @@ func (e *Engine) SetPushToTalk(pressed bool) error {
 		return nil
 	}
 	run.sendMu.Lock()
-	run.ptt.Store(pressed && run.config.ActivationMode == "ptt" && run.allowSend.Load())
+	run.ptt.Store(pressed && !run.isMonitor() && run.config.ActivationMode == "ptt" && run.allowSend.Load())
 	if !run.ptt.Load() {
 		run.captureMu.Lock()
 		run.captureEpoch.Add(1)

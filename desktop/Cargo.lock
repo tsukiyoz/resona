@@ -4806,6 +4806,7 @@ dependencies = [
  "base64",
  "chrono",
  "dirs 6.0.0",
+ "embed-resource",
  "global-hotkey",
  "gpui",
  "gpui-component",

@@ -24,7 +24,7 @@
 
 ### 凭据保存
 
-Go 核心依赖 `client.PasswordStore`，macOS 适配由 `internal/credentials` 使用 `github.com/keybase/go-keychain v0.0.1` 调用原生 Keychain。Generic Password 条目不启用云同步；其他平台和禁用 cgo 的构建报告存储不可用，不退回明文文件。
+Go 核心依赖 `client.PasswordStore`，macOS 适配由 `internal/credentials` 使用 `github.com/keybase/go-keychain v0.0.1` 调用原生 Keychain。Generic Password 条目不启用云同步。2026-09-10 加入 Windows Credential Manager：通过已有 `x/sys/windows` 调用 CredReadW / CredWriteW / CredDeleteW，使用当前用户的 Generic 条目及 LOCAL_MACHINE 持久级别（跨登录保存，非所有用户共享）。目标以 `io.github.tsukiyoz.resona.server-password/` 隔离，blob 为版本化 JSON，支持空密码，读取后释放系统内存。不要求 cgo；其他平台及 macOS 禁用 cgo 的构建报告存储不可用，不退回明文文件。
 
 凭据键为 `SHA-256(bookmarkID + NUL + address)`。键绑定书签及目标地址，不能因书签改名而丢失密码，也不能将旧密码发送给新地址。独立的存在性查询区分未保存与已保存空密码。GUI 只接收保存状态，不读取或回填已保存密码值。
 

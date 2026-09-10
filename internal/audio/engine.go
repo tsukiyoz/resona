@@ -82,6 +82,7 @@ func (e *Engine) Configure(ctx context.Context, config VoiceConfig) error {
 // Device and activation transitions retain the full stop/restart path.
 func liveConfigCompatible(a, b VoiceConfig) bool {
 	return a.Enabled == b.Enabled && a.Muted == b.Muted && a.Deafened == b.Deafened &&
+		a.LocalMonitor == b.LocalMonitor &&
 		a.InputDeviceID == b.InputDeviceID && a.OutputDeviceID == b.OutputDeviceID && a.ActivationMode == b.ActivationMode
 }
 
@@ -180,13 +181,16 @@ func (e *Engine) configureLocked(ctx context.Context, config VoiceConfig, update
 		return e.configurationFailed(ctx, config, codec, err)
 	}
 	run.config = config
+	if config.LocalMonitor {
+		run.monitorPCM = newSampleRing(FrameSamples * 2 * pcmBufferFrames)
+	}
 	run.processor, err = newSpeechProcessor(config)
 	if err != nil {
 		run.stop()
 		return e.configurationFailed(ctx, config, codec, err)
 	}
 	needPlayback := true
-	needCapture := !config.Muted
+	needCapture := !config.Muted || config.LocalMonitor
 	run.devices, err = e.factory.Open(config, needPlayback, needCapture, deviceCallbacks{capture: run.capture, playback: run.playback})
 	if err != nil {
 		run.stop()
@@ -454,6 +458,7 @@ type engineRun struct {
 	captureWake            chan struct{}
 	capturePCM             *sampleRing
 	playbackPCM            *sampleRing
+	monitorPCM             *sampleRing
 	devices                deviceSession
 	wg                     sync.WaitGroup
 	allowSend              atomic.Bool
@@ -566,13 +571,13 @@ func (r *engineRun) capture(samples []float32) {
 	if !r.allowSend.Load() || r.ctx.Err() != nil {
 		return
 	}
-	if !r.engine.monitor && r.config.ActivationMode == "ptt" && !r.ptt.Load() {
+	if !r.isMonitor() && r.config.ActivationMode == "ptt" && !r.ptt.Load() {
 		return
 	}
 	if !r.captureMu.TryLock() {
 		return
 	}
-	if !r.allowSend.Load() || (!r.engine.monitor && r.config.ActivationMode == "ptt" && !r.ptt.Load()) {
+	if !r.allowSend.Load() || (!r.isMonitor() && r.config.ActivationMode == "ptt" && !r.ptt.Load()) {
 		r.captureMu.Unlock()
 		return
 	}
@@ -590,6 +595,9 @@ func (r *engineRun) playback(samples []float32) {
 		return
 	}
 	r.playbackPCM.Pop(samples)
+	if r.config.LocalMonitor && r.allowSend.Load() {
+		r.monitorPCM.MixInto(samples)
+	}
 	config := r.currentConfig()
 	if config.EchoCancellation || config.EchoSuppression {
 		r.referencePCM.Push(samples)
@@ -601,6 +609,19 @@ func (r *engineRun) currentConfig() VoiceConfig {
 		return *config
 	}
 	return r.config
+}
+
+func (r *engineRun) isMonitor() bool { return r.engine.monitor || r.config.LocalMonitor }
+
+// SuspendCapture closes both monitoring and network gates before queued device work.
+func (e *Engine) SuspendCapture() {
+	e.mu.RLock()
+	run := e.run
+	e.mu.RUnlock()
+	if run != nil {
+		run.allowSend.Store(false)
+		run.ptt.Store(false)
+	}
 }
 
 func (r *engineRun) encodeLoop() {
@@ -646,16 +667,20 @@ func (r *engineRun) encodeLoop() {
 			r.processingMu.Unlock()
 			now := time.Now()
 			level := inputLevelDB(mono)
-			if r.engine.monitor && now.Sub(r.lastMeter) >= 100*time.Millisecond {
+			if r.isMonitor() && now.Sub(r.lastMeter) >= 100*time.Millisecond {
 				r.lastMeter = now
 				r.engine.setInputLevel(r, level)
 			}
-			if r.engine.monitor {
+			if r.isMonitor() {
 				for i, sample := range mono {
 					volume := float32(r.currentConfig().Volume) / 100
 					referenceStereo[i*2], referenceStereo[i*2+1] = sample*volume, sample*volume
 				}
-				r.playbackPCM.Push(referenceStereo)
+				if r.config.LocalMonitor {
+					r.monitorPCM.Push(referenceStereo)
+				} else {
+					r.playbackPCM.Push(referenceStereo)
+				}
 				continue
 			}
 			if !r.activationOpen(level, now) {
@@ -743,7 +768,8 @@ func (r *engineRun) mixLoop() {
 			clear(mix)
 			mixed := false
 			for id, speaker := range speakers {
-				if now.Sub(speaker.lastReceived) > speakerIdle && len(speaker.pcm) == 0 {
+				// A partial output frame must not pin stale decoder/sequence state.
+				if now.Sub(speaker.lastReceived) > speakerIdle {
 					delete(speakers, id)
 					continue
 				}

@@ -45,6 +45,8 @@ Core:  e4f0c70c5bf01a2054375c3f42703d911859b602a52ba80f0457bc3af4b48afd
 
 ## 复现
 
+Windows 新增独立进程采集与跨平台 CSV 分析工具，见 [desktop-perf 使用说明](../tools/desktop-perf/README.md)。运行端无需 Go/Node/Python，可按应用进程组采集 CPU、私有提交量、工作集、I/O、句柄和线程，并生成差异报告；Windows 不提供与本页 macOS 唤醒直接等价的指标。原生测试由独立 Windows CI 验证，不以交叉编译替代实机结果。
+
 先分别构建前端及 Wails production、Go 核心和 GPUI release，使用同一源码和等价场景。通过系统进程列表确认当次 PID 与 WebKit 归属，不能复用历史 PID。进入场景后等待稳定，不在采样窗口操作界面。
 
 ```sh

@@ -14,6 +14,10 @@
 
 脚本自动初始化 VS 环境、选择 MSVC Rust、设置 CGO/GCC、执行 Go/Rust 测试、构建两个 exe 并生成 `desktop/dist/Resona-win-x64.zip`。不必手动打开 Developer PowerShell、设置 CC 或切换工具链。MSYS2 自定义路径可用 `build-windows.cmd -Msys2Root D:\msys64`；本地快速构建可加 `-SkipTests`，CI 默认执行测试。缺少工具时会报告具体项目；脚本不会擅自安装 Visual Studio 或修改系统环境。
 
+Windows 图标由 `desktop/build.rs` 编译资源 ID 1，GPUI 原生窗口和 EXE 使用同一资源。打包时验证 GUI 子系统及 16/32/48/256 像素图标可加载。原图为 `build/appicon.png`；修改后从仓库根目录运行 `go run ./tools/appicon build/appicon.png desktop/assets/resona.ico` 更新各尺寸，不需在 Windows 安装图像工具。
+
+CI 另启用 `RESONA_CREDENTIAL_INTEGRATION=1`，对随机生成的独立 Credential Manager 条目执行写入/读取/更新/删除测试，不使用用户书签。macOS 交叉编译不能替代该原生测试；系统桌面的任务栏/Alt+Tab 图标及密码重启后连接仍需 Windows 验收。
+
 云端与本地共用同一个脚本。当前方案使用 Windows 原生构建机，未提供 Linux Docker 交叉构建：Rust MSVC 和 Windows SDK 仍需 Windows 工具链，容器不会自动消除这部分要求。
 
 构建当前 GPUI 客户端，不需要 Node.js、npm、Wails 或 WebView2。请在 Windows 本机执行，下面所有项目命令均从仓库根目录运行。当前 macOS 已验证；Windows 本机构建、设备、后台按键及游戏负载仍待实测，不将脚本存在等同于 Windows 验收通过。

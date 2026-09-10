@@ -68,6 +68,8 @@ type Device struct {
 }
 
 type VoiceConfig struct {
+	// LocalMonitor is controlled by the service, never deserialized from GUI preferences.
+	LocalMonitor     bool   `json:"-"`
 	Enabled          bool   `json:"enabled"`
 	Muted            bool   `json:"muted"`
 	Deafened         bool   `json:"deafened"`

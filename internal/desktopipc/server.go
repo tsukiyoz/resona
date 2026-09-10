@@ -315,7 +315,7 @@ func dispatch(s *client.Service, req request) (any, error) {
 	}
 	switch req.Method {
 	case "GetCapabilities":
-		return map[string]any{"protocolVersion": 1, "platform": runtime.GOOS, "securePasswordStorage": nativeCGO && runtime.GOOS == "darwin", "voice": nativeCGO && (runtime.GOOS == "darwin" || runtime.GOOS == "windows")}, nil
+		return map[string]any{"protocolVersion": 1, "platform": runtime.GOOS, "securePasswordStorage": runtime.GOOS == "windows" || (nativeCGO && runtime.GOOS == "darwin"), "voice": nativeCGO && (runtime.GOOS == "darwin" || runtime.GOOS == "windows")}, nil
 	case "GetWorkspace":
 		return s.GetWorkspace()
 	case "GetVoiceState":

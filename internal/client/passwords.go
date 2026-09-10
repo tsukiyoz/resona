@@ -118,7 +118,7 @@ func (s *Service) prepareCredentials(id, expectedAddress, password string, remem
 	}
 	if !remember && s.passwords != nil {
 		if err := s.passwords.Delete(passwordKey(profile)); err != nil {
-			return "", errors.New("无法清除已保存密码，请解锁系统钥匙串后重试")
+			return "", errors.New("无法清除已保存密码，请检查系统凭据存储后重试")
 		}
 	}
 	s.mu.Lock()
@@ -151,7 +151,7 @@ func (s *Service) rememberSuccessfulPassword(profile ServerProfile, password str
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if generation == s.generation && err != nil {
-		s.state.Session.CredentialError = "已连接，但密码未保存，请检查系统钥匙串"
+		s.state.Session.CredentialError = "已连接，但密码未保存，请检查系统凭据存储"
 		s.notifyChangedLocked()
 	}
 }

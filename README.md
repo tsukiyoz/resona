@@ -1,77 +1,55 @@
 # Resona / 共鸣
 
-以 Go 为核心的桌面语音客户端与服务端项目，先以 TeamSpeak 3 作为第一个兼容协议，逐步发展自己的扩展、机器人和 Go 生态。未来可在测量与设计验证后增加自研协议。
+以 Go 为核心的桌面语音客户端与服务端项目，TeamSpeak 3 是第一个兼容协议。当前唯一产品界面为 Rust GPUI `desktop/`，通过私有管道与 Go `resona-core` 通信。产品构建不需要 Node.js、WebView 或 Wails。
 
-桌面端以游戏期间的低资源常驻为目标。新 GUI 功能集中于 `desktop/` GPUI；Wails/React 冻结为可构建的性能与回退基线，不再同步新功能。macOS 首轮实测及后续验收门槛见 [桌面 UI 评估](docs/frontend-evaluation.md)；尚未验证整体性能优于 TS3。
+界面采用近黑色、轻磨砂表面、频道树、聊天主区、按需资料与固定语音工具栏。支持书签、系统密码存储、频道文字、Opus 语音、按键/持续/语音检测、音频处理与本地麦克风试听。Windows 实机和游戏同负载验收仍在进行，详情见 [验证记录](docs/verification.md)。
 
-正在开发 [GPUI 原生实验版](desktop/README.md)与 Go 音频核心（`cmd/resona-core`、`internal/audio`）。macOS 设备采集、播放与静音启停、两个 Resona 客户端通过真实 TS3 服务器双向 Opus 转发已实测；原生窗口验收仍在进行。Windows 提供实现与本机构建路径，运行验收待用户测试。具体状态见 [验证记录](docs/verification.md)，不要把实验入口视为已完成日用语音版本。
+## 开发与构建
 
-Wails 基线是 **M1 TS3 频道文字聊天实验**。桌面版可双击服务器书签连接或切换服务器，使用 macOS 钥匙串记住密码；频道树显示已同步的可见成员、服务器自定义图标及 spacer 分隔，支持长列表滚动、无密码频道切换和主动断开。已加入频道支持纯文本收发、发送状态和手动重试，断开后可查看本次会话记录。连接成功、当前频道成员进出和自身断开有本地提示音，保留独立的本地预览。该基线不含私聊、富文本、密码频道、语音通话和第三方插件，不能替代日用 TS3 客户端。
+需要 Go 1.26、Rust 及原生编译工具；macOS 需要 Xcode Command Line Tools。Windows 使用仓库根目录的 `build-windows.cmd`，首次工具安装和构建说明见 [Windows 构建](docs/windows-build.md)。
 
-## 开发
-
-环境：Go 1.26、Node.js 22、npm、Wails v2.15.0，以及操作系统的原生编译依赖。macOS 需要 Xcode Command Line Tools；Linux 和 Windows 的要求见 [Wails 安装文档](https://wails.io/docs/gettingstarted/installation/)。
+在仓库根目录启动开发版：
 
 ```sh
-go install github.com/wailsapp/wails/v2/cmd/wails@v2.15.0
-cd frontend
-npm ci
-cd ..
-wails dev
+make dev
 ```
 
-桌面正式构建：
+macOS 发布构建：
 
 ```sh
-wails build
+make core
+./desktop/scripts/package-macos.sh
 ```
 
-产物位于 `build/bin`。桌面开发和构建均使用本机 WebView，不在正式应用中启动公共 HTTP API。
-
-浏览器预览只用于前端开发：
-
-```sh
-cd frontend
-npm run dev
-```
-
-访问终端打印的本地 URL。浏览器预览使用浏览器本地存储，和桌面 Go 配置互相独立；界面会持续标记预览状态。
+应用位于 `desktop/dist/Resona.app`，双击打开。普通 Rust release 二进制用 `make build` 构建；分发时优先使用打包脚本，它会带上 Go 核心。Windows 包含 `resona-desktop.exe` 与辅助进程 `resona-core.exe`，启动前者。
 
 ## 验证
 
 ```sh
-go test ./internal/...
-cd frontend
+go test ./...
+cargo test --manifest-path desktop/Cargo.toml
+make test-protocol
+```
+
+完整 Go 测试不再需要预先构建 HTML 资源。真实服务器测试只在 Resona 创建的专用测试频道进行。
+
+HTML 风格原型是独立设计工具，不是第二套产品 GUI：
+
+```sh
+cd docs/ui-prototype
+npm ci
 npm run build
 ```
 
-完整 `go test ./...` 前先构建前端，以满足桌面入口的静态资源嵌入。原生构建和测试需要目标平台的编译环境。
-
-固定第三方协议快照作为嵌套 module，需要另执行 `make test-protocol`。真实服务器集成测试默认关闭，运行方式和凭据环境变量见验证记录；频道操作仅在自行创建的专用测试频道验证。
-
-浏览器回归测试（在 `frontend` 目录）：
-
-```sh
-npx playwright install chromium
-npm run test:e2e
-```
-
-本轮已完成的检查与真实连接探针结果见 [验证记录](docs/verification.md)。
+生成的 `mineradio.html` 可直接打开，只包含示例数据。Wails 已退役，历史基线及迁移理由见 [ADR-0016](docs/adr/0016-gpui-desktop-ui-and-wails-retirement.md)。
 
 ## 数据与边界
 
-- 桌面书签保存至 `os.UserConfigDir()/resona/servers.json`，不包含密码或身份私钥。
-- 首次连接创建 `os.UserConfigDir()/resona/identity.key`，权限 0600，后续连接复用同一身份。请自行备份该私钥；损坏文件会报错，不能自动覆盖。
-- 连接弹窗默认勾选记住密码，认证成功后保存到 macOS 系统钥匙串，支持空密码。之后双击书签或按 Enter 直接连接；取消勾选仅使用本次输入，并清除原已存密码。编辑书签可忘记密码，修改地址或删除书签也会清除关联凭据。其他平台目前不提供密码持久化，可取消记住后连接。
-- 真实连接目前支持域名/IP、显式端口与 TS3 SRV；不支持 MyTeamSpeak 昵称解析、TSDNS、自动重连或身份选择。初始身份安全等级为 8。
-- 浏览器预览不能真实连接 TS3；请运行桌面应用。桌面连接后订阅频道成员，订阅失败时显示受限状态并保留已同步数据；成员数量只代表当前身份可见的成员。
-- 本地预览不打开 TS3 网络连接，不代表协议兼容性验证。
-- 主题和提示音偏好保存在 WebView / 浏览器的本地存储。设置内可开关提示音、调整音量、试听四种音效；提示音只在本机播放，不向频道发送音频。
-- 频道消息只在本次连接的内存中保存，跨频道合计最多 500 条；断开后可只读查看，开始新连接或本地预览时清空。草稿按书签和频道在当前进程保留。已发送表示服务器接受，未确认结果不自动重发，手动重试可能产生重复消息。
-- TS3 spacer 由适配器归一化为空行或分隔标题。自定义频道图标按大小、像素和超时限制读取；资源不可用或内置 ID 未映射时回退标准频道图标。
-- 图标依次读取有限内存、`os.UserCacheDir()/resona/icons` 磁盘缓存和服务器。内存缓存上限 128 项 / 8 MiB，磁盘上限 512 项 / 64 MiB，有效期 7 天；支持重启复用，缓存故障不阻断连接。
-- 暂未选择开源许可证；在许可证确定前，不把本仓库描述为已完成开源授权的 SDK。
+- 书签与身份位于 `os.UserConfigDir()/resona/`。密码由 macOS Keychain 或 Windows Credential Manager 保存，不进入书签 JSON。
+- 语音音频留在 Go 核心，界面只传控制与状态，不逐帧传 PCM。
+- 本地预览不连接 TS3；麦克风试听只回放到本机，不向频道发送。
+- 频道消息仅在本次会话内存保留，跨频道最多 500 条；未确认消息不会自动重发。
+- 自定义图标使用有限内存与磁盘缓存，详见 [架构](docs/architecture.md)。
+- 暂未选择开源许可证，不将本仓库描述为已完成开源授权的 SDK。
 
-## 文档
-
-从 [文档索引](docs/README.md) 开始，包含产品范围、推进顺序、架构、功能设计、协议评估和 ADR。
+更多资料见 [文档索引](docs/README.md)与 [原生桌面说明](desktop/README.md)。
