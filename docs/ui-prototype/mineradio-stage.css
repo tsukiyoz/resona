@@ -1,0 +1,172 @@
+/* Layout revision from XxHuberrr/Mineradio 328a087a, not the earlier fork. */
+.mineradio {
+  grid-template-rows: 64px minmax(0, 1fr) 72px;
+  background: #090b0e;
+}
+.mineradio .header { background: transparent; border: 0; padding: 0 32px; }
+.mineradio .global-nav { display: none; }
+.mineradio .header-right { margin-left: auto; }
+.mineradio .body { grid-template-columns: 240px minmax(0, 1fr); }
+.mineradio .nav { background: transparent; border: 0; }
+.mineradio .server { padding: 30px 24px 24px; align-items: flex-start; }
+.mineradio .server-logo { width: 28px; height: 28px; background: transparent; border: 0; color: #c5d2db; }
+.mineradio .server-logo svg { width: 22px; }
+.mineradio .server b { font-size: 12px; }
+.mineradio .nav > .search { margin: 0 20px 24px; background: #ffffff06; border-color: #ffffff12; }
+.mineradio .channel-list { padding: 0 18px; }
+.mineradio .channel { min-height: 39px; font-size: 12px; }
+.mineradio .channel.selected { box-shadow: none; background: #ffffff0d; color: #f1f5f8; }
+.mineradio .channel.selected > svg { color: #d3dde6; }
+.mineradio .mini-members { padding-left: 22px; }
+.mineradio .mini-members button { color: #9aa6b2; }
+.mineradio .nav-bottom { margin: 0 24px; padding: 16px 0; border: 0; }
+.mineradio main { background: transparent; padding: 0 48px 0 28px; }
+.mineradio .breadcrumb { display: none; }
+.mineradio .page-heading { padding: 28px 0 24px; align-items: flex-start; border: 0; }
+.mineradio h1 { font-size: 28px; font-weight: 550; }
+.mineradio .page-heading p { margin-top: 12px; color: #8d9aa5; }
+.mineradio .page-heading > button { font-size: 0; padding: 0; width: 36px; height: 36px; border-radius: 50%; background: #ffffff08; border-color: #ffffff1c; }
+.mineradio .page-heading > button svg { width: 17px; height: 17px; }
+.mineradio .tag.green { background: transparent; border: 0; color: #86bfae; }
+.mineradio .tabs { display: none; }
+.mineradio .chat-view { padding: 0; min-height: 0; }
+.mineradio .chat-log { display: flex; flex-direction: column; padding-top: 0; padding-bottom: 24px; }
+.mineradio .chat-date { margin-top: auto; padding: 28px 0 10px; flex-shrink: 0; text-align: left; }
+.mineradio .chat-log article { flex-shrink: 0; padding: 13px 0; gap: 16px; }
+.mineradio .chat-log article .avatar { width: 28px; height: 28px; flex-basis: 28px; font-size: 11px; }
+.mineradio .chat-log article p { font-size: 17px; color: #dbe2e8; margin-top: 7px; line-height: 1.6; }
+.mineradio .chat-log article b { color: #9baab8; font-size: 11px; }
+.mineradio .chat-log article small { font-size: 10px; }
+.mineradio .composer { position: relative; flex-shrink: 0; background: #ffffff05; border: 0; border-bottom: 1px solid #7b8c9b66; border-radius: 0; padding: 0; box-shadow: none; }
+.mineradio .composer textarea { min-height: 56px; height: 56px; padding: 15px 100px 12px 0; font-size: 13px; resize: none; }
+.mineradio .composer > div { position: absolute; right: 0; top: 7px; padding: 0; }
+.mineradio .composer > div small { display: none; }
+.mineradio .composer .primary { font-size: 0; width: 40px; height: 40px; padding: 0; border-radius: 50%; background: #e5ecf0; border-color: #e5ecf0; }
+.mineradio .composer:focus-within { border-color: #b2c5d3; }
+.mineradio .voicebar {
+  align-self: stretch;
+  justify-self: stretch;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content max-content;
+  width: 100%;
+  height: 72px;
+  padding: 0 24px;
+  gap: 24px;
+  border: 0;
+  border-top: 1px solid #2a3037;
+  border-radius: 0;
+  background: #11161b;
+  box-shadow: none;
+}
+.mineradio .self { width: auto; min-width: 0; }
+.mineradio .self > div { min-width: 0; }
+.mineradio .self small { white-space: normal; font-size: 10px; }
+.mineradio .self > .avatar { border-radius: 8px; width: 36px; height: 36px; flex-basis: 36px; }
+.mineradio .voice-controls { justify-content: flex-end; gap: 10px; }
+.mineradio .voice-controls > button { width: 36px; height: 36px; min-height: 36px; padding: 0; border-radius: 6px; background: #302328; border: 1px solid #68414b; color: #ecb0b9; box-shadow: none; }
+.mineradio .voice-controls > button > span { display: none; }
+.mineradio .voice-controls > button.enabled { background: #1c302a; border-color: #375a4e; color: #a0d4c1; }
+.mineradio .voice-controls > .icon { width: 36px; height: 36px; min-height: 36px; background: #1b2229; border-color: #333e48; color: #b8c5cf; }
+.mineradio .voice-controls > .divider { display: block; }
+.mineradio .voice-controls > svg { display: block; color: #8a9aa8; }
+.mineradio .voice-controls > input { display: block; width: 88px; accent-color: #b9cbd8; }
+.mineradio .voice-controls > small { display: block; width: 32px; color: #95a5b2; }
+.mineradio .voice-right { justify-self: end; gap: 18px; margin-left: 0; }
+.mineradio .voice-right > span { display: none; }
+.mineradio .drawer-shade { inset: 64px 0 72px; }
+.mineradio .drawer { box-shadow: -12px 0 28px #0005; }
+.mineradio .primary { background: #dfe8ee; border-color: #dfe8ee; color: #15212a; }
+.mineradio .primary:hover { background: #fff; border-color: #fff; color: #15212a; }
+/* Static surface lighting; blur is limited to transient overlapping panels. */
+.mineradio {
+  background: linear-gradient(125deg, #101112 0%, #070809 38%, #050607 72%, #0c0c0e 100%);
+}
+.mineradio .header {
+  background: #ffffff03;
+  box-shadow: inset 0 -1px #ffffff0d;
+}
+.mineradio .nav {
+  background: linear-gradient(160deg, #ffffff08, #00000016);
+  box-shadow: inset -1px 0 #ffffff0d;
+}
+.mineradio .nav > .search,
+.mineradio .composer {
+  background: #ffffff07;
+  box-shadow: inset 0 1px #ffffff12;
+}
+.mineradio .channel.selected {
+  background: linear-gradient(115deg, #ffffff19, #ffffff08);
+  box-shadow: inset 0 1px #ffffff24, inset 0 -1px #ffffff09;
+}
+.mineradio .voicebar {
+  background: linear-gradient(115deg, #ffffff0e, #ffffff02 42%, #ffffff07), #08090bd9;
+  border-top-color: #ffffff29;
+  box-shadow: inset 0 1px #ffffff0d, inset 0 10px 24px #ffffff02;
+}
+.mineradio .voice-controls > .icon {
+  background: linear-gradient(145deg, #ffffff10, #ffffff03);
+  border-color: #ffffff29;
+  box-shadow: inset 0 1px #ffffff16;
+}
+.mineradio .drawer {
+  background: linear-gradient(125deg, #ffffff0b, #ffffff00 50%), #0c0d0fef;
+  border-color: #ffffff33;
+  box-shadow: inset 1px 0 #ffffff12, -12px 0 28px #0005;
+}
+.mineradio .modal-shade { background: #00000038; }
+.mineradio .settings {
+  background: linear-gradient(125deg, #ffffff10, #ffffff00 45%, #ffffff04), #0c0d0fef;
+  border-color: #ffffff40;
+  box-shadow: inset 0 1px #ffffff26, inset 1px 0 #ffffff0b, 0 24px 72px #0009;
+}
+.mineradio .settings > header,
+.mineradio .settings > footer { background: #ffffff07; border-color: #ffffff1c; }
+.mineradio .settings-body > nav { background: #00000020; border-color: #ffffff18; }
+.mineradio .form-content { background: transparent; }
+.mineradio .form-row > select,
+.mineradio .segmented { background: #05060870; border-color: #ffffff2b; }
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .mineradio .settings, .mineradio .drawer {
+    background-color: #0c0d0f99;
+    -webkit-backdrop-filter: blur(22px) saturate(.65);
+    backdrop-filter: blur(22px) saturate(.65);
+  }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .mineradio .settings, .mineradio .drawer {
+    background: #121315;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .mineradio .voicebar { background: #101113; }
+}
+@media (max-width: 1000px) {
+  .mineradio .body { grid-template-columns: 215px minmax(0, 1fr); }
+  .mineradio main { padding: 0 28px 0 20px; }
+  .mineradio .voicebar { width: 100%; }
+  .mineradio .voice-right .link { font-size: 11px; }
+}
+@media (max-width: 760px) {
+  .mineradio { grid-template-rows: 56px minmax(0, 1fr) 72px; }
+  .mineradio .header { padding: 0 16px; }
+  .mineradio .body { grid-template-columns: minmax(0, 1fr); }
+  .mineradio main { padding: 0 20px; }
+  .mineradio .breadcrumb { display: flex; padding: 0; min-height: 30px; }
+  .mineradio .breadcrumb > :not(button) { display: none; }
+  .mineradio .page-heading { padding: 10px 0 18px; }
+  .mineradio h1 { font-size: 23px; }
+  .mineradio .chat-log article p { font-size: 14px; }
+  .mineradio .voicebar { width: 100%; height: 72px; padding: 0 14px; gap: 12px; border-radius: 0; }
+  .mineradio .self > .avatar { display: none; }
+  .mineradio .self b { font-size: 11px; }
+  .mineradio .voice-controls { gap: 8px; }
+  .mineradio .voice-controls > button { width: 32px; height: 32px; min-height: 32px; }
+  .mineradio .voice-controls > .icon { width: 32px; height: 32px; min-height: 32px; }
+  .mineradio .voice-controls > .divider,
+  .mineradio .voice-controls > svg,
+  .mineradio .voice-controls > input,
+  .mineradio .voice-controls > small { display: none; }
+  .mineradio .voice-right .link { font-size: 0; width: 30px; }
+  .mineradio .drawer-shade { inset: 56px 0 72px; }
+  .mineradio .nav.open { background: #101113; bottom: 72px; }
+}

@@ -1,10 +1,8 @@
 /build/bin/
 /desktop/target/
 /desktop/dist/
-/frontend/node_modules/
-/frontend/dist/
-/frontend/wailsjs/
-/frontend/test-results/
-/frontend/playwright-report/
+/docs/ui-prototype/node_modules/
+/docs/ui-prototype/*.html
+/docs/ui-prototype/*.png
 .DS_Store
 *.log

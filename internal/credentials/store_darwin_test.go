@@ -40,6 +40,7 @@ func TestHasRequestsAttributesWithoutSecretData(t *testing.T) {
 		want.SetMatchLimit(keychain.MatchLimitOne)
 		want.SetReturnAttributes(true)
 		want.SetReturnData(false)
+		disallowAuthenticationUI(&want)
 		if !reflect.DeepEqual(query, want) {
 			t.Fatal("existence query must select only this local item and return attributes")
 		}
@@ -109,6 +110,36 @@ func TestHasMissingAndErrors(t *testing.T) {
 				t.Fatalf("incorrect existence result: %v", err)
 			}
 		})
+	}
+}
+
+func TestStatusDefersAuthenticationToSinglePasswordRead(t *testing.T) {
+	store := fakeStore(t)
+	queries := 0
+	store.api.query = func(query keychain.Item) ([]keychain.QueryResult, error) {
+		queries++
+		want := expectedQuery("protected")
+		want.SetMatchLimit(keychain.MatchLimitOne)
+		if queries == 1 {
+			want.SetReturnAttributes(true)
+			want.SetReturnData(false)
+			want.SetString(authenticationUIKey, authenticationUIFail)
+			if !reflect.DeepEqual(query, want) {
+				t.Fatal("status query must fail rather than show authentication UI")
+			}
+			return nil, keychain.ErrorInteractionNotAllowed
+		}
+		want.SetReturnData(true)
+		if queries != 2 || !reflect.DeepEqual(query, want) {
+			t.Fatal("only the explicit password read may request authentication")
+		}
+		return []keychain.QueryResult{{Data: []byte(`{"version":1,"password":"test-only"}`)}}, nil
+	}
+	if found, err := store.Has("protected"); !found || err != nil {
+		t.Fatalf("protected credential cannot be selected for reading: %v", err)
+	}
+	if password, err := store.Get("protected"); err != nil || password != "test-only" || queries != 2 {
+		t.Fatalf("expected exactly one password read: queries=%d error=%v", queries, err)
 	}
 }
 

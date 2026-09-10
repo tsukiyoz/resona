@@ -30,7 +30,7 @@ func (s *Service) SetVoicePreferences(config audio.VoiceConfig) (VoiceState, err
 func (s *Service) SetPushToTalk(pressed bool) (VoiceState, error) {
 	s.mu.Lock()
 	engine := s.voice
-	allowed := !s.shutdown && s.state.Session.Mode == "connected" && !s.voiceState.Busy && !s.voiceState.Muted && !s.voiceState.Deafened
+	allowed := !s.shutdown && s.onlineTestRestore == nil && !s.onlineTestStopping && s.state.Session.Mode == "connected" && !s.voiceState.Busy && !s.voiceState.Muted && !s.voiceState.Deafened
 	s.mu.Unlock()
 	if control, ok := engine.(interface{ SetPushToTalk(bool) error }); ok {
 		if err := control.SetPushToTalk(pressed && allowed); err != nil && pressed {
@@ -51,6 +51,15 @@ func (s *Service) SetPushToTalk(pressed bool) (VoiceState, error) {
 func (s *Service) GetMicrophoneTest() VoiceState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.onlineTestRestore != nil || s.onlineTestStopping {
+		state := s.voiceState
+		state.Enabled = s.onlineTestRestore != nil
+		state.Active = state.Active && state.Enabled && !state.Busy
+		state.Muted, state.Deafened = false, false
+		state.LocalSpeaking = false
+		state.SpeakingClientIDs = nil
+		return state
+	}
 	return s.microphoneTestState
 }
 
@@ -59,13 +68,18 @@ func (s *Service) StartMicrophoneTest(config audio.VoiceConfig) (VoiceState, err
 		return VoiceState{}, err
 	}
 	s.mu.Lock()
+	if s.state.Session.Mode == "connected" {
+		s.mu.Unlock()
+		_, err := s.configureVoice(config, nil, 1)
+		return s.GetMicrophoneTest(), err
+	}
 	if s.shutdown {
 		s.mu.Unlock()
 		return VoiceState{}, errors.New("客户端已经关闭")
 	}
-	if s.state.Session.Mode == "connected" || s.state.Session.Mode == "connecting" || s.state.Session.Mode == "disconnecting" {
+	if s.state.Session.Mode == "connecting" || s.state.Session.Mode == "disconnecting" {
 		s.mu.Unlock()
-		return VoiceState{}, errors.New("请断开服务器后进行本地麦克风试听")
+		return VoiceState{}, errors.New("连接正在切换，请稍后进行麦克风试听")
 	}
 	if s.microphoneTest != nil {
 		s.mu.Unlock()
@@ -148,6 +162,11 @@ func (s *Service) expireMicrophoneTest(engine voiceEngine) {
 
 func (s *Service) StopMicrophoneTest() (VoiceState, error) {
 	s.mu.Lock()
+	if s.onlineTestRestore != nil || s.onlineTestStopping {
+		s.mu.Unlock()
+		_, err := s.configureVoice(audio.VoiceConfig{}, nil, 2)
+		return s.GetMicrophoneTest(), err
+	}
 	defer s.mu.Unlock()
 	s.stopMicrophoneTestLocked()
 	return s.microphoneTestState, nil
@@ -155,6 +174,11 @@ func (s *Service) StopMicrophoneTest() (VoiceState, error) {
 
 // Caller holds s.mu. Shutdown waits for cleanupWG after detaching this owner.
 func (s *Service) stopMicrophoneTestLocked() {
+	if s.onlineTestRestore != nil || s.onlineTestStopping {
+		s.suspendVoiceCaptureLocked()
+		s.onlineTestRestore = nil
+		s.onlineTestStopping = false
+	}
 	if s.microphoneTestCancel != nil {
 		s.microphoneTestCancel()
 		s.microphoneTestCancel = nil

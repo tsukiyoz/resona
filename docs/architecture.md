@@ -1,5 +1,7 @@
 # 架构设计
 
+2026-09-10 当前架构：用户确认新黑色 GPUI 界面并授权删除旧产品前端，见 ADR-0016。产品入口为 `desktop/src/main.rs` 和 `cmd/resona-core`，控制仍经 `internal/desktopipc` 私有 NDJSON 管道。根目录 Wails 入口、桥接、专属测试与 `frontend/` 已移除；`docs/ui-prototype/` 仅为独立设计工具。下述 Wails/WebView/CSS 相关段落描述历史实现，不再是当前构建依赖或维护要求。
+
 日期：2026-09-08。Wails 基线已完成连接、频道文字与呈现；本轮增加 GPUI 与基础语音实验，验证结论见 verification.md。
 
 2026-09-09 维护策略更新：新 GUI 功能只在 GPUI 实现，Wails 冻结为可构建的性能与回退基线，不做功能同步。此决定不改变 Go 核心职责，也不代表 Windows 或最终框架迁移验收完成；见 ADR-0015 与 frontend-evaluation.md。
@@ -23,7 +25,7 @@ Resona 首先是本地桌面 GUI 应用。使用 Wails v2 承载 React/TypeScrip
 | `internal/protocol/ts3` | 持久身份、TS3 连接、频道移动与文字、事件归并、spacer 和图标资源适配 | 实现 client.RemoteConnector，不向 GUI 暴露上游类型 |
 | `third_party/teamspeak-go` | 固定版本上游快照与最小接收观察接口补丁 | 保留上游模块、MIT 许可与来源说明 |
 | `internal` 中的配置存储包 | 书签加载和原子保存 | 不保存密码、身份密钥 |
-| `internal/credentials` | macOS 原生钥匙串中的服务器密码 | 实现 client.PasswordStore，不经 GUI 返回密码 |
+| `internal/credentials` | macOS Keychain / Windows Credential Manager 中的服务器密码 | 实现 client.PasswordStore，不经 GUI 返回密码 |
 | `internal/iconcache` | 有限内存与磁盘 PNG 缓存、过期与淘汰 | 不管理 TS3 会话或用户凭据 |
 | `frontend/src` | GUI、视图状态和错误呈现 | 经集中 bridge 调用核心 |
 | `frontend` 浏览器适配 | 前端开发预览 | 不声称真实 TS3 接入 |

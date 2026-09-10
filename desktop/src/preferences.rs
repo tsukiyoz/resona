@@ -8,6 +8,8 @@ use std::{
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Preferences {
+    pub server_sidebar_collapsed: bool,
+    pub channel_sidebar_collapsed: bool,
     pub notifications_enabled: bool,
     pub notification_volume: u8,
     pub activation_mode: String,
@@ -25,6 +27,8 @@ pub struct Preferences {
 impl Default for Preferences {
     fn default() -> Self {
         Self {
+            server_sidebar_collapsed: false,
+            channel_sidebar_collapsed: false,
             notifications_enabled: true,
             notification_volume: 35,
             activation_mode: "continuous".into(),

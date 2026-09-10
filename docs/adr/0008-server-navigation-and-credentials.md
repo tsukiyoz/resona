@@ -24,9 +24,11 @@
 
 ### 凭据保存
 
-Go 核心依赖 `client.PasswordStore`，macOS 适配由 `internal/credentials` 使用 `github.com/keybase/go-keychain v0.0.1` 调用原生 Keychain。Generic Password 条目不启用云同步；其他平台和禁用 cgo 的构建报告存储不可用，不退回明文文件。
+Go 核心依赖 `client.PasswordStore`，macOS 适配由 `internal/credentials` 使用 `github.com/keybase/go-keychain v0.0.1` 调用原生 Keychain。Generic Password 条目不启用云同步。2026-09-10 加入 Windows Credential Manager：通过已有 `x/sys/windows` 调用 CredReadW / CredWriteW / CredDeleteW，使用当前用户的 Generic 条目及 LOCAL_MACHINE 持久级别（跨登录保存，非所有用户共享）。目标以 `io.github.tsukiyoz.resona.server-password/` 隔离，blob 为版本化 JSON，支持空密码，读取后释放系统内存。不要求 cgo；其他平台及 macOS 禁用 cgo 的构建报告存储不可用，不退回明文文件。
 
 凭据键为 `SHA-256(bookmarkID + NUL + address)`。键绑定书签及目标地址，不能因书签改名而丢失密码，也不能将旧密码发送给新地址。独立的存在性查询区分未保存与已保存空密码。GUI 只接收保存状态，不读取或回填已保存密码值。
+
+2026-09-10 授权体验修订：macOS存在性查询明确设置 `kSecUseAuthenticationUIFail`，只请求属性且禁止认证UI。若系统返回 `errSecInteractionNotAllowed`，将其视作需要显式读取的候选条目；这不是已成功读取密码的证明。随后仅 `Get` 允许交互认证；缺失、拒绝或读取失败走原有手动输入路径，不自动重试、不先断开旧会话、不缓存明文来绕过授权。原查询虽然已不返回秘密数据，但仍缺少非交互约束；本轮测试验证查询策略及原生API兼容，不宣称重现了用户原有条目的两次系统弹窗。核心目前为ad-hoc签名，更新二进制仍可能触发新的访问确认，稳定签名发布另行处理。
 
 钥匙串条目内部采用版本化 JSON 保存密码，保证空密码也写入非空数据；原生测试发现直接用零字节数据更新时可能保留旧值。读取严格检查格式和版本，不提供明文文件回退。
 

@@ -1,0 +1,53 @@
+name: Desktop performance tools
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/desktop-perf/**'
+      - '.github/workflows/desktop-perf.yml'
+      - 'go.mod'
+      - 'go.sum'
+  pull_request:
+    paths:
+      - 'tools/desktop-perf/**'
+      - '.github/workflows/desktop-perf.yml'
+      - 'go.mod'
+      - 'go.sum'
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test native counters and CSV reports
+        shell: pwsh
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          go test -count=1 -timeout 60s ./tools/desktop-perf
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build standalone tool
+        shell: pwsh
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          New-Item -ItemType Directory -Path build/bin/desktop-perf -Force | Out-Null
+          go build -trimpath -ldflags '-s -w' -o build/bin/desktop-perf/desktop-perf.exe ./tools/desktop-perf
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item tools/desktop-perf/compare.cmd, tools/desktop-perf/README.md build/bin/desktop-perf/
+      - uses: actions/upload-artifact@v6
+        with:
+          name: desktop-perf-win-x64-${{ github.sha }}
+          path: build/bin/desktop-perf/
+          if-no-files-found: error
+          retention-days: 14

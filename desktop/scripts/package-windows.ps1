@@ -30,6 +30,34 @@ try {
     $Reader.BaseStream.Position = $PeOffset + 24 + 68
     if ($Reader.ReadUInt16() -ne 2) { throw "Desktop binary must use the Windows GUI subsystem" }
 } finally { $Reader.Dispose() }
+if (-not ("Resona.IconResourceCheck" -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace Resona {
+    public static class IconResourceCheck {
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern IntPtr LoadLibraryEx(string path, IntPtr file, uint flags);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern IntPtr LoadImage(IntPtr module, IntPtr name, uint type, int width, int height, uint flags);
+        [DllImport("user32.dll")]
+        public static extern bool DestroyIcon(IntPtr icon);
+        [DllImport("kernel32.dll")]
+        public static extern bool FreeLibrary(IntPtr module);
+    }
+}
+'@
+}
+# Load as data without executing the application, using GPUI's resource ID.
+$Module = [Resona.IconResourceCheck]::LoadLibraryEx($DesktopBinary, [IntPtr]::Zero, 2)
+if ($Module -eq [IntPtr]::Zero) { throw "Cannot load desktop icon resources" }
+try {
+    foreach ($Size in @(16, 32, 48, 256)) {
+        $Icon = [Resona.IconResourceCheck]::LoadImage($Module, [IntPtr]1, 1, $Size, $Size, 0)
+        if ($Icon -eq [IntPtr]::Zero) { throw "Desktop application icon resource 1 is missing or invalid at size $Size" }
+        [Resona.IconResourceCheck]::DestroyIcon($Icon) | Out-Null
+    }
+} finally { [Resona.IconResourceCheck]::FreeLibrary($Module) | Out-Null }
 if ((Test-Path $OutputDirectory) -and -not (Test-Path "$OutputDirectory\.resona-package" -PathType Leaf)) {
     throw "Refusing to replace an unrecognized output directory: $OutputDirectory"
 }

@@ -4,6 +4,9 @@ version = "0.0.1"
 edition = "2024"
 description = "Native GPUI desktop client for Resona"
 
+[build-dependencies]
+embed-resource = "=3.0.11"
+
 [dependencies]
 anyhow = "1.0"
 async-channel = "2.5"

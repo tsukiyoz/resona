@@ -44,7 +44,13 @@ func (s *Store) Has(key string) (bool, error) {
 	query.SetMatchLimit(keychain.MatchLimitOne)
 	query.SetReturnAttributes(true)
 	query.SetReturnData(false)
+	disallowAuthenticationUI(&query)
 	results, err := s.api.query(query)
+	// A locked/protected item is a candidate, not a missing password. Let the
+	// explicit Get perform authentication once; never prompt just for status.
+	if errors.Is(err, keychain.ErrorInteractionNotAllowed) {
+		return true, nil
+	}
 	if errors.Is(err, keychain.ErrorItemNotFound) {
 		return false, nil
 	}

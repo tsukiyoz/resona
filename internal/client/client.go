@@ -109,6 +109,8 @@ type Service struct {
 	newVoice               func(audio.Transport, func(audio.VoiceState)) voiceEngine
 	microphoneTestMu       sync.Mutex
 	microphoneTest         voiceEngine
+	onlineTestRestore      *audio.VoiceConfig
+	onlineTestStopping     bool
 	microphoneTestState    VoiceState
 	microphoneTestCancel   context.CancelFunc
 	retiredMicrophoneTests []voiceEngine

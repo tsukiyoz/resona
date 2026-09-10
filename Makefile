@@ -1,18 +1,17 @@
-WAILS := go run github.com/wailsapp/wails/v2/cmd/wails@v2.15.0
+.PHONY: dev build core test test-protocol
 
-.PHONY: dev build frontend test test-protocol
+dev: core
+	RESONA_CORE="$(CURDIR)/build/bin/resona-core" cargo run --manifest-path desktop/Cargo.toml
 
-dev:
-	$(WAILS) dev
+build: core
+	cargo build --release --manifest-path desktop/Cargo.toml
 
-build:
-	$(WAILS) build
-
-frontend:
-	cd frontend && npm ci && npm run build
+core:
+	CGO_ENABLED=1 go build -o build/bin/resona-core ./cmd/resona-core
 
 test:
 	go test ./internal/...
+	cargo test --manifest-path desktop/Cargo.toml
 
 test-protocol:
 	cd third_party/teamspeak-go && go test -race ./...

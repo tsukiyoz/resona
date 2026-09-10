@@ -145,10 +145,94 @@ func TestMicrophoneTestOfflineCancellationAndShutdown(t *testing.T) {
 	}
 }
 
-func TestMicrophoneTestRequiresOfflineSession(t *testing.T) {
-	service := voiceService(t, &fakeVoiceEngine{})
-	if _, err := service.StartMicrophoneTest(audio.VoiceConfig{Volume: 100}); err == nil {
-		t.Fatal("local test started during real connection")
+func TestOnlineMicrophoneTestRestoresVoiceIntent(t *testing.T) {
+	for _, config := range []audio.VoiceConfig{
+		{Enabled: true, Muted: true, Volume: 80, ActivationMode: "ptt"},
+		{Enabled: true, Muted: false, Volume: 70, ActivationMode: "continuous"},
+		{Enabled: true, Muted: false, Deafened: true, Volume: 60, ActivationMode: "vad"},
+		{Enabled: false, Muted: true, Volume: 50},
+	} {
+		t.Run(config.ActivationMode, func(t *testing.T) {
+			engine := &fakeVoiceEngine{}
+			service := voiceService(t, engine)
+			if _, err := service.ConfigureVoice(config); err != nil {
+				t.Fatal(err)
+			}
+			waitVoice(t, service, func(v VoiceState) bool { return !v.Busy })
+			before := service.GetVoiceState().VoiceConfig
+			if _, err := service.StartMicrophoneTest(audio.VoiceConfig{Volume: 100, ActivationMode: "ptt"}); err != nil {
+				t.Fatal(err)
+			}
+			waitVoice(t, service, func(v VoiceState) bool { return !v.Busy && v.LocalMonitor })
+			if !service.GetMicrophoneTest().Active {
+				t.Fatal("online test not active")
+			}
+			if service.GetVoiceState().Volume != before.Volume {
+				t.Fatal("test changed channel playback volume")
+			}
+			if _, err := service.StartMicrophoneTest(audio.VoiceConfig{Volume: 100}); err == nil {
+				t.Fatal("duplicate test accepted")
+			}
+			if _, err := service.ConfigureVoice(audio.VoiceConfig{Enabled: true, Volume: 80}); err == nil {
+				t.Fatal("normal control raced test")
+			}
+			if _, err := service.StopMicrophoneTest(); err != nil {
+				t.Fatal(err)
+			}
+			after := waitVoice(t, service, func(v VoiceState) bool { return !v.Busy && !v.LocalMonitor })
+			if after.VoiceConfig != before {
+				t.Fatalf("intent not restored: got %+v want %+v", after.VoiceConfig, before)
+			}
+			if service.GetMicrophoneTest().Enabled || service.GetMicrophoneTest().Busy {
+				t.Fatal("test survived stop")
+			}
+		})
+	}
+}
+
+func TestOnlineTestStopCancelsPendingStart(t *testing.T) {
+	engine := &fakeVoiceEngine{}
+	service := voiceService(t, engine)
+	entered := make(chan struct{})
+	engine.configure = func(ctx context.Context, c audio.VoiceConfig) error {
+		if c.LocalMonitor {
+			close(entered)
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		return nil
+	}
+	if _, err := service.StartMicrophoneTest(audio.VoiceConfig{Volume: 100}); err != nil {
+		t.Fatal(err)
+	}
+	<-entered
+	if _, err := service.StopMicrophoneTest(); err != nil {
+		t.Fatal(err)
+	}
+	waitVoice(t, service, func(v VoiceState) bool { return !v.Busy && !v.LocalMonitor && v.Active && v.Muted })
+	if service.GetMicrophoneTest().Enabled || service.GetMicrophoneTest().Busy {
+		t.Fatal("cancelled monitor returned")
+	}
+}
+
+func TestOnlineTestFailureRestoresPlaybackWithoutRetryingCapture(t *testing.T) {
+	engine := &fakeVoiceEngine{}
+	service := voiceService(t, engine)
+	engine.configure = func(_ context.Context, c audio.VoiceConfig) error {
+		if c.LocalMonitor {
+			return errors.New("test device denied")
+		}
+		if !c.Muted {
+			t.Error("failure retried network capture")
+		}
+		return nil
+	}
+	if _, err := service.StartMicrophoneTest(audio.VoiceConfig{Volume: 100}); err != nil {
+		t.Fatal(err)
+	}
+	waitVoice(t, service, func(v VoiceState) bool { return !v.Busy && !v.LocalMonitor && v.Active })
+	if service.GetMicrophoneTest().Error == "" {
+		t.Fatal("test failure hidden")
 	}
 }
 
@@ -178,5 +262,57 @@ func TestMicrophoneTestReplacementClosesRetiredEngineFirst(t *testing.T) {
 	service.Shutdown()
 	if first.closed.Load() != 1 || second.closed.Load() != 1 {
 		t.Fatal("test ownership leaked")
+	}
+}
+
+func TestOnlineTestChannelMoveRestoresPendingStop(t *testing.T) {
+	engine := &fakeVoiceEngine{}
+	service := voiceService(t, engine)
+	before := service.GetVoiceState().VoiceConfig
+	if _, err := service.StartMicrophoneTest(audio.VoiceConfig{Volume: 100}); err != nil {
+		t.Fatal(err)
+	}
+	waitVoice(t, service, func(v VoiceState) bool { return !v.Busy && v.LocalMonitor })
+	// Hold device work so the channel notification supersedes a queued stop.
+	service.voiceMu.Lock()
+	_, err := service.StopMicrophoneTest()
+	if err == nil {
+		service.mu.Lock()
+		service.state.Session.ChannelID = "20"
+		service.voiceChannelChangedLocked()
+		service.mu.Unlock()
+	}
+	service.voiceMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := waitVoice(t, service, func(v VoiceState) bool { return !v.Busy && !v.LocalMonitor })
+	if after.VoiceConfig != before || service.GetMicrophoneTest().Enabled || service.GetMicrophoneTest().Busy {
+		t.Fatal("channel move revived the test or lost original voice intent")
+	}
+}
+
+func TestOnlineTestShutdownCancelsPendingCapture(t *testing.T) {
+	engine := &fakeVoiceEngine{}
+	service := voiceService(t, engine)
+	entered := make(chan struct{})
+	engine.configure = func(ctx context.Context, config audio.VoiceConfig) error {
+		if config.LocalMonitor {
+			close(entered)
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		return nil
+	}
+	if _, err := service.StartMicrophoneTest(audio.VoiceConfig{Volume: 100}); err != nil {
+		t.Fatal(err)
+	}
+	<-entered
+	service.Shutdown()
+	if state := service.GetMicrophoneTest(); state.Active || state.Enabled || state.Busy {
+		t.Fatalf("test survived shutdown: %+v", state)
+	}
+	if engine.closed.Load() != 1 {
+		t.Fatal("shutdown did not release voice engine exactly once")
 	}
 }

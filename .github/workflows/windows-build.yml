@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/windows-build.yml'
       - 'build-windows.cmd'
+      - 'build/appicon.png'
       - 'desktop/**'
       - 'cmd/resona-core/**'
       - 'internal/**'
@@ -37,6 +38,14 @@ jobs:
         with:
           msystem: UCRT64
           install: mingw-w64-ucrt-x86_64-gcc
+      - name: Test native Windows credential storage
+        shell: pwsh
+        env:
+          CGO_ENABLED: '0'
+          RESONA_CREDENTIAL_INTEGRATION: '1'
+        run: |
+          go test -count=1 ./internal/credentials
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build and test
         shell: pwsh
         env:

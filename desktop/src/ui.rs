@@ -9,15 +9,16 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::{DateTime, Local, Utc};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState, hotkey::HotKey};
 use gpui::{
-    AnyElement, Context, Entity, FocusHandle, Image, ImageFormat, InteractiveElement, IntoElement,
-    ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Subscription, Window,
-    div, img, prelude::*, px, rgb, svg,
+    AnyElement, Context, Entity, EntityInputHandler, FocusHandle, Image, ImageFormat,
+    InteractiveElement, IntoElement, ParentElement, Render, SharedString,
+    StatefulInteractiveElement, Styled, Subscription, Window, div, img, prelude::*, px, rgb, svg,
 };
 use gpui_component::{
     Disableable, IconName, IconNamed, Selectable,
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
     input::{Input, InputEvent, InputState},
+    menu::{ContextMenuExt, PopupMenuItem},
     scroll::ScrollableElement,
     tooltip::Tooltip,
 };
@@ -31,12 +32,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-const BG: u32 = 0x171a1e;
-const RAIL: u32 = 0x101214;
-const PANEL: u32 = 0x1e2227;
-const PANEL_2: u32 = 0x24292f;
-const HOVER: u32 = 0x2b3239;
-const LINE: u32 = 0x343b43;
+const BG: u32 = 0x090a0c;
+const PANEL: u32 = 0x101214;
+const PANEL_2: u32 = 0x181a1d;
+const HOVER: u32 = 0x24272b;
+const LINE: u32 = 0x303337;
 const TEXT: u32 = 0xe9edf1;
 const MUTED: u32 = 0x929ca7;
 const ICE: u32 = 0x7db8e8;
@@ -48,6 +48,7 @@ gpui::actions!(resona, [DismissModal, Quit]);
 
 #[derive(Clone, Copy)]
 enum VoiceIcon {
+    Volume,
     Mic,
     MicOff,
     Headphones,
@@ -57,6 +58,7 @@ enum VoiceIcon {
 impl IconNamed for VoiceIcon {
     fn path(self) -> SharedString {
         match self {
+            Self::Volume => "volume-2.svg",
             Self::Mic => "mic.svg",
             Self::MicOff => "mic-off.svg",
             Self::Headphones => "headphones.svg",
@@ -69,6 +71,7 @@ impl IconNamed for VoiceIcon {
 #[derive(Clone)]
 enum Pending {
     Workspace(&'static str),
+    SaveServer(u64),
     Credential(String, u64),
     Connect(String, bool),
     Voice,
@@ -132,6 +135,7 @@ enum DeviceMenu {
 }
 
 pub struct ResonaApp {
+    logo: Arc<Image>,
     core: Option<CoreClient>,
     workspace: Workspace,
     voice: VoiceState,
@@ -147,6 +151,7 @@ pub struct ResonaApp {
     detail_error: String,
     detail_revision: u64,
     ptt_pressed: bool,
+    ptt_key_down: bool,
     hotkey_manager: Option<GlobalHotKeyManager>,
     hotkey: Option<HotKey>,
     hotkey_attempt: Option<String>,
@@ -175,6 +180,7 @@ pub struct ResonaApp {
     remember_password: bool,
     error: String,
     server_error: String,
+    server_form_revision: u64,
     connect_error: String,
     focus: FocusHandle,
     name_input: Entity<InputState>,
@@ -213,6 +219,11 @@ impl ResonaApp {
             window,
             |this, input, event: &InputEvent, window, cx| {
                 if matches!(event, InputEvent::PressEnter { secondary: false }) {
+                    if input.update(cx, |input, cx| {
+                        input.marked_text_range(window, cx).is_some()
+                    }) {
+                        return;
+                    }
                     input.update(cx, |input, cx| {
                         let value = remove_inserted_newline(input.value().as_ref(), input.cursor());
                         input.set_value(value, window, cx);
@@ -221,9 +232,42 @@ impl ResonaApp {
                 }
             },
         );
+        let form_subscriptions = [
+            name_input.clone(),
+            address_input.clone(),
+            nickname_input.clone(),
+            password_input.clone(),
+        ]
+        .into_iter()
+        .map(|input| {
+            cx.subscribe_in(
+                &input,
+                window,
+                |this, input, event: &InputEvent, window, cx| {
+                    if !matches!(event, InputEvent::PressEnter { secondary: false })
+                        || input.update(cx, |input, cx| {
+                            input.marked_text_range(window, cx).is_some()
+                        })
+                    {
+                        return;
+                    }
+                    match this.modal.clone() {
+                        Some(Modal::Password { server_id }) if *input == this.password_input => {
+                            this.connect_with_password(server_id, cx)
+                        }
+                        Some(Modal::Server { .. }) if *input != this.password_input => {
+                            this.save_server(cx)
+                        }
+                        _ => {}
+                    }
+                },
+            )
+        })
+        .collect::<Vec<_>>();
         let activation_subscription = cx.observe_window_activation(window, |this, window, cx| {
             if !window.is_window_active() {
                 if this.hotkey.is_none() {
+                    this.ptt_key_down = false;
                     this.set_push_to_talk(false, cx);
                 }
                 this.device_menu = None;
@@ -248,6 +292,10 @@ impl ResonaApp {
             async {}
         });
         let mut this = Self {
+            logo: Arc::new(Image::from_bytes(
+                ImageFormat::Png,
+                include_bytes!("../../build/appicon.png").to_vec(),
+            )),
             core: None,
             workspace: Workspace::default(),
             voice: VoiceState::default(),
@@ -263,6 +311,7 @@ impl ResonaApp {
             detail_error: String::new(),
             detail_revision: 0,
             ptt_pressed: false,
+            ptt_key_down: false,
             hotkey_manager: GlobalHotKeyManager::new().ok(),
             hotkey: None,
             hotkey_attempt: None,
@@ -291,6 +340,7 @@ impl ResonaApp {
             remember_password: false,
             error: String::new(),
             server_error: String::new(),
+            server_form_revision: 0,
             connect_error: String::new(),
             focus: cx.focus_handle(),
             name_input,
@@ -299,11 +349,14 @@ impl ResonaApp {
             password_input,
             chat_input,
             shortcut_input,
-            _subscriptions: vec![
-                chat_subscription,
-                activation_subscription,
-                quit_subscription,
-            ],
+            _subscriptions: form_subscriptions
+                .into_iter()
+                .chain(vec![
+                    chat_subscription,
+                    activation_subscription,
+                    quit_subscription,
+                ])
+                .collect(),
         };
         this.focus.focus(window);
         let (hotkey_tx, hotkey_rx) = async_channel::bounded(16);
@@ -333,7 +386,7 @@ impl ResonaApp {
                             } else if epoch == this.hotkey_epoch.load(Ordering::Acquire)
                                 && this.hotkey.is_some_and(|key| key.id() == event.id)
                             {
-                                this.set_push_to_talk(event.state == HotKeyState::Pressed, cx);
+                                this.handle_ptt_key(event.state == HotKeyState::Pressed, cx);
                             }
                             cx.notify();
                         })
@@ -482,10 +535,19 @@ impl ResonaApp {
                 match (pending, result) {
                     (Some(Pending::Workspace(method)), Ok(value)) => {
                         self.apply_workspace(value, window, cx);
-                        if matches!(method, "SaveServer" | "DeleteServer") {
+                        if method == "DeleteServer" {
                             self.modal = None;
                             self.server_error.clear();
                             self.error.clear();
+                        }
+                    }
+                    (Some(Pending::SaveServer(revision)), Ok(value)) => {
+                        self.apply_workspace(value, window, cx);
+                        if revision == self.server_form_revision
+                            && matches!(self.modal, Some(Modal::Server { .. }))
+                        {
+                            self.close_modal(window, cx);
+                            self.server_error.clear();
                         }
                     }
                     (Some(Pending::Credential(server_id, revision)), Ok(value)) => {
@@ -514,9 +576,8 @@ impl ResonaApp {
                             Err(error) => self.error = format!("无法读取密码状态：{error}"),
                         }
                     }
-                    (Some(Pending::Connect(server_id, keep_modal)), Ok(value)) => {
+                    (Some(Pending::Connect(_server_id, keep_modal)), Ok(value)) => {
                         self.apply_workspace(value, window, cx);
-                        self.selected_server = server_id;
                         if !keep_modal || self.workspace.connected() {
                             self.close_modal(window, cx);
                         }
@@ -667,8 +728,14 @@ impl ResonaApp {
                         self.connect_error = error;
                         self.open_password(server_id, window, cx);
                     }
-                    (Some(Pending::Workspace("SaveServer")), Err(error)) => {
-                        self.server_error = error;
+                    (Some(Pending::SaveServer(revision)), Err(error)) => {
+                        if revision == self.server_form_revision
+                            && matches!(self.modal, Some(Modal::Server { .. }))
+                        {
+                            self.server_error = error;
+                        } else {
+                            self.error = error;
+                        }
                     }
                     (Some(_), Err(error)) | (None, Err(error)) => self.error = error,
                     (None, Ok(_)) => {}
@@ -737,7 +804,12 @@ impl ResonaApp {
                     self.chat_input
                         .update(cx, |input, cx| input.set_value(draft, window, cx));
                 }
-                if self.selected_server.is_empty() {
+                if self.selected_server != "__preview__"
+                    && !workspace
+                        .servers
+                        .iter()
+                        .any(|server| server.id == self.selected_server)
+                {
                     self.selected_server = if workspace.session.server_id.is_empty() {
                         workspace
                             .servers
@@ -849,6 +921,8 @@ impl ResonaApp {
 
     fn set_push_to_talk(&mut self, pressed: bool, cx: &mut Context<Self>) {
         let pressed = pressed
+            && !self.microphone_test.enabled
+            && !self.microphone_test.busy
             && ptt_can_send(&self.workspace, &self.voice, self.closing)
             && !self.speaking_transition_pending();
         if self.ptt_pressed == pressed {
@@ -861,6 +935,14 @@ impl ResonaApp {
             Pending::PushToTalk,
         );
         cx.notify();
+    }
+
+    fn handle_ptt_key(&mut self, pressed: bool, cx: &mut Context<Self>) {
+        if self.ptt_key_down == pressed {
+            return;
+        }
+        self.ptt_key_down = pressed;
+        self.set_push_to_talk(pressed, cx);
     }
 
     fn clear_hotkey(&mut self, cx: &mut Context<Self>) {
@@ -882,11 +964,14 @@ impl ResonaApp {
             && self.preferences.activation_mode == "ptt"
             && self.voice.activation_mode == "ptt"
             && self.workspace.connected()
-            && self.voice.enabled
-            && self.voice.active
-            && !self.voice.muted
-            && !self.voice.deafened
-            && !self.voice.busy;
+            && (self.ptt_key_down
+                || self.microphone_test.enabled
+                || self.microphone_test.busy
+                || (self.voice.enabled
+                    && self.voice.active
+                    && !self.voice.muted
+                    && !self.voice.deafened
+                    && !self.voice.busy));
         if !available {
             if self.hotkey.is_some() {
                 self.clear_hotkey(cx);
@@ -1231,6 +1316,7 @@ impl ResonaApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.server_form_revision = self.server_form_revision.wrapping_add(1);
         self.server_error.clear();
         let profile = profile.unwrap_or_else(|| ServerProfile {
             nickname: "Resona".into(),
@@ -1309,6 +1395,9 @@ impl ResonaApp {
     }
 
     fn save_server(&mut self, cx: &mut Context<Self>) {
+        if self.closing || self.is_busy() {
+            return;
+        }
         let editing_id = match &self.modal {
             Some(Modal::Server { editing_id }) => editing_id.clone(),
             _ => return,
@@ -1330,7 +1419,7 @@ impl ResonaApp {
         self.request(
             "SaveServer",
             json!({"profile": profile}),
-            Pending::Workspace("SaveServer"),
+            Pending::SaveServer(self.server_form_revision),
         );
         cx.notify();
     }
@@ -1376,6 +1465,13 @@ impl ResonaApp {
     }
 
     fn connect_with_password(&mut self, server_id: String, cx: &mut Context<Self>) {
+        if self.closing
+            || self.is_busy()
+            || !matches!(&self.modal, Some(Modal::Password { server_id: current }) if current == &server_id)
+        {
+            return;
+        }
+        self.connect_error.clear();
         let password = self.password_input.read(cx).unmask_value().to_string();
         let remember = self.remember_password && self.capabilities.secure_password_storage;
         self.request(
@@ -1615,7 +1711,37 @@ impl ResonaApp {
         cx.notify();
     }
 
+    fn can_start_microphone_test(&self) -> bool {
+        !self.closing
+            && self.capabilities.voice
+            && matches!(
+                self.workspace.session.mode.as_str(),
+                "" | "offline" | "failed" | "preview" | "connected"
+            )
+            && !self.voice.busy
+            && !self.microphone_test.enabled
+            && !self.microphone_test.busy
+            && !self.audio_settings_pending
+            && self.queued_voice.is_none()
+            && self.workspace.session.switching_channel_id.is_empty()
+            && !self.pending.values().any(|pending| {
+                matches!(
+                    pending,
+                    Pending::Voice | Pending::VoicePreferences { .. } | Pending::MicrophoneTest
+                )
+            })
+    }
+
     fn configure_microphone_test(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if enabled && !self.can_start_microphone_test() {
+            return;
+        }
+        if enabled {
+            self.set_push_to_talk(false, cx);
+            self._audio_update = None;
+            self.queued_voice = None;
+            self.voice_target = None;
+        }
         let mut config = VoiceState::default();
         self.apply_audio_preferences(&mut config);
         config.enabled = enabled;
@@ -1629,135 +1755,203 @@ impl ResonaApp {
         cx.notify();
     }
 
-    fn render_rail(&self, view: &Entity<Self>) -> AnyElement {
-        let mut rail = div()
-            .w(px(64.))
-            .h_full()
-            .flex_shrink_0()
-            .bg(rgb(RAIL))
-            .flex()
-            .flex_col()
-            .items_center()
-            .gap_2()
-            .py_3()
-            .tab_group()
-            .child(svg().path("resona.svg").size(px(38.)));
-        for server in self.workspace.servers.clone() {
-            let selected = server.id == self.selected_server;
-            let id = server.id.clone();
-            let initial = server.name.chars().next().unwrap_or('R').to_string();
-            let entity = view.clone();
-            rail = rail.child(
-                div()
-                    .id(SharedString::from(format!("server-{id}")))
-                    .tab_index(0)
-                    .size(px(38.))
-                    .rounded(px(7.))
-                    .cursor_pointer()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_sm()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .bg(rgb(if selected { 0x2c4658 } else { PANEL_2 }))
-                    .text_color(rgb(if selected { ICE } else { MUTED }))
-                    .on_click(move |event, _, cx| {
-                        entity.update(cx, |this, cx| {
-                            this.selected_server = id.clone();
-                            if event.is_keyboard() || event.click_count() >= 2 {
-                                this.begin_connect(id.clone(), cx);
-                            }
-                            cx.notify();
-                        })
-                    })
-                    .child(initial),
-            );
+    fn navigation_width(&self) -> f32 {
+        (if self.preferences.server_sidebar_collapsed {
+            52.
+        } else {
+            172.
+        }) + if self.preferences.channel_sidebar_collapsed {
+            44.
+        } else {
+            220.
         }
-        let entity = view.clone();
-        let entity_settings = view.clone();
-        rail.child(div().flex_1())
-            .child(
-                Button::new("settings")
-                    .icon(IconName::Settings)
-                    .ghost()
-                    .tooltip("声音设置")
-                    .on_click(move |_, _, cx| {
-                        entity_settings.update(cx, |this, cx| {
-                            this.modal = Some(Modal::Audio);
-                            cx.notify();
-                        });
-                    }),
-            )
-            .child(
-                Button::new("add-server")
-                    .icon(IconName::Plus)
-                    .ghost()
-                    .tooltip("添加服务器")
-                    .on_click(move |_, window, cx| {
-                        entity.update(cx, |this, cx| this.open_server_form(None, window, cx));
-                    }),
-            )
-            .into_any_element()
     }
 
-    fn render_sidebar(&self, view: &Entity<Self>) -> AnyElement {
-        let profile = self.selected_profile().cloned();
-        let active_profile = self
-            .workspace
-            .servers
-            .iter()
-            .find(|s| s.id == self.workspace.session.server_id);
-        let title = if !self.workspace.channels.is_empty() {
-            if self.workspace.session.server_name.is_empty() {
-                active_profile
-                    .map(|s| s.name.clone())
-                    .unwrap_or_else(|| "Resona".into())
-            } else {
-                self.workspace.session.server_name.clone()
-            }
-        } else {
-            profile
-                .as_ref()
-                .map(|s| s.name.clone())
-                .unwrap_or_else(|| "Resona".into())
-        };
-        let mut actions = div().flex().gap_1();
-        if let Some(profile) = profile.clone() {
-            let editing = profile.clone();
+    fn render_rail(&self, view: &Entity<Self>) -> AnyElement {
+        let collapsed = self.preferences.server_sidebar_collapsed;
+        let mut servers = div().flex().flex_col().gap_1().p_1().w_full();
+        for server in &self.workspace.servers {
+            let id = server.id.clone();
             let entity = view.clone();
-            actions = actions.child(
-                Button::new("edit-server")
-                    .icon(IconName::Settings2)
-                    .ghost()
-                    .tooltip("编辑服务器")
-                    .on_click(move |_, window, cx| {
-                        entity.update(cx, |this, cx| {
-                            this.open_server_form(Some(editing.clone()), window, cx)
-                        });
-                    }),
+            let menu_entity = view.clone();
+            let menu_id = id.clone();
+            let keyboard_entity = view.clone();
+            let keyboard_id = id.clone();
+            let online = self.workspace.connected() && self.workspace.session.server_id == id;
+            let tooltip = format!("{}{}", server.name, if online { " · 在线" } else { "" });
+            servers = servers.child(
+                div()
+                    .id(SharedString::from(format!("server-menu-{id}")))
+                    .flex_shrink_0()
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("server-{id}")))
+                            .tab_index(0)
+                            .h(px(42.))
+                            .w_full()
+                            .flex_shrink_0()
+                            .px_2()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .rounded(px(6.))
+                            .cursor_pointer()
+                            .bg(gpui::rgba(if self.selected_server == id {
+                                0xffffff14
+                            } else {
+                                0xffffff00
+                            }))
+                            .hover(|s| s.bg(rgb(HOVER)))
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(tooltip.clone()).build(window, cx)
+                            })
+                            .on_key_down(move |event, window, cx| {
+                                if event.keystroke.key == "f2" {
+                                    keyboard_entity.update(cx, |this, cx| {
+                                        let profile = this
+                                            .workspace
+                                            .servers
+                                            .iter()
+                                            .find(|p| p.id == keyboard_id)
+                                            .cloned();
+                                        if let Some(profile) = profile {
+                                            this.open_server_form(Some(profile), window, cx);
+                                        }
+                                    });
+                                    cx.stop_propagation();
+                                }
+                            })
+                            .on_click(move |event, _, cx| {
+                                entity.update(cx, |this, cx| {
+                                    this.selected_server = id.clone();
+                                    if this.preferences.channel_sidebar_collapsed {
+                                        this.preferences.channel_sidebar_collapsed = false;
+                                        this.save_preferences(cx);
+                                    }
+                                    if (event.is_keyboard() || event.click_count() >= 2)
+                                        && !this.is_busy()
+                                    {
+                                        this.begin_connect(id.clone(), cx);
+                                    }
+                                    cx.notify();
+                                });
+                            })
+                            .child(
+                                div()
+                                    .size(px(24.))
+                                    .flex_shrink_0()
+                                    .rounded(px(5.))
+                                    .bg(rgb(0x303638))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_xs()
+                                    .text_color(rgb(if online { MINT } else { TEXT }))
+                                    .child(server.name.chars().next().unwrap_or('?').to_string()),
+                            )
+                            .when(!collapsed, |row| {
+                                row.child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .text_xs()
+                                        .truncate()
+                                        .child(server.name.clone()),
+                                )
+                                .when(online, |row| {
+                                    row.child(div().size(px(5.)).rounded_full().bg(rgb(MINT)))
+                                })
+                            })
+                            .context_menu(move |menu, _, _| {
+                                let editing = menu_id.clone();
+                                let deleting = menu_id.clone();
+                                let edit = menu_entity.clone();
+                                let delete = menu_entity.clone();
+                                menu.item(
+                                    PopupMenuItem::new("编辑服务器")
+                                        .icon(IconName::Settings2)
+                                        .on_click(move |_, window, cx| {
+                                            edit.update(cx, |this, cx| {
+                                                let profile = this
+                                                    .workspace
+                                                    .servers
+                                                    .iter()
+                                                    .find(|p| p.id == editing)
+                                                    .cloned();
+                                                if let Some(profile) = profile {
+                                                    this.open_server_form(
+                                                        Some(profile),
+                                                        window,
+                                                        cx,
+                                                    );
+                                                }
+                                            });
+                                        }),
+                                )
+                                .separator()
+                                .item(
+                                    PopupMenuItem::new("删除服务器")
+                                        .icon(IconName::Delete)
+                                        .on_click(move |_, _, cx| {
+                                            delete.update(cx, |this, cx| {
+                                                this.modal = Some(Modal::Delete {
+                                                    server_id: deleting.clone(),
+                                                });
+                                                cx.notify();
+                                            });
+                                        }),
+                                )
+                            }),
+                    ),
             );
-            let id = profile.id;
-            let entity = view.clone();
-            actions = actions.child(
-                Button::new("delete-server")
-                    .icon(IconName::Delete)
+        }
+        let toggle = view.clone();
+        let add = view.clone();
+        let mut footer = div().p_1().flex_shrink_0().flex().flex_col().gap_1();
+        #[cfg(debug_assertions)]
+        {
+            let preview = view.clone();
+            footer = footer.child(
+                Button::new("preview-navigation")
+                    .icon(IconName::Eye)
                     .ghost()
-                    .tooltip("删除服务器")
+                    .when(!collapsed, |button| button.label("本地预览"))
+                    .tooltip("本地预览")
+                    .disabled(self.is_busy())
                     .on_click(move |_, _, cx| {
-                        entity.update(cx, |this, cx| {
-                            this.modal = Some(Modal::Delete {
-                                server_id: id.clone(),
-                            });
+                        preview.update(cx, |this, cx| {
+                            this.selected_server = "__preview__".into();
+                            this.preferences.channel_sidebar_collapsed = false;
+                            this.save_preferences(cx);
+                            if this.workspace.session.mode != "preview"
+                                && !this.workspace.connected()
+                            {
+                                this.request(
+                                    "OpenPreview",
+                                    json!({}),
+                                    Pending::Workspace("OpenPreview"),
+                                );
+                            }
                             cx.notify();
                         });
                     }),
             );
         }
-        let mut sidebar = div()
-            .w(px(278.))
+        footer = footer.child(
+            Button::new("add-server")
+                .icon(IconName::Plus)
+                .ghost()
+                .when(!collapsed, |button| button.label("添加服务器"))
+                .tooltip("添加服务器")
+                .on_click(move |_, window, cx| {
+                    add.update(cx, |this, cx| this.open_server_form(None, window, cx));
+                }),
+        );
+        div()
+            .w(px(if collapsed { 52. } else { 172. }))
             .h_full()
             .flex_shrink_0()
-            .bg(rgb(PANEL))
+            .bg(rgb(0x111315))
             .border_r_1()
             .border_color(rgb(LINE))
             .flex()
@@ -1765,195 +1959,204 @@ impl ResonaApp {
             .child(
                 div()
                     .h(px(62.))
-                    .px_4()
-                    .border_b_1()
-                    .border_color(rgb(LINE))
+                    .flex_shrink_0()
+                    .px_1()
                     .flex()
                     .items_center()
                     .justify_between()
+                    .when(!collapsed, |header| {
+                        header.child(
+                            div()
+                                .pl_2()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(img(self.logo.clone()).size(px(24.)))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .child("Resona"),
+                                ),
+                        )
+                    })
                     .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .min_w_0()
-                            .child(
-                                div()
-                                    .text_lg()
-                                    .font_weight(gpui::FontWeight::BOLD)
-                                    .text_color(rgb(TEXT))
-                                    .child(title),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(10.))
-                                    .text_color(rgb(MUTED))
-                                    .child(self.session_label()),
-                            ),
-                    )
-                    .child(actions),
+                        Button::new("toggle-server-sidebar")
+                            .icon(if collapsed {
+                                IconName::PanelLeftOpen
+                            } else {
+                                IconName::PanelLeftClose
+                            })
+                            .ghost()
+                            .tooltip(if collapsed {
+                                "展开服务器栏"
+                            } else {
+                                "收起服务器栏"
+                            })
+                            .on_click(move |_, _, cx| {
+                                toggle.update(cx, |this, cx| {
+                                    this.preferences.server_sidebar_collapsed =
+                                        !this.preferences.server_sidebar_collapsed;
+                                    this.save_preferences(cx);
+                                    cx.notify();
+                                });
+                            }),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(servers.overflow_y_scrollbar()),
+            )
+            .child(footer)
+            .into_any_element()
+    }
+
+    fn render_sidebar(&self, view: &Entity<Self>) -> AnyElement {
+        let collapsed = self.preferences.channel_sidebar_collapsed;
+        let preview_selected = self.selected_server == "__preview__";
+        let profile = self.selected_profile().cloned();
+        let showing_session = if self.workspace.session.mode == "preview" {
+            preview_selected || profile.is_none()
+        } else {
+            !preview_selected && self.selected_server == self.workspace.session.server_id
+        };
+        let title = if preview_selected
+            || (profile.is_none() && self.workspace.session.mode == "preview")
+        {
+            "本地预览".to_string()
+        } else {
+            profile
+                .as_ref()
+                .map(|p| p.name.clone())
+                .unwrap_or_else(|| "频道".into())
+        };
+        let toggle = view.clone();
+        let header = div()
+            .h(px(62.))
+            .flex_shrink_0()
+            .px_1()
+            .flex()
+            .items_center()
+            .gap_1()
+            .when(!collapsed, |header| {
+                header.child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .pl_2()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .truncate()
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(10.))
+                                .text_color(rgb(MUTED))
+                                .truncate()
+                                .child(if showing_session {
+                                    self.session_label()
+                                } else {
+                                    "未连接".into()
+                                }),
+                        ),
+                )
+            })
+            .child(
+                Button::new("toggle-channel-sidebar")
+                    .icon(if collapsed {
+                        IconName::ChevronRight
+                    } else {
+                        IconName::ChevronLeft
+                    })
+                    .ghost()
+                    .tooltip(if collapsed {
+                        "展开频道栏"
+                    } else {
+                        "收起频道栏"
+                    })
+                    .on_click(move |_, _, cx| {
+                        toggle.update(cx, |this, cx| {
+                            this.preferences.channel_sidebar_collapsed =
+                                !this.preferences.channel_sidebar_collapsed;
+                            this.save_preferences(cx);
+                            cx.notify();
+                        });
+                    }),
             );
-        if self.workspace.channels.is_empty() {
-            let entity = view.clone();
+        let mut sidebar = div()
+            .w(px(if collapsed { 44. } else { 220. }))
+            .h_full()
+            .flex_shrink_0()
+            .bg(rgb(PANEL))
+            .border_r_1()
+            .border_color(rgb(LINE))
+            .flex()
+            .flex_col()
+            .child(header);
+        if collapsed {
+            return sidebar.into_any_element();
+        }
+        if can_show_session_channels(&self.workspace, &self.selected_server) {
+            sidebar = sidebar.child(self.render_channels(view));
+        } else {
             let mut empty = div()
                 .flex_1()
-                .px_4()
+                .min_h_0()
+                .px_3()
                 .flex()
                 .flex_col()
                 .items_center()
                 .justify_center()
                 .gap_3()
                 .text_center()
-                .text_sm()
+                .text_xs()
                 .text_color(rgb(MUTED))
-                .child(if profile.is_some() {
-                    "此书签尚未连接"
+                .child(if preview_selected && self.workspace.connected() {
+                    "断开当前连接后可进入本地预览"
+                } else if profile.is_some() {
+                    "此服务器尚未连接"
                 } else {
-                    "添加服务器书签，或打开本地预览"
+                    "选择或添加服务器"
                 });
             if let Some(profile) = profile {
-                let id = profile.id;
+                let entity = view.clone();
                 empty = empty.child(
-                    Button::new("connect-server")
-                        .label("连接服务器")
+                    Button::new("connect-selected-server")
+                        .label(if self.workspace.connected() {
+                            "切换连接"
+                        } else {
+                            "连接服务器"
+                        })
                         .primary()
                         .disabled(self.is_busy())
                         .on_click(move |_, _, cx| {
-                            let entity = entity.clone();
-                            entity.update(cx, |this, cx| this.begin_connect(id.clone(), cx));
+                            entity
+                                .update(cx, |this, cx| this.begin_connect(profile.id.clone(), cx));
                         }),
                 );
             }
-            let entity = view.clone();
-            empty = empty.child(
-                Button::new("open-preview")
-                    .label("本地预览")
-                    .ghost()
-                    .on_click(move |_, _, cx| {
-                        entity.update(cx, |this, cx| {
-                            this.request(
-                                "OpenPreview",
-                                json!({}),
-                                Pending::Workspace("OpenPreview"),
-                            );
-                            cx.notify();
-                        });
-                    }),
-            );
             sidebar = sidebar.child(empty);
-        } else {
-            if let Some(selected) = profile.clone()
-                && (selected.id != self.workspace.session.server_id
-                    || matches!(
-                        self.workspace.session.mode.as_str(),
-                        "offline" | "failed" | "preview" | ""
-                    ))
-            {
-                let id = selected.id.clone();
-                let label = if self.workspace.session.server_id.is_empty()
-                    || self.workspace.session.mode == "failed"
-                {
-                    format!("连接 {}", selected.name)
-                } else {
-                    format!("切换到 {}", selected.name)
-                };
-                let entity = view.clone();
-                sidebar = sidebar.child(
-                    div()
-                        .px_3()
-                        .py_2()
-                        .border_b_1()
-                        .border_color(rgb(LINE))
-                        .child(
-                            Button::new("connect-selected-server")
-                                .label(label)
-                                .primary()
-                                .w_full()
-                                .disabled(self.is_busy())
-                                .on_click(move |_, _, cx| {
-                                    entity
-                                        .update(cx, |this, cx| this.begin_connect(id.clone(), cx));
-                                }),
-                        ),
-                );
-            }
-            sidebar = sidebar.child(self.render_channels(view));
         }
-        let mode = self.workspace.session.mode.clone();
-        let method = if mode == "preview" {
-            "LeavePreview"
-        } else {
-            "DisconnectServer"
-        };
-        let entity = view.clone();
-        sidebar
-            .child(
+        if showing_session {
+            sidebar = sidebar.child(
                 div()
-                    .min_h(px(60.))
-                    .border_t_1()
-                    .border_color(rgb(LINE))
                     .px_3()
                     .py_2()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .child(
-                        div()
-                            .size(px(8.))
-                            .rounded_full()
-                            .bg(rgb(self.status_color())),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(TEXT))
-                                    .child(self.session_label()),
-                            )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(px(9.))
-                                    .text_color(rgb(MUTED))
-                                    .child(self.status_detail()),
-                            ),
-                    )
-                    .when(
-                        matches!(
-                            mode.as_str(),
-                            "connecting" | "connected" | "disconnecting" | "preview"
-                        ),
-                        |row| {
-                            row.child(
-                                Button::new("disconnect")
-                                    .label(if mode == "connecting" {
-                                        "取消"
-                                    } else {
-                                        "断开"
-                                    })
-                                    .ghost()
-                                    .on_click(move |_, _, cx| {
-                                        let entity = entity.clone();
-                                        entity.update(cx, |this, cx| {
-                                            this.request(
-                                                method,
-                                                json!({}),
-                                                Pending::Workspace(method),
-                                            );
-                                            cx.notify();
-                                        });
-                                    }),
-                            )
-                        },
-                    ),
-            )
-            .into_any_element()
+                    .flex_shrink_0()
+                    .text_size(px(10.))
+                    .text_color(rgb(self.status_color()))
+                    .child(self.status_detail()),
+            );
+        }
+        sidebar.into_any_element()
     }
 
     fn render_channels(&self, view: &Entity<Self>) -> AnyElement {
@@ -2020,6 +2223,8 @@ impl ResonaApp {
                 }
                 let id = channel.id.clone();
                 let selected = id == current;
+                let inspecting =
+                    self.detail_selection.as_ref() == Some(&DetailSelection::Channel(id.clone()));
                 let is_switching = id == switching;
                 let locked = channel.password_required;
                 let channel_image = self.icon_cache.get(&channel.icon_ref).cloned();
@@ -2030,6 +2235,8 @@ impl ResonaApp {
                     .cloned()
                     .map(|user| {
                         let user_id = user.id.clone();
+                        let inspecting_user = self.detail_selection.as_ref()
+                            == Some(&DetailSelection::User(user_id.clone()));
                         let user_entity = view.clone();
                         let speaking = user_is_speaking(
                             &self.workspace,
@@ -2041,6 +2248,12 @@ impl ResonaApp {
                             .id(SharedString::from(format!("tree-user-{user_id}")))
                             .tab_index(0)
                             .cursor_pointer()
+                            .border_l_2()
+                            .border_color(gpui::rgba(if inspecting_user {
+                                0x9dbdafaa
+                            } else {
+                                0x00000000
+                            }))
                             .hover(|s| s.bg(rgb(HOVER)))
                             .on_click(move |_, _, cx| {
                                 user_entity.update(cx, |this, cx| {
@@ -2076,7 +2289,13 @@ impl ResonaApp {
                             .pr_3()
                             .rounded(px(5.))
                             .cursor_pointer()
-                            .bg(rgb(if selected { 0x293c4b } else { PANEL }))
+                            .border_l_2()
+                            .border_color(gpui::rgba(if inspecting {
+                                0x9dbdafaa
+                            } else {
+                                0x00000000
+                            }))
+                            .bg(rgb(if selected { 0x2a2f31 } else { PANEL }))
                             .hover(|s| s.bg(rgb(HOVER)))
                             .flex()
                             .items_center()
@@ -2252,46 +2471,62 @@ impl ResonaApp {
             .flex_col()
             .child(
                 div()
-                    .h(px(62.))
+                    .min_h(px(104.))
                     .px_5()
-                    .border_b_1()
-                    .border_color(rgb(LINE))
+                    .py_4()
                     .flex()
-                    .items_center()
-                    .justify_between()
+                    .items_start()
+                    .gap_3()
                     .child(
                         div()
+                            .flex_1()
+                            .min_w_0()
                             .flex()
-                            .items_center()
-                            .gap_3()
+                            .flex_col()
+                            .gap_2()
                             .child(
                                 div()
-                                    .text_xl()
-                                    .font_weight(gpui::FontWeight::BOLD)
-                                    .text_color(rgb(TEXT))
-                                    .child(format!("# {channel_name}")),
+                                    .text_size(px(24.))
+                                    .truncate()
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .child(channel_name),
                             )
-                            .when(self.workspace.session.mode == "preview", |h| {
-                                h.child(
-                                    div()
-                                        .px_2()
-                                        .py_1()
-                                        .rounded(px(4.))
-                                        .bg(rgb(0x493d27))
-                                        .text_size(px(9.))
-                                        .text_color(rgb(AMBER))
-                                        .child("本地预览"),
-                                )
-                            }),
+                            .child(div().text_xs().truncate().text_color(rgb(MUTED)).child(
+                                if self.workspace.session.mode == "preview" {
+                                    "本地预览".to_owned()
+                                } else {
+                                    let description = channel
+                                        .as_ref()
+                                        .map(|c| c.description.as_str())
+                                        .unwrap_or("");
+                                    format!(
+                                        "{}{}{}",
+                                        self.workspace.session.server_name,
+                                        if description.is_empty() { "" } else { " · " },
+                                        description
+                                    )
+                                },
+                            )),
                     )
-                    .child(
-                        div().text_xs().text_color(rgb(MUTED)).child(
-                            channel
-                                .as_ref()
-                                .map(|c| c.description.clone())
-                                .unwrap_or_default(),
-                        ),
-                    ),
+                    .when(channel.is_some(), |header| {
+                        let entity = view.clone();
+                        let id = channel.as_ref().unwrap().id.clone();
+                        header.child(
+                            Button::new("channel-details")
+                                .icon(IconName::Info)
+                                .disabled(!self.workspace.connected())
+                                .ghost()
+                                .tooltip("频道资料")
+                                .on_click(move |_, _, cx| {
+                                    entity.update(cx, |this, cx| {
+                                        this.select_details(
+                                            DetailSelection::Channel(id.clone()),
+                                            cx,
+                                        )
+                                    });
+                                }),
+                        )
+                    }),
             )
             .child(if messages.is_empty() {
                 div()
@@ -2315,7 +2550,11 @@ impl ResonaApp {
                     .child(div().text_xs().child(if channel.is_some() {
                         "消息只会发送到你当前所在的频道"
                     } else {
-                        "选择书签连接，或使用本地预览"
+                        if cfg!(debug_assertions) {
+                            "选择书签连接，或使用本地预览"
+                        } else {
+                            "选择或添加服务器"
+                        }
                     }))
                     .into_any_element()
             } else {
@@ -2334,7 +2573,7 @@ impl ResonaApp {
                     .pb_3()
                     .border_t_1()
                     .border_color(rgb(LINE))
-                    .bg(rgb(0x191d21))
+                    .bg(gpui::rgba(0xffffff04))
                     .flex()
                     .gap_2()
                     .items_end()
@@ -2359,475 +2598,267 @@ impl ResonaApp {
     }
 
     fn render_details(&self, view: &Entity<Self>) -> AnyElement {
-        let transition_pending = self.speaking_transition_pending();
-        let members = self
+        div()
+            .w(px(280.))
+            .h_full()
+            .flex_shrink_0()
+            .bg(gpui::rgba(0x16181bed))
+            .border_l_1()
+            .border_color(gpui::rgba(0xffffff22))
+            .px_4()
+            .child(self.render_selected_details(view))
+            .overflow_y_scrollbar()
+            .into_any_element()
+    }
+
+    fn render_voicebar(&self, view: &Entity<Self>) -> AnyElement {
+        let connected = self.workspace.connected();
+        let disabled =
+            !connected || self.voice.busy || !self.voice.enabled || !self.capabilities.voice;
+        let target = self
+            .queued_voice
+            .as_ref()
+            .or(self.voice_target.as_ref())
+            .unwrap_or(&self.voice);
+        let label = if self.microphone_test.enabled || self.microphone_test.busy {
+            "麦克风试听中"
+        } else if !self.voice.error.is_empty() {
+            &self.voice.error
+        } else if !connected {
+            &self.session_label()
+        } else if self.voice.busy {
+            "正在更新语音"
+        } else if !self.voice.enabled {
+            "语音未启用"
+        } else if self.voice.deafened {
+            "收听与发送已暂停"
+        } else if self.voice.muted {
+            "麦克风已静音"
+        } else if self.voice.activation_mode == "ptt" && !self.ptt_pressed {
+            "等待按键发言"
+        } else if self.voice.activation_mode == "vad" {
+            "语音检测已开启"
+        } else {
+            "麦克风已开启"
+        };
+        let nickname = self
             .workspace
             .users
             .iter()
-            .filter(|u| u.channel_id == self.workspace.session.channel_id)
-            .cloned()
-            .map(|user| {
-                let user_id = user.id.clone();
-                let entity = view.clone();
-                let speaking =
-                    user_is_speaking(&self.workspace, &self.voice, transition_pending, &user);
-                div()
-                    .id(SharedString::from(format!("detail-user-{user_id}")))
-                    .tab_index(0)
-                    .cursor_pointer()
-                    .hover(|s| s.bg(rgb(HOVER)))
-                    .on_click(move |_, _, cx| {
-                        entity.update(cx, |this, cx| {
-                            this.select_details(DetailSelection::User(user_id.clone()), cx)
-                        });
-                    })
-                    .h(px(34.))
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .size(px(24.))
-                            .rounded(px(5.))
-                            .bg(rgb(if user.is_self { 0x315546 } else { 0x303840 }))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_size(px(10.))
-                            .child(user.nickname.chars().next().unwrap_or('?').to_string()),
-                    )
-                    .child(speaking_indicator(&user, speaking, "details"))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_xs()
-                            .text_color(rgb(TEXT))
-                            .child(if user.is_self {
-                                format!("{} · 我", user.nickname)
-                            } else {
-                                user.nickname
-                            }),
-                    )
-                    .child(div().size(px(6.)).rounded_full().bg(rgb(MINT)))
-                    .into_any_element()
-            })
-            .collect::<Vec<_>>();
-        let connected = self.workspace.connected();
-        let controls_disabled =
-            !connected || self.voice.busy || !self.voice.enabled || !self.capabilities.voice;
-        let voice_label = if self.voice.busy {
-            "正在更新"
-        } else if self.voice.active {
-            "已启用"
-        } else if self.voice.enabled {
-            "不可用"
+            .find(|u| u.is_self)
+            .map(|u| u.nickname.clone())
+            .unwrap_or_else(|| "Resona".into());
+        let mode = self.workspace.session.mode.as_str();
+        let method = if mode == "preview" {
+            "LeavePreview"
         } else {
-            "未启用"
+            "DisconnectServer"
         };
-        let entity = view.clone();
-        let mut panel = div()
-            .relative()
-            .w(px(248.))
-            .h_full()
+        div()
+            .h(px(72.))
+            .w_full()
             .flex_shrink_0()
-            .bg(rgb(PANEL))
-            .border_l_1()
-            .border_color(rgb(LINE))
+            .px_5()
             .flex()
-            .flex_col()
+            .items_center()
+            .gap_3()
+            .bg(gpui::rgba(0x141619f5))
+            .border_t_1()
+            .border_color(gpui::rgba(0xffffff24))
             .child(
                 div()
-                    .h(px(62.))
-                    .px_4()
-                    .border_b_1()
-                    .border_color(rgb(LINE))
+                    .size(px(32.))
+                    .rounded(px(6.))
+                    .bg(rgb(0x293735))
                     .flex()
                     .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(rgb(TEXT))
-                            .child("资料与成员"),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(MUTED))
-                            .child(members.len().to_string()),
-                    ),
+                    .justify_center()
+                    .text_sm()
+                    .child(nickname.chars().next().unwrap_or('R').to_string()),
             )
             .child(
                 div()
                     .flex_1()
-                    .min_h_0()
-                    .px_3()
-                    .py_2()
-                    .child(self.render_selected_details(view))
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(div().text_xs().truncate().child(nickname))
                     .child(
                         div()
-                            .py_2()
-                            .text_xs()
-                            .text_color(rgb(MUTED))
-                            .child("当前频道成员"),
-                    )
-                    .children(members)
-                    .overflow_y_scrollbar(),
+                            .text_size(px(11.))
+                            .text_color(rgb(if self.voice.error.is_empty() {
+                                MUTED
+                            } else {
+                                RED
+                            }))
+                            .truncate()
+                            .child(label.to_owned()),
+                    ),
+            )
+            .child(
+                Button::new("toggle-voice")
+                    .label(if self.voice.enabled {
+                        "停用语音"
+                    } else {
+                        "启用语音"
+                    })
+                    .ghost()
+                    .disabled(!connected || !self.capabilities.voice)
+                    .on_click({
+                        let entity = view.clone();
+                        move |_, _, cx| {
+                            entity.update(cx, |this, cx| {
+                                let enabled = !this.voice.enabled;
+                                this.configure_voice(
+                                    |v| {
+                                        v.enabled = enabled;
+                                        if enabled {
+                                            v.muted = true;
+                                        }
+                                    },
+                                    cx,
+                                );
+                            });
+                        }
+                    }),
+            )
+            .child(
+                Button::new("mute")
+                    .icon(if self.voice.muted {
+                        VoiceIcon::MicOff
+                    } else {
+                        VoiceIcon::Mic
+                    })
+                    .selected(self.voice.muted)
+                    .tooltip(if self.voice.muted {
+                        "解除麦克风静音"
+                    } else {
+                        "将麦克风静音"
+                    })
+                    .disabled(disabled)
+                    .on_click({
+                        let entity = view.clone();
+                        move |_, _, cx| {
+                            entity.update(cx, |this, cx| {
+                                let muted = !this.voice.muted;
+                                this.configure_voice(|v| v.muted = muted, cx);
+                            });
+                        }
+                    }),
+            )
+            .child(
+                Button::new("deafen")
+                    .icon(if self.voice.deafened {
+                        VoiceIcon::HeadphonesOff
+                    } else {
+                        VoiceIcon::Headphones
+                    })
+                    .selected(self.voice.deafened)
+                    .tooltip(if self.voice.deafened {
+                        "恢复收听"
+                    } else {
+                        "停止收听与发送"
+                    })
+                    .disabled(disabled)
+                    .on_click({
+                        let entity = view.clone();
+                        move |_, _, cx| {
+                            entity.update(cx, |this, cx| {
+                                let deafened = !this.voice.deafened;
+                                this.configure_voice(|v| v.deafened = deafened, cx);
+                            });
+                        }
+                    }),
+            )
+            .child(div().w(px(1.)).h(px(22.)).bg(rgb(LINE)))
+            .child(
+                Button::new("volume-down")
+                    .icon(IconName::Minus)
+                    .ghost()
+                    .tooltip("降低收听音量")
+                    .disabled(!connected || !self.voice.enabled || self.closing)
+                    .on_click({
+                        let entity = view.clone();
+                        move |_, _, cx| {
+                            entity.update(cx, |this, cx| {
+                                this.configure_voice(|v| v.volume = v.volume.saturating_sub(10), cx)
+                            });
+                        }
+                    }),
             )
             .child(
                 div()
-                    .border_t_1()
-                    .border_color(rgb(LINE))
-                    .p_3()
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .child(div().size(px(7.)).rounded_full().bg(rgb(
-                                        if self.voice.active {
-                                            MINT
-                                        } else if self.voice.error.is_empty() {
-                                            MUTED
-                                        } else {
-                                            RED
-                                        },
-                                    )))
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(rgb(TEXT))
-                                            .child(format!("语音 · {voice_label}")),
-                                    ),
-                            )
-                            .child(
-                                Button::new("audio-settings")
-                                    .icon(IconName::Settings)
-                                    .ghost()
-                                    .tooltip("语音与设备设置")
-                                    .on_click({
-                                        let entity = entity.clone();
-                                        move |_, _, cx| {
-                                            entity.update(cx, |this, cx| {
-                                                this.device_menu = None;
-                                                this.modal = Some(Modal::Audio);
-                                                cx.notify();
-                                            });
-                                        }
-                                    }),
-                            )
-                            .child(
-                                Button::new("toggle-voice")
-                                    .label(if self.voice.enabled {
-                                        "停用"
-                                    } else {
-                                        "启用"
-                                    })
-                                    .ghost()
-                                    .disabled(!connected || !self.capabilities.voice)
-                                    .on_click({
-                                        let entity = entity.clone();
-                                        move |_, _, cx| {
-                                            entity.update(cx, |this, cx| {
-                                                let enabled = !this.voice.enabled;
-                                                this.configure_voice(
-                                                    |v| {
-                                                        v.enabled = enabled;
-                                                        if enabled {
-                                                            v.muted = true;
-                                                        }
-                                                    },
-                                                    cx,
-                                                )
-                                            });
-                                        }
-                                    }),
-                            ),
-                    )
-                    .when(!self.capabilities.voice && connected, |s| {
-                        s.child(
-                            div()
-                                .px_2()
-                                .py_2()
-                                .rounded(px(4.))
-                                .bg(rgb(0x493d27))
-                                .text_size(px(10.))
-                                .text_color(rgb(AMBER))
-                                .child("此构建未提供音频设备能力"),
-                        )
-                    })
-                    .when(!self.voice.error.is_empty(), |s| {
-                        s.child(
-                            div()
-                                .px_2()
-                                .py_2()
-                                .rounded(px(4.))
-                                .bg(rgb(0x40282b))
-                                .text_size(px(10.))
-                                .text_color(rgb(RED))
-                                .child(self.voice.error.clone()),
-                        )
-                    })
-                    .child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .child(
-                                Button::new("mute")
-                                    .icon(if self.voice.muted {
-                                        VoiceIcon::MicOff
-                                    } else {
-                                        VoiceIcon::Mic
-                                    })
-                                    .tooltip(if self.voice.muted {
-                                        "解除麦克风静音"
-                                    } else {
-                                        "将麦克风静音"
-                                    })
-                                    .selected(self.voice.muted)
-                                    .disabled(controls_disabled)
-                                    .on_click({
-                                        let entity = entity.clone();
-                                        move |_, _, cx| {
-                                            entity.update(cx, |this, cx| {
-                                                let muted = !this.voice.muted;
-                                                this.configure_voice(|v| v.muted = muted, cx)
-                                            })
-                                        }
-                                    }),
-                            )
-                            .child(
-                                Button::new("deafen")
-                                    .icon(if self.voice.deafened {
-                                        VoiceIcon::HeadphonesOff
-                                    } else {
-                                        VoiceIcon::Headphones
-                                    })
-                                    .tooltip(if self.voice.deafened {
-                                        "恢复收听"
-                                    } else {
-                                        "停止收听与发送"
-                                    })
-                                    .selected(self.voice.deafened)
-                                    .disabled(controls_disabled)
-                                    .on_click({
-                                        let entity = entity.clone();
-                                        move |_, _, cx| {
-                                            entity.update(cx, |this, cx| {
-                                                let deafened = !this.voice.deafened;
-                                                this.configure_voice(|v| v.deafened = deafened, cx)
-                                            })
-                                        }
-                                    }),
-                            ),
-                    )
-                    .child(self.render_device_picker("输入设备", DeviceMenu::Input, view))
-                    .child(self.render_device_picker("输出设备", DeviceMenu::Output, view))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .child(div().text_size(px(9.)).text_color(rgb(MUTED)).child("音量"))
-                            .child(
-                                Button::new("volume-down")
-                                    .icon(IconName::Minus)
-                                    .ghost()
-                                    .disabled(!connected || !self.voice.enabled || self.closing)
-                                    .on_click({
-                                        let entity = entity.clone();
-                                        move |_, _, cx| {
-                                            entity.update(cx, |this, cx| {
-                                                this.configure_voice(
-                                                    |v| v.volume = v.volume.saturating_sub(10),
-                                                    cx,
-                                                )
-                                            })
-                                        }
-                                    }),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .h(px(4.))
-                                    .rounded_full()
-                                    .bg(rgb(0x303840))
-                                    .child(
-                                        div()
-                                            .h_full()
-                                            .w(px(self
-                                                .queued_voice
-                                                .as_ref()
-                                                .or(self.voice_target.as_ref())
-                                                .unwrap_or(&self.voice)
-                                                .volume
-                                                as f32))
-                                            .rounded_full()
-                                            .bg(rgb(ICE)),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .w(px(25.))
-                                    .text_right()
-                                    .text_size(px(9.))
-                                    .text_color(rgb(TEXT))
-                                    .child(
-                                        self.queued_voice
-                                            .as_ref()
-                                            .or(self.voice_target.as_ref())
-                                            .unwrap_or(&self.voice)
-                                            .volume
-                                            .to_string(),
-                                    ),
-                            )
-                            .child(
-                                Button::new("volume-up")
-                                    .icon(IconName::Plus)
-                                    .ghost()
-                                    .disabled(!connected || !self.voice.enabled || self.closing)
-                                    .on_click({
-                                        let entity = entity.clone();
-                                        move |_, _, cx| {
-                                            entity.update(cx, |this, cx| {
-                                                this.configure_voice(
-                                                    |v| {
-                                                        v.volume =
-                                                            v.volume.saturating_add(10).min(100)
-                                                    },
-                                                    cx,
-                                                )
-                                            })
-                                        }
-                                    }),
-                            ),
-                    ),
-            );
-        if let Some(menu) = self.device_menu
-            && self.modal.is_none()
-        {
-            let kind = if menu == DeviceMenu::Input {
-                "input"
-            } else {
-                "output"
-            };
-            let entity = view.clone();
-            let mut entries = vec![
-                div()
-                    .id(SharedString::from(format!("device-{kind}-default")))
-                    .tab_index(0)
-                    .px_3()
-                    .py_2()
-                    .cursor_pointer()
-                    .rounded(px(4.))
-                    .hover(|s| s.bg(rgb(HOVER)))
+                    .w(px(40.))
+                    .text_center()
                     .text_xs()
-                    .text_color(rgb(TEXT))
-                    .child("系统默认")
-                    .on_click(move |_, _, cx| {
-                        entity.update(cx, |this, cx| {
-                            this.device_menu = None;
-                            this.configure_voice(
-                                |v| {
-                                    if menu == DeviceMenu::Input {
-                                        v.input_device_id.clear();
-                                    } else {
-                                        v.output_device_id.clear();
-                                    }
-                                },
-                                cx,
-                            );
-                        });
-                    })
-                    .into_any_element(),
-            ];
-            entries.extend(
-                self.devices
-                    .iter()
-                    .filter(|d| d.kind == kind && !d.id.is_empty())
-                    .cloned()
-                    .map(|device| {
-                        let id = device.id.clone();
-                        let label = if device.is_default {
-                            format!("{} · 默认", device.name)
-                        } else {
-                            device.name
-                        };
+                    .text_color(rgb(MUTED))
+                    .child(format!("{}%", target.volume)),
+            )
+            .child(
+                Button::new("volume-up")
+                    .icon(IconName::Plus)
+                    .ghost()
+                    .tooltip("提高收听音量")
+                    .disabled(!connected || !self.voice.enabled || self.closing)
+                    .on_click({
                         let entity = view.clone();
-                        div()
-                            .id(SharedString::from(format!("device-{kind}-{id}")))
-                            .tab_index(0)
-                            .px_3()
-                            .py_2()
-                            .cursor_pointer()
-                            .rounded(px(4.))
-                            .hover(|s| s.bg(rgb(HOVER)))
-                            .text_xs()
-                            .text_color(rgb(TEXT))
-                            .child(label)
-                            .on_click(move |_, _, cx| {
-                                entity.update(cx, |this, cx| {
-                                    this.device_menu = None;
-                                    this.configure_voice(
-                                        |v| {
-                                            if menu == DeviceMenu::Input {
-                                                v.input_device_id = id.clone();
-                                            } else {
-                                                v.output_device_id = id.clone();
-                                            }
-                                        },
-                                        cx,
-                                    );
-                                });
-                            })
-                            .into_any_element()
+                        move |_, _, cx| {
+                            entity.update(cx, |this, cx| {
+                                this.configure_voice(
+                                    |v| v.volume = v.volume.saturating_add(10).min(100),
+                                    cx,
+                                )
+                            });
+                        }
                     }),
-            );
-            let menu_entity = view.clone();
-            panel = panel.child(
-                div()
-                    .on_mouse_down_out(move |event, _, cx| {
-                        menu_entity
-                            .update(cx, |this, cx| this.dismiss_device_menu(event.position, cx));
-                    })
-                    .absolute()
-                    .right(px(12.))
-                    .bottom(px(122.))
-                    .w(px(224.))
-                    .max_h(px(210.))
-                    .p_1()
-                    .rounded(px(6.))
-                    .border_1()
-                    .border_color(rgb(LINE))
-                    .bg(rgb(0x20252a))
-                    .shadow_lg()
-                    .when(entries.is_empty(), |m| {
-                        m.child(
-                            div()
-                                .p_3()
-                                .text_xs()
-                                .text_color(rgb(MUTED))
-                                .child("没有可用设备"),
-                        )
-                    })
-                    .children(entries)
-                    .overflow_y_scrollbar(),
-            );
-        }
-        panel.into_any_element()
+            )
+            .child(
+                Button::new("audio-settings")
+                    .icon(IconName::Settings2)
+                    .ghost()
+                    .tooltip("语音与设备设置")
+                    .on_click({
+                        let entity = view.clone();
+                        move |_, _, cx| {
+                            entity.update(cx, |this, cx| {
+                                this.device_menu = None;
+                                this.modal = Some(Modal::Audio);
+                                cx.notify();
+                            });
+                        }
+                    }),
+            )
+            .when(
+                matches!(
+                    mode,
+                    "connecting" | "connected" | "disconnecting" | "preview"
+                ),
+                |bar| {
+                    bar.child(
+                        Button::new("disconnect")
+                            .label(if mode == "connecting" {
+                                "取消连接"
+                            } else if mode == "preview" {
+                                "退出预览"
+                            } else {
+                                "断开"
+                            })
+                            .ghost()
+                            .on_click({
+                                let entity = view.clone();
+                                move |_, _, cx| {
+                                    entity.update(cx, |this, cx| {
+                                        this.request(method, json!({}), Pending::Workspace(method));
+                                        cx.notify();
+                                    });
+                                }
+                            }),
+                    )
+                },
+            )
+            .into_any_element()
     }
-
     fn render_device_picker(
         &self,
         label: &'static str,
@@ -3483,14 +3514,7 @@ impl ResonaApp {
                                 } else {
                                     VoiceIcon::Mic
                                 })
-                                .disabled(
-                                    !running
-                                        && (!self.capabilities.voice
-                                            || !matches!(
-                                                self.workspace.session.mode.as_str(),
-                                                "" | "offline" | "failed" | "preview"
-                                            )),
-                                )
+                                .disabled(!running && !self.can_start_microphone_test())
                                 .on_click(move |_, _, cx| {
                                     entity.update(cx, |this, cx| {
                                         this.configure_microphone_test(!running, cx)
@@ -3534,8 +3558,11 @@ impl ResonaApp {
                             "正在处理设备".into()
                         } else if self.microphone_test.active {
                             "本地回放中".into()
-                        } else if self.workspace.connected() {
-                            "连接期间不可测试".into()
+                        } else if matches!(
+                            self.workspace.session.mode.as_str(),
+                            "connecting" | "disconnecting"
+                        ) {
+                            "连接正在切换".into()
                         } else {
                             "已停止".into()
                         }),
@@ -3558,14 +3585,9 @@ impl ResonaApp {
             );
         }
         div()
-            .w(px(540.))
+            .w(px(600.))
             .h(px(540.))
             .p_5()
-            .rounded(px(7.))
-            .border_1()
-            .border_color(rgb(LINE))
-            .bg(rgb(PANEL_2))
-            .shadow_lg()
             .flex()
             .flex_col()
             .child(content.flex_1().min_h_0().overflow_y_scrollbar())
@@ -3595,6 +3617,8 @@ impl ResonaApp {
 
     fn render_modal(&self, view: &Entity<Self>) -> Option<AnyElement> {
         let modal = self.modal.clone()?;
+        let settings_page = matches!(modal, Modal::Audio | Modal::Settings);
+        let audio_page = matches!(modal, Modal::Audio);
         let entity = view.clone();
         let card = match modal {
             Modal::Audio => self.render_audio_settings(view),
@@ -3898,17 +3922,13 @@ impl ResonaApp {
                     })
                 }).collect::<Vec<_>>();
                 div()
-                    .w(px(410.))
+                    .w(px(600.))
+                    .h(px(540.))
                     .p_5()
-                    .rounded(px(7.))
-                    .border_1()
-                    .border_color(rgb(LINE))
-                    .bg(rgb(PANEL_2))
-                    .shadow_lg()
                     .flex()
                     .flex_col()
                     .gap_4()
-                    .child(modal_title("声音设置"))
+                    .child(modal_title("提示音"))
                     .child(
                         Checkbox::new("notifications-enabled")
                             .label("播放连接与成员提示音")
@@ -4010,11 +4030,86 @@ impl ResonaApp {
                     )
             }
         };
+        let card = if settings_page {
+            let change_disabled = self.microphone_test.enabled || self.microphone_test.busy;
+            div()
+                .w(px(780.))
+                .h(px(540.))
+                .flex()
+                .rounded(px(8.))
+                .overflow_hidden()
+                .border_1()
+                .border_color(gpui::rgba(0xffffff38))
+                .bg(gpui::rgba(0x17191df5))
+                .shadow_lg()
+                .child(
+                    div()
+                        .w(px(180.))
+                        .h_full()
+                        .flex_shrink_0()
+                        .p_4()
+                        .flex()
+                        .flex_col()
+                        .gap_3()
+                        .bg(gpui::rgba(0x080a0d55))
+                        .border_r_1()
+                        .border_color(gpui::rgba(0xffffff14))
+                        .child(
+                            div()
+                                .py_3()
+                                .text_lg()
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .child("设置"),
+                        )
+                        .child(
+                            Button::new("settings-nav-audio")
+                                .label("语音与设备")
+                                .icon(IconName::Settings2)
+                                .ghost()
+                                .selected(audio_page)
+                                .w_full()
+                                .disabled(change_disabled)
+                                .on_click({
+                                    let entity = view.clone();
+                                    move |_, _, cx| {
+                                        entity.update(cx, |this, cx| {
+                                            this.device_menu = None;
+                                            this.modal = Some(Modal::Audio);
+                                            cx.notify();
+                                        });
+                                    }
+                                }),
+                        )
+                        .child(
+                            Button::new("settings-nav-notifications")
+                                .label("提示音")
+                                .icon(VoiceIcon::Volume)
+                                .ghost()
+                                .selected(!audio_page)
+                                .w_full()
+                                .disabled(change_disabled)
+                                .on_click({
+                                    let entity = view.clone();
+                                    move |_, _, cx| {
+                                        entity.update(cx, |this, cx| {
+                                            this.device_menu = None;
+                                            this.modal = Some(Modal::Settings);
+                                            cx.notify();
+                                        });
+                                    }
+                                }),
+                        ),
+                )
+                .child(card)
+                .into_any_element()
+        } else {
+            card.into_any_element()
+        };
         Some(
             div()
                 .absolute()
                 .inset_0()
-                .bg(gpui::rgba(0x0a0c0ed9))
+                .bg(gpui::rgba(0x00000066))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -4079,32 +4174,49 @@ impl Render for ResonaApp {
             .on_action(cx.listener(|this, _: &Quit, _, cx| this.begin_shutdown(cx)))
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
                 if event.keystroke.key == "f8" && this.hotkey.is_none() {
-                    this.set_push_to_talk(true, cx);
+                    if !event.is_held {
+                        this.handle_ptt_key(true, cx);
+                    }
                     cx.stop_propagation();
                 }
             }))
             .capture_key_up(cx.listener(|this, event: &gpui::KeyUpEvent, _, cx| {
                 if event.keystroke.key == "f8" && this.hotkey.is_none() {
-                    this.set_push_to_talk(false, cx);
+                    this.handle_ptt_key(false, cx);
                     cx.stop_propagation();
                 }
             }))
-            .font_family("-apple-system")
+            .font_family(if cfg!(target_os = "windows") {
+                "Segoe UI"
+            } else {
+                ".SystemUIFont"
+            })
             .text_color(rgb(TEXT))
             .bg(rgb(BG))
             .flex()
-            .child(self.render_rail(&view))
-            .child(self.render_sidebar(&view))
-            .child(self.render_chat(&view))
-            .child(self.render_details(&view))
+            .flex_col()
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .flex()
+                    .child(self.render_rail(&view))
+                    .child(self.render_sidebar(&view))
+                    .child(self.render_chat(&view))
+                    .when(self.detail_selection.is_some(), |body| {
+                        body.child(self.render_details(&view))
+                    }),
+            )
+            .child(self.render_voicebar(&view))
             .when(!self.error.is_empty() && self.modal.is_none(), |root| {
                 let entity = view.clone();
                 root.child(
                     div()
                         .absolute()
-                        .left(px(84.))
-                        .right(px(268.))
-                        .top(px(12.))
+                        .left(px(self.navigation_width() + 16.))
+                        .right(px(16.))
+                        .top(px(64.))
                         .p_3()
                         .rounded(px(5.))
                         .border_1()
@@ -4149,6 +4261,16 @@ impl Render for ResonaApp {
                 )
             })
     }
+}
+
+fn can_show_session_channels(workspace: &Workspace, selected: &str) -> bool {
+    if workspace.channels.is_empty() {
+        return false;
+    }
+    if workspace.session.mode == "preview" {
+        return selected == "__preview__" || !workspace.servers.iter().any(|s| s.id == selected);
+    }
+    workspace.connected() && selected == workspace.session.server_id
 }
 
 fn voice_params(voice: &VoiceState) -> Value {
@@ -4431,10 +4553,38 @@ fn ordered_channels(channels: &[crate::model::Channel]) -> Vec<(crate::model::Ch
 #[cfg(test)]
 mod tests {
     use super::{
-        DetailChange, DetailSelection, can_prepare_voice_preferences, detail_selection_change,
-        detail_text, ptt_can_send, remove_inserted_newline, user_is_speaking, voice_params,
+        DetailChange, DetailSelection, can_prepare_voice_preferences, can_show_session_channels,
+        detail_selection_change, detail_text, ptt_can_send, remove_inserted_newline,
+        user_is_speaking, voice_params,
     };
     use crate::model::{User, VoiceState, Workspace};
+
+    #[test]
+    fn viewed_bookmark_never_borrows_another_servers_channels() {
+        let mut workspace = Workspace::default();
+        workspace.servers = vec![
+            crate::model::ServerProfile {
+                id: "a".into(),
+                ..Default::default()
+            },
+            crate::model::ServerProfile {
+                id: "b".into(),
+                ..Default::default()
+            },
+        ];
+        workspace.channels.push(crate::model::Channel::default());
+        workspace.session.server_id = "a".into();
+        workspace.session.mode = "connected".into();
+        assert!(can_show_session_channels(&workspace, "a"));
+        assert!(!can_show_session_channels(&workspace, "b"));
+        assert!(!can_show_session_channels(&workspace, "__preview__"));
+        // Cached channels after a disconnect must not hide the reconnect action.
+        workspace.session.mode = "offline".into();
+        assert!(!can_show_session_channels(&workspace, "a"));
+        workspace.session.mode = "preview".into();
+        assert!(!can_show_session_channels(&workspace, "a"));
+        assert!(can_show_session_channels(&workspace, "__preview__"));
+    }
 
     #[test]
     fn reused_user_ids_refresh_details_and_departure_invalidates_selection() {
