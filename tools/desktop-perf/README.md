@@ -4,7 +4,7 @@
 
 ## 最简单的用法
 
-从 GitHub Actions 的 **Desktop performance tools** 工作流下载 `desktop-perf-win-x64-<commit>`，完整解压到可写目录。该工作流独立于客户端构建，只需要 Go；本地交叉编译也可以生成同一工具。
+从 GitHub Actions 的 [Desktop performance tools 工作流](https://github.com/tsukiyoz/resona/actions/workflows/desktop-perf.yml) 最近一次成功运行下载 `desktop-perf-win-x64-<commit>`，完整解压到可写目录。工具不在 **Windows build** 应用产物中，两个工作流独立发布，构建提交号可以不同。工具构建只需要 Go；本地交叉编译也可以生成同一工具。
 
 1. 打开 TeamSpeak 和 Resona，让双方进入同样的测试场景。
 2. 双击 `compare.cmd`。进程表有 PID、父 PID、线程数和 EXE 名称。
