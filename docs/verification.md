@@ -277,6 +277,7 @@ GUI 改为紧凑石墨深色布局，保留浅色、服务器书签管理、连�
 
 ## 单成员本地收听控制（2026-09-11）
 
+- 本人右键菜单修复：本人行完全不挂载收听菜单，保留左键资料。Rust 19项测试及macOS release打包通过，无网络原生夹具确认本人右键无菜单、本人资料无音量控件、远端成员仍显示菜单。原有提交路径及核心拒绝本人调整的校验未改；本轮未重新完成远端菜单音量提交全流程，也未在Windows或debug本地预览实机验收。
 - 同日追加右侧音量整数输入：Rust 19项测试及macOS release打包通过。无网络原生夹具验证250回车归一为200、-10归一为0、非法文本就地提示、失败恢复已确认值、失焦撤销草稿、切换成员隔离草稿，以及137%提交保留静音。超长整数、空值和非法格式由单元测试覆盖。输入法组合输入已有防误提交检查，但真实IME候选确认和Windows交互仍待实机验收；本轮未改造应用通知系统。
 - `go test ./internal/...` 全部通过；`go test -race ./internal/audio ./internal/client ./internal/protocol/ts3 ./internal/desktopipc` 通过。覆盖单/双声道PCM中A的0/100/200%增益与静音不影响B、参数表并发发布、成员实例隔离、会话和参数验证、设备配置不被重复调用。
 - `cargo test --offline --manifest-path desktop/Cargo.toml` 16项通过，包含Go/Rust共享JSON契约及同ID同昵称成员替换时关闭旧资料。Go核心及macOS release应用构建通过。依赖`block 0.1.6`仍有既有Rust未来兼容性警告。

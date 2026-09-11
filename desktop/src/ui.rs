@@ -2437,88 +2437,93 @@ impl ResonaApp {
                                     } else {
                                         user.nickname
                                     })
-                                    .context_menu(move |menu, window, cx| {
-                                        let this = menu_entity.read(cx);
-                                        let current = this.workspace.users.iter().find(|u| {
-                                            u.id == menu_target.user
-                                                && u.instance == menu_target.instance
-                                        });
-                                        let enabled = current.is_some_and(|u| {
-                                            !u.is_self
-                                                && u.channel_id == this.workspace.session.channel_id
-                                        }) && this.workspace.connected()
-                                            && this.workspace.session.id == menu_target.session
-                                            && !menu_target.instance.is_empty()
-                                            && this.capabilities.voice
-                                            && !this.closing
-                                            && this
-                                                .workspace
-                                                .session
-                                                .switching_channel_id
-                                                .is_empty()
-                                            && !this
-                                                .pending
-                                                .values()
-                                                .any(|p| matches!(p, Pending::UserPlayback(_)));
-                                        let volume = current
-                                            .map(|u| u.playback_volume.min(200))
-                                            .unwrap_or(100);
-                                        let muted = current.is_some_and(|u| u.playback_muted);
-                                        let mut menu = menu.label(format!("本机收听 · {volume}%"));
-                                        for (label, action, disabled) in [
-                                            (
-                                                if muted {
-                                                    "取消本机静音"
-                                                } else {
-                                                    "在本机静音"
-                                                },
-                                                UserPlaybackAction::Mute(!muted),
-                                                false,
-                                            ),
-                                            (
-                                                "降低音量 10%",
-                                                UserPlaybackAction::Step(-10),
-                                                volume == 0,
-                                            ),
-                                            (
-                                                "提高音量 10%",
-                                                UserPlaybackAction::Step(10),
-                                                volume == 200,
-                                            ),
-                                            (
-                                                "恢复100%音量",
-                                                UserPlaybackAction::Volume(100),
-                                                volume == 100,
-                                            ),
-                                        ] {
+                                    .map(|row| {
+                                        if user.is_self {
+                                            return row.into_any_element();
+                                        }
+                                        row.context_menu(move |menu, window, cx| {
+                                            let this = menu_entity.read(cx);
+                                            let current = this.workspace.users.iter().find(|u| {
+                                                u.id == menu_target.user
+                                                    && u.instance == menu_target.instance
+                                            });
+                                            let enabled = current.is_some_and(|u| {
+                                                !u.is_self
+                                                    && u.channel_id
+                                                        == this.workspace.session.channel_id
+                                            }) && this.workspace.connected()
+                                                && this.workspace.session.id == menu_target.session
+                                                && !menu_target.instance.is_empty()
+                                                && this.capabilities.voice
+                                                && !this.closing
+                                                && this
+                                                    .workspace
+                                                    .session
+                                                    .switching_channel_id
+                                                    .is_empty()
+                                                && !this
+                                                    .pending
+                                                    .values()
+                                                    .any(|p| matches!(p, Pending::UserPlayback(_)));
+                                            let volume = current
+                                                .map(|u| u.playback_volume.min(200))
+                                                .unwrap_or(100);
+                                            let muted = current.is_some_and(|u| u.playback_muted);
+                                            let mut menu =
+                                                menu.label(format!("本机收听 · {volume}%"));
+                                            for (label, action, disabled) in [
+                                                (
+                                                    if muted {
+                                                        "取消本机静音"
+                                                    } else {
+                                                        "在本机静音"
+                                                    },
+                                                    UserPlaybackAction::Mute(!muted),
+                                                    false,
+                                                ),
+                                                (
+                                                    "降低音量 10%",
+                                                    UserPlaybackAction::Step(-10),
+                                                    volume == 0,
+                                                ),
+                                                (
+                                                    "提高音量 10%",
+                                                    UserPlaybackAction::Step(10),
+                                                    volume == 200,
+                                                ),
+                                                (
+                                                    "恢复100%音量",
+                                                    UserPlaybackAction::Volume(100),
+                                                    volume == 100,
+                                                ),
+                                            ] {
+                                                let entity = menu_entity.clone();
+                                                let target = menu_target.clone();
+                                                menu = menu.item(
+                                                    PopupMenuItem::new(label)
+                                                        .disabled(!enabled || disabled)
+                                                        .on_click(move |_, _, cx| {
+                                                            entity.update(cx, |this, cx| {
+                                                                this.user_playback_action(
+                                                                    target.clone(),
+                                                                    action,
+                                                                    cx,
+                                                                )
+                                                            });
+                                                        }),
+                                                );
+                                            }
                                             let entity = menu_entity.clone();
                                             let target = menu_target.clone();
-                                            menu = menu.item(
-                                                PopupMenuItem::new(label)
-                                                    .disabled(!enabled || disabled)
-                                                    .on_click(move |_, _, cx| {
-                                                        entity.update(cx, |this, cx| {
-                                                            this.user_playback_action(
-                                                                target.clone(),
-                                                                action,
-                                                                cx,
-                                                            )
-                                                        });
-                                                    }),
-                                            );
-                                        }
-                                        let entity = menu_entity.clone();
-                                        let target = menu_target.clone();
-                                        menu.separator().submenu(
-                                            "音量档位",
-                                            window,
-                                            cx,
-                                            move |mut menu, _, _| {
-                                                for value in [0, 50, 100, 150, 200] {
-                                                    let entity = entity.clone();
-                                                    let target = target.clone();
-                                                    menu =
-                                                        menu.item(
+                                            menu.separator().submenu(
+                                                "音量档位",
+                                                window,
+                                                cx,
+                                                move |mut menu, _, _| {
+                                                    for value in [0, 50, 100, 150, 200] {
+                                                        let entity = entity.clone();
+                                                        let target = target.clone();
+                                                        menu = menu.item(
                                                             PopupMenuItem::new(format!("{value}%"))
                                                                 .checked(value == volume)
                                                                 .disabled(!enabled)
@@ -2532,10 +2537,12 @@ impl ResonaApp {
                                                         });
                                                                 }),
                                                         );
-                                                }
-                                                menu
-                                            },
-                                        )
+                                                    }
+                                                    menu
+                                                },
+                                            )
+                                        })
+                                        .into_any_element()
                                     }),
                             )
                             .into_any_element()
