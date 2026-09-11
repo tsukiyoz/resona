@@ -24,6 +24,7 @@ const (
 )
 
 type Engine struct {
+	peers     atomic.Pointer[map[uint16]PeerPlayback]
 	ops       chan struct{}
 	mu        sync.RWMutex
 	transport Transport
@@ -42,7 +43,7 @@ func New(transport Transport, notify func(VoiceState)) *Engine {
 		ops:       make(chan struct{}, 1),
 		transport: transport,
 		factory:   defaultDevices,
-		state:     VoiceState{Config: VoiceConfig{Muted: true, Volume: 100}},
+		state:     VoiceState{Config: VoiceConfig{Muted: true, Volume: 100, InputGain: 100}},
 		notify:    notify,
 	}
 	if notify != nil {
@@ -667,9 +668,10 @@ func (r *engineRun) encodeLoop() {
 			r.processingMu.Unlock()
 			now := time.Now()
 			level := inputLevelDB(mono)
+			applyInputGain(mono, r.currentConfig().InputGain)
 			if r.isMonitor() && now.Sub(r.lastMeter) >= 100*time.Millisecond {
 				r.lastMeter = now
-				r.engine.setInputLevel(r, level)
+				r.engine.setInputLevel(r, inputLevelDB(mono))
 			}
 			if r.isMonitor() {
 				for i, sample := range mono {
@@ -727,6 +729,12 @@ func (r *engineRun) mixLoop() {
 		case <-r.ctx.Done():
 			return
 		case packet := <-r.incoming:
+			if _, current := peerGain(r.engine.peers.Load(), packet.SenderID, packet.Instance); !current {
+				continue
+			}
+			if previous := speakers[packet.SenderID]; previous != nil && previous.instance != packet.Instance {
+				delete(speakers, packet.SenderID)
+			}
 			if packet.End {
 				s := speakers[packet.SenderID]
 				if s != nil && s.codec == packet.Codec && s.jitter.Push(packet) {
@@ -759,6 +767,7 @@ func (r *engineRun) mixLoop() {
 					continue
 				}
 				speakers[packet.SenderID] = s
+				s.instance = packet.Instance
 			}
 			if s.jitter.Push(packet) {
 				s.lastReceived = packet.ReceivedAt
@@ -767,13 +776,20 @@ func (r *engineRun) mixLoop() {
 			r.expireActivity(now)
 			clear(mix)
 			mixed := false
+			peers := r.engine.peers.Load()
+			volume := float32(r.currentConfig().Volume) / 100
 			for id, speaker := range speakers {
+				gain, current := peerGain(peers, id, speaker.instance)
+				if !current {
+					delete(speakers, id)
+					continue
+				}
 				// A partial output frame must not pin stale decoder/sequence state.
 				if now.Sub(speaker.lastReceived) > speakerIdle {
 					delete(speakers, id)
 					continue
 				}
-				ok, decoded, active, finished, err := speaker.render(mix, float32(r.currentConfig().Volume)/100, now)
+				ok, decoded, active, finished, err := speaker.render(mix, volume*gain, now)
 				if err != nil {
 					delete(speakers, id)
 					r.recordDecodeFailure(now, id, speaker.codec, speaker.lastPacketBytes, err)
@@ -920,6 +936,7 @@ func (r *engineRun) fail(err error, fatal bool) {
 }
 
 type speaker struct {
+	instance        string
 	codec           Codec
 	channels        int
 	decoder         *gopus.Decoder

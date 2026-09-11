@@ -214,6 +214,10 @@ func (s *connection) observeVoice(packet teamspeak.VoicePacket) {
 		return
 	}
 	s.mu.Lock()
+	instance := ""
+	if s.state != nil {
+		instance = s.state.users[strconv.FormatUint(uint64(packet.SenderID), 10)].Instance
+	}
 	if !packet.End && s.state != nil && !s.closing && !s.state.state.Closed {
 		self, selfOK := s.state.users[s.state.state.SelfID]
 		sender, senderOK := s.state.users[strconv.FormatUint(uint64(packet.SenderID), 10)]
@@ -229,7 +233,7 @@ func (s *connection) observeVoice(packet teamspeak.VoicePacket) {
 	if s.voiceHandler == nil {
 		return
 	}
-	s.voiceHandler(audio.Packet{ReceivedAt: packet.ReceivedAt, Sequence: packet.Sequence, SenderID: packet.SenderID, Codec: audio.Codec(packet.Codec), Data: packet.Data, End: packet.End})
+	s.voiceHandler(audio.Packet{Instance: instance, ReceivedAt: packet.ReceivedAt, Sequence: packet.Sequence, SenderID: packet.SenderID, Codec: audio.Codec(packet.Codec), Data: packet.Data, End: packet.End})
 }
 
 func (s *connection) VoiceCodec() (audio.Codec, error) {

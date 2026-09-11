@@ -17,6 +17,7 @@ func TestLiveSettingsPreserveDevicesAndChannelTransitionResetsAudio(t *testing.T
 	}
 	first := e.run
 	for i := range 20 {
+		config.InputGain = i * 10
 		config.Volume, config.VADThresholdDB, config.Ducking = 80-i, -40+i, i%2 == 0
 		if err := e.Configure(context.Background(), config); err != nil {
 			t.Fatal(err)

@@ -14,6 +14,7 @@ pub struct Preferences {
     pub notification_volume: u8,
     pub activation_mode: String,
     pub vad_threshold_db: i32,
+    pub input_gain: u16,
     pub noise_suppression: String,
     pub echo_cancellation: bool,
     pub echo_suppression: bool,
@@ -33,6 +34,7 @@ impl Default for Preferences {
             notification_volume: 35,
             activation_mode: "continuous".into(),
             vad_threshold_db: -40,
+            input_gain: 100,
             noise_suppression: "off".into(),
             echo_cancellation: false,
             echo_suppression: false,
@@ -95,6 +97,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn input_gain_defaults_and_zero_round_trip() {
+        let old: Preferences = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.input_gain, 100);
+        let zero = Preferences {
+            input_gain: 0,
+            ..old
+        };
+        let restored: Preferences =
+            serde_json::from_slice(&serde_json::to_vec(&zero).unwrap()).unwrap();
+        assert_eq!(restored.input_gain, 0);
+    }
+
+    #[test]
     fn delayed_save_cannot_overwrite_final_preferences_and_failure_is_retryable() {
         let directory = std::env::temp_dir().join(format!(
             "resona-preferences-{}-{}",
@@ -109,6 +124,7 @@ mod tests {
         let saved = Mutex::new(0);
         let old = Preferences::default();
         let latest = Preferences {
+            input_gain: 150,
             vad_threshold_db: -22,
             echo_cancellation: true,
             ..old.clone()
@@ -117,6 +133,7 @@ mod tests {
         old.save_ordered_at(1, &saved, &path).unwrap();
         let loaded: Preferences = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(loaded.vad_threshold_db, -22);
+        assert_eq!(loaded.input_gain, 150);
         assert!(loaded.echo_cancellation);
         assert!(
             old.save_ordered_at(3, &saved, &path.join("invalid.json"))
