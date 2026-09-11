@@ -112,6 +112,26 @@ struct UserPlaybackTarget {
     instance: String,
 }
 
+#[derive(Clone, Copy)]
+enum UserPlaybackAction {
+    Mute(bool),
+    Step(i16),
+    Volume(u16),
+}
+
+impl UserPlaybackAction {
+    fn apply(self, user: &User) -> (u16, bool) {
+        match self {
+            Self::Mute(muted) => (user.playback_volume.min(200), muted),
+            Self::Step(step) => (
+                (i32::from(user.playback_volume) + i32::from(step)).clamp(0, 200) as u16,
+                user.playback_muted,
+            ),
+            Self::Volume(volume) => (volume.min(200), user.playback_muted),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq)]
 enum DetailChange {
     Keep,
@@ -200,6 +220,10 @@ pub struct ResonaApp {
     password_input: Entity<InputState>,
     chat_input: Entity<InputState>,
     shortcut_input: Entity<InputState>,
+    playback_input: Entity<InputState>,
+    playback_input_target: Option<UserPlaybackTarget>,
+    playback_input_confirmed: u16,
+    playback_input_error: String,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -220,6 +244,54 @@ impl ResonaApp {
                 .placeholder("发送到当前频道")
         });
         let preferences = Preferences::load();
+        let playback_input = cx.new(|cx| InputState::new(window, cx).default_value("100"));
+        let playback_subscription = cx.subscribe_in(
+            &playback_input,
+            window,
+            |this, input, event: &InputEvent, window, cx| {
+                let pending = this
+                    .pending
+                    .values()
+                    .any(|p| matches!(p, Pending::UserPlayback(_)));
+                match event {
+                    InputEvent::PressEnter { secondary: false } if !pending => {
+                        if input.update(cx, |input, cx| {
+                            input.marked_text_range(window, cx).is_some()
+                        }) {
+                            return;
+                        }
+                        let Some(target) = this.playback_input_target.clone() else {
+                            return;
+                        };
+                        match parse_playback_volume(input.read(cx).value().as_ref()) {
+                            Ok(volume) => {
+                                this.playback_input_error.clear();
+                                input.update(cx, |input, cx| {
+                                    input.set_value(volume.to_string(), window, cx)
+                                });
+                                this.user_playback_action(
+                                    target,
+                                    UserPlaybackAction::Volume(volume),
+                                    cx,
+                                );
+                            }
+                            Err(error) => {
+                                this.playback_input_error = error.into();
+                                cx.notify();
+                            }
+                        }
+                    }
+                    InputEvent::Blur if !pending => {
+                        this.playback_input_error.clear();
+                        input.update(cx, |input, cx| {
+                            input.set_value(this.playback_input_confirmed.to_string(), window, cx)
+                        });
+                        cx.notify();
+                    }
+                    _ => {}
+                }
+            },
+        );
         let shortcut_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(preferences.push_to_talk_shortcut.clone())
@@ -362,10 +434,15 @@ impl ResonaApp {
             password_input,
             chat_input,
             shortcut_input,
+            playback_input,
+            playback_input_target: None,
+            playback_input_confirmed: 100,
+            playback_input_error: String::new(),
             _subscriptions: form_subscriptions
                 .into_iter()
                 .chain(vec![
                     chat_subscription,
+                    playback_subscription,
                     activation_subscription,
                     quit_subscription,
                 ])
@@ -468,7 +545,7 @@ impl ResonaApp {
     fn request_failed(&mut self, pending: Pending, error: String) {
         match pending {
             Pending::InputGain => self.input_gain_error = format!("输入增益未应用：{error}"),
-            Pending::UserPlayback(target) => self.playback_error = Some((target, error)),
+            Pending::UserPlayback(target) => self.user_playback_failed(target, error),
             Pending::Details {
                 session,
                 selection,
@@ -587,7 +664,7 @@ impl ResonaApp {
                                         }
                                     }
                                 }
-                                Err(error) => self.playback_error = Some((target, error)),
+                                Err(error) => self.user_playback_failed(target, error),
                             }
                         }
                     }
@@ -2309,6 +2386,12 @@ impl ResonaApp {
                         let inspecting_user = self.detail_selection.as_ref()
                             == Some(&DetailSelection::User(user_id.clone()));
                         let user_entity = view.clone();
+                        let menu_entity = view.clone();
+                        let menu_target = UserPlaybackTarget {
+                            session: self.workspace.session.id.clone(),
+                            user: user.id.clone(),
+                            instance: user.instance.clone(),
+                        };
                         let speaking = user_is_speaking(
                             &self.workspace,
                             &self.voice,
@@ -2316,35 +2399,145 @@ impl ResonaApp {
                             &user,
                         );
                         div()
-                            .id(SharedString::from(format!("tree-user-{user_id}")))
-                            .tab_index(0)
-                            .cursor_pointer()
-                            .border_l_2()
-                            .border_color(gpui::rgba(if inspecting_user {
-                                0x9dbdafaa
-                            } else {
-                                0x00000000
-                            }))
-                            .hover(|s| s.bg(rgb(HOVER)))
-                            .on_click(move |_, _, cx| {
-                                user_entity.update(cx, |this, cx| {
-                                    this.select_details(DetailSelection::User(user_id.clone()), cx)
-                                });
-                            })
-                            .h(px(25.))
-                            .pl(px(42.))
-                            .pr_2()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .text_size(px(11.))
-                            .text_color(rgb(if user.is_self { MINT } else { MUTED }))
-                            .child(speaking_indicator(&user, speaking, "tree"))
-                            .child(if user.is_self {
-                                format!("{} · 我", user.nickname)
-                            } else {
-                                user.nickname
-                            })
+                            .id(SharedString::from(format!(
+                                "user-menu-{}-{}-{}",
+                                menu_target.session, menu_target.user, menu_target.instance
+                            )))
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("tree-user-{user_id}")))
+                                    .tab_index(0)
+                                    .cursor_pointer()
+                                    .border_l_2()
+                                    .border_color(gpui::rgba(if inspecting_user {
+                                        0x9dbdafaa
+                                    } else {
+                                        0x00000000
+                                    }))
+                                    .hover(|s| s.bg(rgb(HOVER)))
+                                    .on_click(move |_, _, cx| {
+                                        user_entity.update(cx, |this, cx| {
+                                            this.select_details(
+                                                DetailSelection::User(user_id.clone()),
+                                                cx,
+                                            )
+                                        });
+                                    })
+                                    .h(px(25.))
+                                    .pl(px(42.))
+                                    .pr_2()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .text_size(px(11.))
+                                    .text_color(rgb(if user.is_self { MINT } else { MUTED }))
+                                    .child(speaking_indicator(&user, speaking, "tree"))
+                                    .child(if user.is_self {
+                                        format!("{} · 我", user.nickname)
+                                    } else {
+                                        user.nickname
+                                    })
+                                    .context_menu(move |menu, window, cx| {
+                                        let this = menu_entity.read(cx);
+                                        let current = this.workspace.users.iter().find(|u| {
+                                            u.id == menu_target.user
+                                                && u.instance == menu_target.instance
+                                        });
+                                        let enabled = current.is_some_and(|u| {
+                                            !u.is_self
+                                                && u.channel_id == this.workspace.session.channel_id
+                                        }) && this.workspace.connected()
+                                            && this.workspace.session.id == menu_target.session
+                                            && !menu_target.instance.is_empty()
+                                            && this.capabilities.voice
+                                            && !this.closing
+                                            && this
+                                                .workspace
+                                                .session
+                                                .switching_channel_id
+                                                .is_empty()
+                                            && !this
+                                                .pending
+                                                .values()
+                                                .any(|p| matches!(p, Pending::UserPlayback(_)));
+                                        let volume = current
+                                            .map(|u| u.playback_volume.min(200))
+                                            .unwrap_or(100);
+                                        let muted = current.is_some_and(|u| u.playback_muted);
+                                        let mut menu = menu.label(format!("本机收听 · {volume}%"));
+                                        for (label, action, disabled) in [
+                                            (
+                                                if muted {
+                                                    "取消本机静音"
+                                                } else {
+                                                    "在本机静音"
+                                                },
+                                                UserPlaybackAction::Mute(!muted),
+                                                false,
+                                            ),
+                                            (
+                                                "降低音量 10%",
+                                                UserPlaybackAction::Step(-10),
+                                                volume == 0,
+                                            ),
+                                            (
+                                                "提高音量 10%",
+                                                UserPlaybackAction::Step(10),
+                                                volume == 200,
+                                            ),
+                                            (
+                                                "恢复100%音量",
+                                                UserPlaybackAction::Volume(100),
+                                                volume == 100,
+                                            ),
+                                        ] {
+                                            let entity = menu_entity.clone();
+                                            let target = menu_target.clone();
+                                            menu = menu.item(
+                                                PopupMenuItem::new(label)
+                                                    .disabled(!enabled || disabled)
+                                                    .on_click(move |_, _, cx| {
+                                                        entity.update(cx, |this, cx| {
+                                                            this.user_playback_action(
+                                                                target.clone(),
+                                                                action,
+                                                                cx,
+                                                            )
+                                                        });
+                                                    }),
+                                            );
+                                        }
+                                        let entity = menu_entity.clone();
+                                        let target = menu_target.clone();
+                                        menu.separator().submenu(
+                                            "音量档位",
+                                            window,
+                                            cx,
+                                            move |mut menu, _, _| {
+                                                for value in [0, 50, 100, 150, 200] {
+                                                    let entity = entity.clone();
+                                                    let target = target.clone();
+                                                    menu =
+                                                        menu.item(
+                                                            PopupMenuItem::new(format!("{value}%"))
+                                                                .checked(value == volume)
+                                                                .disabled(!enabled)
+                                                                .on_click(move |_, _, cx| {
+                                                                    entity.update(cx, |this, cx| {
+                                                            this.user_playback_action(
+                                                                target.clone(),
+                                                                UserPlaybackAction::Volume(value),
+                                                                cx,
+                                                            )
+                                                        });
+                                                                }),
+                                                        );
+                                                }
+                                                menu
+                                            },
+                                        )
+                                    }),
+                            )
                             .into_any_element()
                     })
                     .collect::<Vec<_>>();
@@ -3028,11 +3221,21 @@ impl ResonaApp {
         muted: bool,
         cx: &mut Context<Self>,
     ) {
+        if self.closing
+            || !self.capabilities.voice
+            || !self.workspace.session.switching_channel_id.is_empty()
+        {
+            self.user_playback_failed(target, "音频或频道正在切换，暂时无法调整".into());
+            cx.notify();
+            return;
+        }
         if self
             .pending
             .values()
             .any(|pending| matches!(pending, Pending::UserPlayback(_)))
         {
+            self.user_playback_failed(target, "请等待上一项收听调整完成".into());
+            cx.notify();
             return;
         }
         if target.session != self.workspace.session.id
@@ -3044,9 +3247,20 @@ impl ResonaApp {
                     && user.channel_id == self.workspace.session.channel_id
             })
         {
+            self.user_playback_failed(target, "该成员已离开或会话/频道已改变，请重新选择".into());
+            cx.notify();
             return;
         }
         self.playback_error = None;
+        if self.workspace.users.iter().any(|user| {
+            user.id == target.user
+                && user.instance == target.instance
+                && user.playback_volume == volume
+                && user.playback_muted == muted
+        }) {
+            cx.notify();
+            return;
+        }
         self.request(
             "SetUserPlayback",
             json!({
@@ -3056,6 +3270,33 @@ impl ResonaApp {
             Pending::UserPlayback(target),
         );
         cx.notify();
+    }
+
+    fn user_playback_failed(&mut self, target: UserPlaybackTarget, error: String) {
+        if self.playback_input_target.as_ref() == Some(&target) {
+            self.playback_input_target = None;
+        }
+        self.playback_error = Some((target, error));
+    }
+
+    fn user_playback_action(
+        &mut self,
+        target: UserPlaybackTarget,
+        action: UserPlaybackAction,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(user) = self
+            .workspace
+            .users
+            .iter()
+            .find(|u| u.id == target.user && u.instance == target.instance)
+        else {
+            self.user_playback_failed(target, "该成员已离开，请重新选择".into());
+            cx.notify();
+            return;
+        };
+        let (volume, muted) = action.apply(user);
+        self.set_user_playback(target, volume, muted, cx);
     }
 
     fn render_user_playback(&self, user: &User, view: &Entity<Self>) -> AnyElement {
@@ -3129,12 +3370,11 @@ impl ResonaApp {
                     }),
             )
             .child(
-                div()
-                    .w(px(48.))
-                    .flex_shrink_0()
-                    .text_center()
-                    .text_sm()
-                    .child(format!("{volume}%")),
+                div().w(px(72.)).flex_shrink_0().child(
+                    Input::new(&self.playback_input)
+                        .disabled(disabled)
+                        .suffix(div().text_xs().child("%")),
+                ),
             );
         let plus = view.clone();
         let plus_target = target.clone();
@@ -3170,6 +3410,14 @@ impl ResonaApp {
                 }),
         );
         controls = controls.child(row);
+        if !self.playback_input_error.is_empty() {
+            controls = controls.child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(RED))
+                    .child(self.playback_input_error.clone()),
+            );
+        }
         if let Some((failed, error)) = &self.playback_error {
             if failed == &target {
                 controls =
@@ -4503,8 +4751,50 @@ impl ResonaApp {
 }
 
 impl Render for ResonaApp {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let selected = match &self.detail_selection {
+            Some(DetailSelection::User(id)) if self.workspace.connected() => self
+                .workspace
+                .users
+                .iter()
+                .find(|u| &u.id == id && !u.is_self),
+            _ => None,
+        };
+        let target = selected.map(|user| UserPlaybackTarget {
+            session: self.workspace.session.id.clone(),
+            user: user.id.clone(),
+            instance: user.instance.clone(),
+        });
+        let confirmed = selected
+            .map(|user| user.playback_volume.min(200))
+            .unwrap_or(100);
+        if target != self.playback_input_target || confirmed != self.playback_input_confirmed {
+            self.playback_input_target = target;
+            self.playback_input_confirmed = confirmed;
+            self.playback_input_error.clear();
+            self.playback_input.update(cx, |input, cx| {
+                input.set_value(confirmed.to_string(), window, cx)
+            });
+        }
         let view = cx.entity().clone();
+        let display_error = self
+            .playback_error
+            .as_ref()
+            .map(|(target, error)| {
+                let name = self
+                    .workspace
+                    .users
+                    .iter()
+                    .find(|u| {
+                        target.session == self.workspace.session.id
+                            && u.id == target.user
+                            && u.instance == target.instance
+                    })
+                    .map(|u| u.nickname.clone())
+                    .unwrap_or_else(|| format!("成员 {}", target.user));
+                format!("{name} 的收听设置未应用：{error}")
+            })
+            .unwrap_or_else(|| self.error.clone());
         div()
             .id("resona-root")
             .relative()
@@ -4552,7 +4842,7 @@ impl Render for ResonaApp {
                     }),
             )
             .child(self.render_voicebar(&view))
-            .when(!self.error.is_empty() && self.modal.is_none(), |root| {
+            .when(!display_error.is_empty() && self.modal.is_none(), |root| {
                 let entity = view.clone();
                 root.child(
                     div()
@@ -4574,7 +4864,7 @@ impl Render for ResonaApp {
                                 .flex_1()
                                 .text_xs()
                                 .text_color(rgb(RED))
-                                .child(self.error.clone()),
+                                .child(display_error.clone()),
                         )
                         .child(
                             Button::new("dismiss-error")
@@ -4584,6 +4874,7 @@ impl Render for ResonaApp {
                                 .on_click(move |_, _, cx| {
                                     entity.update(cx, |this, cx| {
                                         this.error.clear();
+                                        this.playback_error = None;
                                         cx.notify();
                                     })
                                 }),
@@ -4604,6 +4895,24 @@ impl Render for ResonaApp {
                 )
             })
     }
+}
+
+fn parse_playback_volume(value: &str) -> Result<u16, &'static str> {
+    let value = value.trim();
+    let (negative, digits) = if let Some(rest) = value.strip_prefix('-') {
+        (true, rest)
+    } else {
+        (false, value.strip_prefix('+').unwrap_or(value))
+    };
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("请输入整数音量（0–200）");
+    }
+    if negative {
+        return Ok(0);
+    }
+    Ok(digits
+        .bytes()
+        .fold(0u16, |n, b| (n * 10 + u16::from(b - b'0')).min(200)))
 }
 
 fn can_show_session_channels(workspace: &Workspace, selected: &str) -> bool {
@@ -4915,6 +5224,52 @@ mod tests {
         user_is_speaking, voice_params,
     };
     use crate::model::{User, VoiceState, Workspace};
+
+    #[test]
+    fn manual_playback_volume_validates_before_clamping() {
+        for (value, expected) in [
+            ("110", 110),
+            ("  +37 ", 37),
+            ("200", 200),
+            ("201", 200),
+            ("-1", 0),
+            ("0", 0),
+            ("999999999999999999999999999", 200),
+            ("-999999999999999999999999", 0),
+        ] {
+            assert_eq!(super::parse_playback_volume(value), Ok(expected));
+        }
+        for value in ["", " ", "+", "-", "1.5", "1e2", "100%", "999999999999abc"] {
+            assert!(
+                super::parse_playback_volume(value).is_err(),
+                "accepted {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn playback_menu_actions_use_current_values_and_preserve_mute() {
+        use super::UserPlaybackAction;
+        let user = User {
+            playback_volume: 150,
+            playback_muted: true,
+            ..User::default()
+        };
+        assert_eq!(UserPlaybackAction::Step(10).apply(&user), (160, true));
+        assert_eq!(UserPlaybackAction::Mute(false).apply(&user), (150, false));
+        assert_eq!(UserPlaybackAction::Volume(100).apply(&user), (100, true));
+        assert_eq!(UserPlaybackAction::Volume(0).apply(&user), (0, true));
+        let max = User {
+            playback_volume: 200,
+            ..user.clone()
+        };
+        assert_eq!(UserPlaybackAction::Step(10).apply(&max), (200, true));
+        let zero = User {
+            playback_volume: 0,
+            ..user
+        };
+        assert_eq!(UserPlaybackAction::Step(-10).apply(&zero), (0, true));
+    }
 
     #[test]
     fn viewed_bookmark_never_borrows_another_servers_channels() {
