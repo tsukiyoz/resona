@@ -60,12 +60,20 @@ pub struct Channel {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct User {
+    pub instance: String,
+    #[serde(default = "default_playback_volume")]
+    pub playback_volume: u16,
+    pub playback_muted: bool,
     pub id: String,
     pub nickname: String,
     #[serde(rename = "channelID")]
     pub channel_id: String,
     #[serde(rename = "self")]
     pub is_self: bool,
+}
+
+fn default_playback_volume() -> u16 {
+    100
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -115,6 +123,7 @@ pub struct VoiceState {
     #[serde(rename = "outputDeviceID")]
     pub output_device_id: String,
     pub volume: u8,
+    pub input_gain: u16,
     pub active: bool,
     pub channel_codec: Value,
     pub error: String,
@@ -143,6 +152,7 @@ impl Default for VoiceState {
             input_device_id: String::new(),
             output_device_id: String::new(),
             volume: 100,
+            input_gain: 100,
             active: false,
             channel_codec: Value::Null,
             error: String::new(),
@@ -232,10 +242,14 @@ mod tests {
         assert!(!workspace.channels[0].icon_ref.is_empty());
         assert!(workspace.channels[0].icon_data_url.is_empty());
         assert_eq!(workspace.users[0].channel_id, "channel-1");
+        assert_eq!(workspace.users[0].instance, "member-1");
+        assert_eq!(workspace.users[0].playback_volume, 130);
+        assert!(workspace.users[0].playback_muted);
         assert_eq!(workspace.messages[0].author_id, "user-1");
         assert_eq!(workspace.messages[0].channel_id, "channel-1");
         assert_eq!(workspace.notifications[0].channel_id, "channel-1");
         assert_eq!(contract.voice.input_device_id, "input-1");
+        assert_eq!(contract.voice.input_gain, 150);
         assert_eq!(contract.voice.output_device_id, "output-1");
         assert_eq!(contract.voice.channel_codec, serde_json::json!(4));
         assert_eq!(contract.voice.speaking_client_ids, ["42"]);

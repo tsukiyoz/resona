@@ -35,6 +35,7 @@ func (c Codec) String() string {
 }
 
 type Packet struct {
+	Instance   string    `json:"-"`
 	ReceivedAt time.Time `json:"receivedAt"`
 	Data       []byte    `json:"-"`
 	Sequence   uint16    `json:"sequence"`
@@ -69,13 +70,15 @@ type Device struct {
 
 type VoiceConfig struct {
 	// LocalMonitor is controlled by the service, never deserialized from GUI preferences.
-	LocalMonitor     bool   `json:"-"`
-	Enabled          bool   `json:"enabled"`
-	Muted            bool   `json:"muted"`
-	Deafened         bool   `json:"deafened"`
-	InputDeviceID    string `json:"inputDeviceID"`
-	OutputDeviceID   string `json:"outputDeviceID"`
-	Volume           int    `json:"volume"`
+	LocalMonitor   bool   `json:"-"`
+	Enabled        bool   `json:"enabled"`
+	Muted          bool   `json:"muted"`
+	Deafened       bool   `json:"deafened"`
+	InputDeviceID  string `json:"inputDeviceID"`
+	OutputDeviceID string `json:"outputDeviceID"`
+	Volume         int    `json:"volume"`
+	// InputGain is explicit: 0 silences input; constructors and IPC default to 100.
+	InputGain        int    `json:"inputGain"`
 	ActivationMode   string `json:"activationMode"`
 	VADThresholdDB   int    `json:"vadThresholdDB"`
 	NoiseSuppression string `json:"noiseSuppression"`
@@ -101,6 +104,9 @@ var (
 )
 
 func validateConfig(config VoiceConfig) error {
+	if config.InputGain < 0 || config.InputGain > 200 {
+		return errors.New("麦克风输入增益必须在 0 到 200 之间")
+	}
 	if config.Volume < 0 || config.Volume > 100 {
 		return errors.New("音量必须在 0 到 100 之间")
 	}

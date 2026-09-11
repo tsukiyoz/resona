@@ -58,10 +58,13 @@ type Channel struct {
 }
 
 type User struct {
-	ID        string `json:"id"`
-	Nickname  string `json:"nickname"`
-	ChannelID string `json:"channelID"`
-	Self      bool   `json:"self"`
+	Instance       string `json:"instance"`
+	PlaybackVolume int    `json:"playbackVolume"`
+	PlaybackMuted  bool   `json:"playbackMuted"`
+	ID             string `json:"id"`
+	Nickname       string `json:"nickname"`
+	ChannelID      string `json:"channelID"`
+	Self           bool   `json:"self"`
 }
 
 type Message struct {

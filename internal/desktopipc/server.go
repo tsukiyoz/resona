@@ -271,6 +271,22 @@ func decodeParams(raw json.RawMessage, target any) error {
 }
 
 func dispatch(s *client.Service, req request) (any, error) {
+	if req.Method == "SetUserPlayback" {
+		var p struct {
+			SessionID string `json:"sessionID"`
+			UserID    string `json:"userID"`
+			Instance  string `json:"instance"`
+			Volume    *int   `json:"volume"`
+			Muted     *bool  `json:"muted"`
+		}
+		if err := decodeParams(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if p.Volume == nil || p.Muted == nil {
+			return nil, errors.New("音量和静音参数缺失")
+		}
+		return s.SetUserPlayback(p.SessionID, p.UserID, p.Instance, *p.Volume, *p.Muted)
+	}
 	var p struct {
 		ID             string               `json:"id"`
 		Profile        client.ServerProfile `json:"profile"`
@@ -282,7 +298,7 @@ func dispatch(s *client.Service, req request) (any, error) {
 		AllowDuplicate bool                 `json:"allowDuplicate"`
 	}
 	if req.Method == "ConfigureVoice" || req.Method == "SetVoicePreferences" {
-		config := audio.VoiceConfig{Muted: true, Volume: 100}
+		config := audio.VoiceConfig{Muted: true, Volume: 100, InputGain: 100}
 		if err := decodeParams(req.Params, &config); err != nil {
 			return nil, err
 		}
@@ -292,7 +308,7 @@ func dispatch(s *client.Service, req request) (any, error) {
 		return s.ConfigureVoice(config)
 	}
 	if req.Method == "ConfigureMicrophoneTest" {
-		config := audio.VoiceConfig{Volume: 35, ActivationMode: "continuous", VADThresholdDB: -40, NoiseSuppression: "off"}
+		config := audio.VoiceConfig{Volume: 35, InputGain: 100, ActivationMode: "continuous", VADThresholdDB: -40, NoiseSuppression: "off"}
 		if err := decodeParams(req.Params, &config); err != nil {
 			return nil, err
 		}
@@ -309,6 +325,18 @@ func dispatch(s *client.Service, req request) (any, error) {
 			return nil, err
 		}
 		return s.SetPushToTalk(p.Pressed)
+	}
+	if req.Method == "SetInputGain" {
+		var p struct {
+			InputGain *int `json:"inputGain"`
+		}
+		if err := decodeParams(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if p.InputGain == nil {
+			return nil, errors.New("missing inputGain")
+		}
+		return s.SetInputGain(*p.InputGain)
 	}
 	if err := decodeParams(req.Params, &p); err != nil {
 		return nil, err

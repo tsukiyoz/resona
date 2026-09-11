@@ -70,6 +70,8 @@ impl IconNamed for VoiceIcon {
 
 #[derive(Clone)]
 enum Pending {
+    InputGain,
+    UserPlayback(UserPlaybackTarget),
     Workspace(&'static str),
     SaveServer(u64),
     Credential(String, u64),
@@ -101,6 +103,13 @@ enum Pending {
 enum DetailSelection {
     Channel(String),
     User(String),
+}
+
+#[derive(Clone, PartialEq)]
+struct UserPlaybackTarget {
+    session: String,
+    user: String,
+    instance: String,
 }
 
 #[derive(Debug, PartialEq)]
@@ -149,6 +158,8 @@ pub struct ResonaApp {
     detail_selection: Option<DetailSelection>,
     detail_value: Option<Value>,
     detail_error: String,
+    playback_error: Option<(UserPlaybackTarget, String)>,
+    input_gain_error: String,
     detail_revision: u64,
     ptt_pressed: bool,
     ptt_key_down: bool,
@@ -309,6 +320,8 @@ impl ResonaApp {
             detail_selection: None,
             detail_value: None,
             detail_error: String::new(),
+            playback_error: None,
+            input_gain_error: String::new(),
             detail_revision: 0,
             ptt_pressed: false,
             ptt_key_down: false,
@@ -454,6 +467,8 @@ impl ResonaApp {
 
     fn request_failed(&mut self, pending: Pending, error: String) {
         match pending {
+            Pending::InputGain => self.input_gain_error = format!("输入增益未应用：{error}"),
+            Pending::UserPlayback(target) => self.playback_error = Some((target, error)),
             Pending::Details {
                 session,
                 selection,
@@ -533,6 +548,49 @@ impl ResonaApp {
             Incoming::Response { id, result } => {
                 let pending = self.pending.remove(&id);
                 match (pending, result) {
+                    (Some(Pending::InputGain), result) => {
+                        match result.and_then(|value| {
+                            serde_json::from_value::<u16>(value).map_err(|e| e.to_string())
+                        }) {
+                            Ok(gain) if gain <= 200 => {
+                                self.preferences.input_gain = gain;
+                                self.voice.input_gain = gain;
+                                self.microphone_test.input_gain = gain;
+                                self.save_preferences(cx);
+                            }
+                            Ok(_) => self.input_gain_error = "输入增益响应无效".into(),
+                            Err(error) => {
+                                self.input_gain_error = format!("输入增益未应用：{error}")
+                            }
+                        }
+                    }
+                    (Some(Pending::UserPlayback(target)), result) => {
+                        if target.session == self.workspace.session.id {
+                            match result.and_then(|value| {
+                                serde_json::from_value::<Workspace>(value)
+                                    .map_err(|error| error.to_string())
+                            }) {
+                                Ok(workspace) => {
+                                    if workspace.session.id == target.session {
+                                        if let Some(updated) = workspace.users.iter().find(|u| {
+                                            u.id == target.user && u.instance == target.instance
+                                        }) {
+                                            if let Some(user) =
+                                                self.workspace.users.iter_mut().find(|u| {
+                                                    u.id == target.user
+                                                        && u.instance == target.instance
+                                                })
+                                            {
+                                                user.playback_volume = updated.playback_volume;
+                                                user.playback_muted = updated.playback_muted;
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(error) => self.playback_error = Some((target, error)),
+                            }
+                        }
+                    }
                     (Some(Pending::Workspace(method)), Ok(value)) => {
                         self.apply_workspace(value, window, cx);
                         if method == "DeleteServer" {
@@ -751,12 +809,16 @@ impl ResonaApp {
         if self.closing
             || self.voice.busy
             || !self.workspace.session.switching_channel_id.is_empty()
-            || self.pending.values().any(|p| matches!(p, Pending::Voice))
+            || self
+                .pending
+                .values()
+                .any(|p| matches!(p, Pending::Voice | Pending::InputGain))
         {
             return;
         }
         self.voice_target = None;
-        if let Some(next) = self.queued_voice.take() {
+        if let Some(mut next) = self.queued_voice.take() {
+            next.input_gain = self.preferences.input_gain.min(200);
             if self.workspace.connected() {
                 self.configure_voice(|v| *v = next, cx);
             }
@@ -1598,7 +1660,7 @@ impl ResonaApp {
         let request_pending = self
             .pending
             .values()
-            .any(|pending| matches!(pending, Pending::Voice));
+            .any(|pending| matches!(pending, Pending::Voice | Pending::InputGain));
         if (self.voice.busy || request_pending) && !stopping {
             self.queued_voice = Some(next);
             cx.notify();
@@ -1626,6 +1688,7 @@ impl ResonaApp {
     }
 
     fn apply_audio_preferences(&self, voice: &mut VoiceState) {
+        voice.input_gain = self.preferences.input_gain.min(200);
         voice.activation_mode = self.preferences.activation_mode.clone();
         voice.vad_threshold_db = self.preferences.vad_threshold_db;
         voice.noise_suppression = self.preferences.noise_suppression.clone();
@@ -1684,7 +1747,12 @@ impl ResonaApp {
                             )
                             || !this.workspace.session.switching_channel_id.is_empty()
                             || this.pending.values().any(|p| {
-                                matches!(p, Pending::Voice | Pending::VoicePreferences { .. })
+                                matches!(
+                                    p,
+                                    Pending::Voice
+                                        | Pending::InputGain
+                                        | Pending::VoicePreferences { .. }
+                                )
                             })
                         {
                             return false;
@@ -1727,7 +1795,10 @@ impl ResonaApp {
             && !self.pending.values().any(|pending| {
                 matches!(
                     pending,
-                    Pending::Voice | Pending::VoicePreferences { .. } | Pending::MicrophoneTest
+                    Pending::Voice
+                        | Pending::InputGain
+                        | Pending::VoicePreferences { .. }
+                        | Pending::MicrophoneTest
                 )
             })
     }
@@ -2950,6 +3021,177 @@ impl ResonaApp {
         cx.notify();
     }
 
+    fn set_user_playback(
+        &mut self,
+        target: UserPlaybackTarget,
+        volume: u16,
+        muted: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .pending
+            .values()
+            .any(|pending| matches!(pending, Pending::UserPlayback(_)))
+        {
+            return;
+        }
+        if target.session != self.workspace.session.id
+            || !self.workspace.connected()
+            || !self.workspace.users.iter().any(|user| {
+                user.id == target.user
+                    && user.instance == target.instance
+                    && !user.is_self
+                    && user.channel_id == self.workspace.session.channel_id
+            })
+        {
+            return;
+        }
+        self.playback_error = None;
+        self.request(
+            "SetUserPlayback",
+            json!({
+                "sessionID": target.session, "userID": target.user, "instance": target.instance,
+                "volume": volume, "muted": muted,
+            }),
+            Pending::UserPlayback(target),
+        );
+        cx.notify();
+    }
+
+    fn render_user_playback(&self, user: &User, view: &Entity<Self>) -> AnyElement {
+        let target = UserPlaybackTarget {
+            session: self.workspace.session.id.clone(),
+            user: user.id.clone(),
+            instance: user.instance.clone(),
+        };
+        let pending = self
+            .pending
+            .values()
+            .any(|pending| matches!(pending, Pending::UserPlayback(_)));
+        let unavailable = !self.capabilities.voice
+            || user.instance.is_empty()
+            || user.channel_id != self.workspace.session.channel_id
+            || !self.workspace.session.switching_channel_id.is_empty();
+        let disabled = pending || unavailable;
+        let pending_current = self
+            .pending
+            .values()
+            .any(|pending| matches!(pending, Pending::UserPlayback(current) if current == &target));
+        let mut controls = div()
+            .py_3()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(div().text_xs().text_color(rgb(MUTED)).child("收听音量"));
+        let mute = view.clone();
+        let mute_target = target.clone();
+        let volume = user.playback_volume.min(200);
+        let muted = user.playback_muted;
+        let mut row = div().flex().items_center().gap_1().child(
+            Button::new("peer-mute")
+                .icon(if muted {
+                    VoiceIcon::HeadphonesOff
+                } else {
+                    VoiceIcon::Volume
+                })
+                .ghost()
+                .selected(muted)
+                .disabled(disabled)
+                .tooltip(if muted {
+                    "取消本机静音"
+                } else {
+                    "在本机静音"
+                })
+                .on_click(move |_, _, cx| {
+                    mute.update(cx, |this, cx| {
+                        this.set_user_playback(mute_target.clone(), volume, !muted, cx)
+                    })
+                }),
+        );
+        let minus = view.clone();
+        let minus_target = target.clone();
+        row = row
+            .child(
+                Button::new("peer-volume-down")
+                    .icon(IconName::Minus)
+                    .ghost()
+                    .tooltip("降低收听音量")
+                    .disabled(disabled || volume == 0)
+                    .on_click(move |_, _, cx| {
+                        minus.update(cx, |this, cx| {
+                            this.set_user_playback(
+                                minus_target.clone(),
+                                volume.saturating_sub(10),
+                                muted,
+                                cx,
+                            )
+                        })
+                    }),
+            )
+            .child(
+                div()
+                    .w(px(48.))
+                    .flex_shrink_0()
+                    .text_center()
+                    .text_sm()
+                    .child(format!("{volume}%")),
+            );
+        let plus = view.clone();
+        let plus_target = target.clone();
+        row = row.child(
+            Button::new("peer-volume-up")
+                .icon(IconName::Plus)
+                .ghost()
+                .tooltip("提高收听音量")
+                .disabled(disabled || volume == 200)
+                .on_click(move |_, _, cx| {
+                    plus.update(cx, |this, cx| {
+                        this.set_user_playback(
+                            plus_target.clone(),
+                            (volume + 10).min(200),
+                            muted,
+                            cx,
+                        )
+                    })
+                }),
+        );
+        let reset = view.clone();
+        let reset_target = target.clone();
+        row = row.child(
+            Button::new("peer-volume-reset")
+                .icon(IconName::Undo2)
+                .ghost()
+                .tooltip("恢复100%音量")
+                .disabled(disabled || volume == 100)
+                .on_click(move |_, _, cx| {
+                    reset.update(cx, |this, cx| {
+                        this.set_user_playback(reset_target.clone(), 100, muted, cx)
+                    })
+                }),
+        );
+        controls = controls.child(row);
+        if let Some((failed, error)) = &self.playback_error {
+            if failed == &target {
+                controls =
+                    controls.child(div().text_xs().text_color(rgb(RED)).child(error.clone()));
+            }
+        }
+        if pending || muted || unavailable {
+            controls = controls.child(div().text_xs().text_color(rgb(MUTED)).child(
+                if unavailable {
+                    "仅当前频道成员可调节"
+                } else if pending_current {
+                    "正在应用"
+                } else if pending {
+                    "等待其他调整完成"
+                } else {
+                    "已在本机静音"
+                },
+            ));
+        }
+        controls.into_any_element()
+    }
+
     fn render_selected_details(&self, view: &Entity<Self>) -> AnyElement {
         let Some(selection) = &self.detail_selection else {
             return div().into_any_element();
@@ -3000,6 +3242,13 @@ impl ResonaApp {
             return section
                 .child(div().text_xs().text_color(rgb(MUTED)).child("已断开连接"))
                 .into_any_element();
+        }
+        if let DetailSelection::User(id) = selection {
+            if let Some(user) = self.workspace.users.iter().find(|user| &user.id == id) {
+                if !user.is_self {
+                    section = section.child(self.render_user_playback(user, view));
+                }
+            }
         }
         if !self.detail_error.is_empty() {
             let selection = selection.clone();
@@ -3131,7 +3380,10 @@ impl ResonaApp {
             || self.pending.values().any(|p| {
                 matches!(
                     p,
-                    Pending::Voice | Pending::VoicePreferences { .. } | Pending::MicrophoneTest
+                    Pending::Voice
+                        | Pending::InputGain
+                        | Pending::VoicePreferences { .. }
+                        | Pending::MicrophoneTest
                 )
             });
         let disabled = busy || !self.capabilities.voice;
@@ -3265,6 +3517,97 @@ impl ResonaApp {
                     })
                     .children(entries)
                     .overflow_y_scrollbar(),
+            );
+        }
+        let gain_pending = self
+            .pending
+            .values()
+            .any(|p| matches!(p, Pending::InputGain));
+        let gain_disabled = self.closing
+            || !self.capabilities.voice
+            || self.voice.busy
+            || self.microphone_test.busy
+            || self.audio_settings_pending
+            || self.queued_voice.is_some()
+            || !self.workspace.session.switching_channel_id.is_empty()
+            || matches!(
+                self.workspace.session.mode.as_str(),
+                "connecting" | "disconnecting"
+            )
+            || self.pending.values().any(|p| {
+                matches!(
+                    p,
+                    Pending::InputGain
+                        | Pending::Voice
+                        | Pending::VoicePreferences { .. }
+                        | Pending::MicrophoneTest
+                )
+            });
+        let gain = self.preferences.input_gain.min(200);
+        let gain_buttons = [
+            (
+                "input-gain-down",
+                IconName::Minus,
+                gain.saturating_sub(10),
+                "降低麦克风输入增益",
+            ),
+            (
+                "input-gain-up",
+                IconName::Plus,
+                (gain + 10).min(200),
+                "提高麦克风输入增益",
+            ),
+            ("input-gain-reset", IconName::Undo2, 100, "恢复100%输入增益"),
+        ]
+        .into_iter()
+        .map(|(id, icon, value, tooltip)| {
+            let entity = view.clone();
+            Button::new(id)
+                .icon(icon)
+                .ghost()
+                .tooltip(tooltip)
+                .disabled(gain_disabled || value == gain)
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |this, cx| {
+                        this.input_gain_error.clear();
+                        this.request(
+                            "SetInputGain",
+                            json!({"inputGain": value}),
+                            Pending::InputGain,
+                        );
+                        cx.notify();
+                    });
+                })
+        })
+        .collect::<Vec<_>>();
+        content = content.child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(div().flex_1().text_sm().child("麦克风输入增益"))
+                .child(
+                    div()
+                        .w(px(56.))
+                        .text_xs()
+                        .text_color(rgb(MUTED))
+                        .child(if gain_pending { "应用中" } else { "" }),
+                )
+                .child(
+                    div()
+                        .w(px(48.))
+                        .text_center()
+                        .text_sm()
+                        .child(format!("{gain}%")),
+                )
+                .children(gain_buttons),
+        );
+        if !self.input_gain_error.is_empty() {
+            content = content.child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(RED))
+                    .child(self.input_gain_error.clone()),
             );
         }
         let mode_buttons = [
@@ -4277,7 +4620,7 @@ fn voice_params(voice: &VoiceState) -> Value {
     json!({
         "enabled": voice.enabled, "muted": voice.muted, "deafened": voice.deafened,
         "inputDeviceID": voice.input_device_id, "outputDeviceID": voice.output_device_id,
-        "volume": voice.volume, "activationMode": voice.activation_mode,
+        "volume": voice.volume, "inputGain": voice.input_gain, "activationMode": voice.activation_mode,
         "vadThresholdDB": voice.vad_threshold_db, "noiseSuppression": voice.noise_suppression,
         "echoCancellation": voice.echo_cancellation, "echoSuppression": voice.echo_suppression,
         "ducking": voice.ducking,
@@ -4304,6 +4647,9 @@ fn detail_selection_change(
             let Some(old) = previous.users.iter().find(|user| &user.id == id) else {
                 return DetailChange::Refresh;
             };
+            if old.instance != user.instance {
+                return DetailChange::Clear;
+            }
             if old.nickname != user.nickname
                 || old.channel_id != user.channel_id
                 || old.is_self != user.is_self
@@ -4425,7 +4771,10 @@ fn user_is_speaking(
 }
 
 fn speaking_indicator(user: &User, speaking: bool, location: &'static str) -> AnyElement {
-    let tooltip: SharedString = if speaking {
+    let locally_muted = !user.is_self && user.playback_muted;
+    let tooltip: SharedString = if locally_muted {
+        "已在本机静音".into()
+    } else if speaking {
         "正在说话".into()
     } else {
         "未在说话".into()
@@ -4443,12 +4792,20 @@ fn speaking_indicator(user: &User, speaking: bool, location: &'static str) -> An
         .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
         .child(
             svg()
-                .path(if user.is_self {
+                .path(if locally_muted {
+                    "headphones-off.svg"
+                } else if user.is_self {
                     "mic.svg"
                 } else {
                     "volume-2.svg"
                 })
-                .text_color(rgb(if speaking { MINT } else { 0x66717c }))
+                .text_color(rgb(if locally_muted {
+                    AMBER
+                } else if speaking {
+                    MINT
+                } else {
+                    0x66717c
+                }))
                 .size(px(14.)),
         )
         .into_any_element()
@@ -4584,6 +4941,19 @@ mod tests {
         workspace.session.mode = "preview".into();
         assert!(!can_show_session_channels(&workspace, "a"));
         assert!(can_show_session_channels(&workspace, "__preview__"));
+    }
+
+    #[test]
+    fn replaced_member_closes_details_even_with_identical_name_and_id() {
+        let (mut previous, _, _, mut user) = speaking_context();
+        user.instance = "first".into();
+        previous.users = vec![user.clone()];
+        let mut next = previous.clone();
+        next.users[0].instance = "replacement".into();
+        assert_eq!(
+            detail_selection_change(&DetailSelection::User(user.id), &previous, &next),
+            DetailChange::Clear
+        );
     }
 
     #[test]
@@ -4759,12 +5129,14 @@ mod tests {
             nickname: "Local".into(),
             channel_id: "channel-1".into(),
             is_self: true,
+            ..User::default()
         };
         let remote = User {
             id: "remote-1".into(),
             nickname: "Remote".into(),
             channel_id: "channel-1".into(),
             is_self: false,
+            ..User::default()
         };
         (workspace, voice, local, remote)
     }

@@ -21,10 +21,10 @@ func TestSharedNativeContractMatchesGoJSON(t *testing.T) {
 		Servers:       []client.ServerProfile{{ID: "server-1", Name: "Contract", Address: "localhost:9987", Nickname: "Tester", SkipPasswordStorage: true}},
 		Session:       client.Session{ID: "session-1", SendingMessageID: "message-1", Mode: "connected", ChannelID: "channel-1", Nickname: "Tester", ServerID: "server-1", ServerName: "Contract", IdentityUID: "identity-1", SelfID: "user-1", SwitchingChannelID: "channel-2", MemberSyncState: "ready"},
 		Channels:      []client.Channel{{Kind: "channel", Align: "left", IconID: "1001", IconRef: icon, ID: "channel-1", Name: "Voice", Description: "Contract channel", Members: 1, ParentID: "parent-1", Order: "0"}},
-		Users:         []client.User{{ID: "user-1", Nickname: "Tester", ChannelID: "channel-1", Self: true}},
+		Users:         []client.User{{ID: "user-1", Instance: "member-1", PlaybackVolume: 130, PlaybackMuted: true, Nickname: "Tester", ChannelID: "channel-1", Self: true}},
 		Messages:      []client.Message{{AuthorID: "user-1", Status: "sending", ID: "message-1", ChannelID: "channel-1", Author: "Tester", Text: "Contract message", CreatedAt: "2026-09-08T00:00:00Z"}},
 		Notifications: []client.Notification{{ID: "notification-1", Kind: "connected", ChannelID: "channel-1", CreatedAt: "2026-09-08T00:00:00Z"}},
-	}, Voice: client.VoiceState{VoiceConfig: audio.VoiceConfig{Enabled: true, Muted: true, InputDeviceID: "input-1", OutputDeviceID: "output-1", Volume: 75}, Active: true, ChannelCodec: audio.CodecOpusVoice, SpeakingClientIDs: []string{"42"}, LocalSpeaking: false}}
+	}, Voice: client.VoiceState{VoiceConfig: audio.VoiceConfig{Enabled: true, Muted: true, InputDeviceID: "input-1", OutputDeviceID: "output-1", Volume: 75, InputGain: 150}, Active: true, ChannelCodec: audio.CodecOpusVoice, SpeakingClientIDs: []string{"42"}, LocalSpeaking: false}}
 	actual, err := json.Marshal(value)
 	if err != nil {
 		t.Fatal(err)

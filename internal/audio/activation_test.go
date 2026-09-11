@@ -69,7 +69,7 @@ func TestLocalMicrophoneMonitorWithoutTransport(t *testing.T) {
 	devices := &fakeDeviceFactory{}
 	engine.factory = devices
 	defer engine.Close()
-	if err := engine.Configure(context.Background(), VoiceConfig{Enabled: true, Volume: 50, ActivationMode: "ptt"}); err != nil {
+	if err := engine.Configure(context.Background(), VoiceConfig{Enabled: true, Volume: 50, InputGain: 100, ActivationMode: "ptt"}); err != nil {
 		t.Fatal(err)
 	}
 	input := make([]float32, FrameSamples)

@@ -82,7 +82,7 @@ func TestHardwareEngineMuteUnmuteDeafen(t *testing.T) {
 	transport := &fakeTransport{codec: CodecOpusVoice}
 	engine := New(transport, nil)
 	defer func() { _ = engine.Close() }()
-	config := VoiceConfig{Enabled: true, Muted: true, Volume: 5}
+	config := VoiceConfig{Enabled: true, Muted: true, Volume: 5, InputGain: 100}
 	if err := engine.Configure(context.Background(), config); err != nil {
 		t.Fatal(err)
 	}

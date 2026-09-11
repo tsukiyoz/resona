@@ -11,7 +11,7 @@ func TestConnectedMonitorMixesLocallyWithoutSending(t *testing.T) {
 	devices := &fakeDeviceFactory{}
 	engine := newWithFactory(transport, nil, devices)
 	defer engine.Close()
-	config := VoiceConfig{Enabled: true, Muted: true, LocalMonitor: true, Volume: 50, ActivationMode: "ptt"}
+	config := VoiceConfig{Enabled: true, Muted: true, LocalMonitor: true, Volume: 50, InputGain: 100, ActivationMode: "ptt"}
 	if err := engine.Configure(context.Background(), config); err != nil {
 		t.Fatal(err)
 	}

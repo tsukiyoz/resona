@@ -29,7 +29,7 @@ type voiceEngine interface {
 }
 
 func defaultVoiceConfig() audio.VoiceConfig {
-	return audio.VoiceConfig{Muted: true, Volume: 100, ActivationMode: "continuous", VADThresholdDB: -40, NoiseSuppression: "off"}
+	return audio.VoiceConfig{Muted: true, Volume: 100, InputGain: 100, ActivationMode: "continuous", VADThresholdDB: -40, NoiseSuppression: "off"}
 }
 
 func (s *Service) GetVoiceState() VoiceState {
@@ -205,6 +205,7 @@ func (s *Service) configureVoice(config audio.VoiceConfig, expectedGeneration *u
 				factory = func(t audio.Transport, update func(audio.VoiceState)) voiceEngine { return audio.New(t, update) }
 			}
 			s.voice = factory(transport, func(next audio.VoiceState) { s.applyVoiceState(epoch, generation, next) })
+			s.syncUserPlaybackLocked()
 		}
 		engine := s.voice
 		s.mu.Unlock()

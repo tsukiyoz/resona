@@ -150,6 +150,7 @@ func (r *reducer) apply(command teamspeak.IncomingCommand) bool {
 		if u.ID == "" || command.Name == "notifycliententerview" {
 			r.entitySequence++
 			r.entityVersions["user:"+id] = r.entitySequence
+			u.Instance = strconv.FormatUint(r.entitySequence, 10)
 		}
 		u.ID = id
 		if v, ok := p["client_nickname"]; ok {

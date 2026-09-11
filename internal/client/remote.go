@@ -172,7 +172,8 @@ func (s *Service) applyRemoteState(generation uint64, remote RemoteState) {
 		s.state.Session.Error = remote.Error
 	}
 	s.state.Channels = cloneChannels(remote.Channels)
-	s.state.Users = cloneUsers(remote.Users)
+	s.state.Users = reconcileUserPlayback(s.state.Users, remote.Users)
+	s.syncUserPlaybackLocked()
 	var connection RemoteConnection
 	var voice voiceEngine
 	if remote.Closed {

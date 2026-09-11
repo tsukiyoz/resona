@@ -351,7 +351,7 @@ func TestSpeakingActivityUsesDecodedAndSuccessfullySentAudio(t *testing.T) {
 		}
 		notified <- state
 	}, devices)
-	if err := engine.Configure(context.Background(), VoiceConfig{Enabled: true, Muted: false, Volume: 0}); err != nil {
+	if err := engine.Configure(context.Background(), VoiceConfig{Enabled: true, Muted: false, Volume: 0, InputGain: 100}); err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = engine.Close() }()
