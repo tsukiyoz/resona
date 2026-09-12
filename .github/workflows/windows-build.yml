@@ -54,7 +54,7 @@ jobs:
       - name: Upload Windows package
         uses: actions/upload-artifact@v6
         with:
-          name: Resona-v0.0.1-win-x64-${{ github.sha }}
+          name: Resona-v0.0.2-win-x64-${{ github.sha }}
           path: desktop/dist/Resona-win-x64.zip
           if-no-files-found: error
           retention-days: 14

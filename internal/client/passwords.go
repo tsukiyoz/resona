@@ -20,8 +20,19 @@ type CredentialStatus struct {
 
 // Bind each credential to its bookmark and destination, never just a display name.
 func passwordKey(profile ServerProfile) string {
-	sum := sha256.Sum256([]byte(profile.ID + "\x00" + profile.Address))
+	sum := sha256.Sum256([]byte(profile.ID + "\x00" + ProfileDestination(profile)))
 	return hex.EncodeToString(sum[:])
+}
+
+// Preserve historical TS3 keys, while separating native protocol and trust changes.
+func ProfileDestination(p ServerProfile) string {
+	if p.Protocol == "" || p.Protocol == "ts3" {
+		return p.Address
+	}
+	if p.Protocol == "resona-noise" {
+		return p.Protocol + "\x00" + p.Address + "\x00" + p.ServerPublicKey
+	}
+	return p.Protocol + "\x00" + p.Address + "\x00" + p.CertificateFingerprint
 }
 
 func (s *Service) GetServerCredentialStatus(id string) (CredentialStatus, error) {
@@ -71,7 +82,7 @@ func (s *Service) connectWithCredentials(id, password string, remember, saved bo
 	if !exists {
 		return Workspace{}, errors.New("服务器书签不存在")
 	}
-	preparedPassword, err := s.prepareCredentials(id, target.Address, password, remember, saved)
+	preparedPassword, err := s.prepareCredentials(id, ProfileDestination(target), password, remember, saved)
 	if err != nil {
 		return Workspace{}, err
 	}
@@ -88,7 +99,7 @@ func (s *Service) connectWithCredentials(id, password string, remember, saved bo
 		}
 	}
 	s.cleanupWG.Wait()
-	return s.connectServerLocked(id, preparedPassword, remember && !saved, target.Address)
+	return s.connectServerLocked(id, preparedPassword, remember && !saved, ProfileDestination(target))
 }
 
 func (s *Service) prepareCredentials(id, expectedAddress, password string, remember, saved bool) (string, error) {
@@ -100,8 +111,8 @@ func (s *Service) prepareCredentials(id, expectedAddress, password string, remem
 	if !ok {
 		return "", errors.New("服务器书签不存在")
 	}
-	if profile.Address != expectedAddress {
-		return "", errors.New("服务器地址已更改，请重新连接")
+	if ProfileDestination(profile) != expectedAddress {
+		return "", errors.New("服务器连接目标已更改，请重新连接")
 	}
 	if saved {
 		if s.passwords == nil {
@@ -142,7 +153,7 @@ func (s *Service) rememberSuccessfulPassword(profile ServerProfile, password str
 	defer s.credentialMu.Unlock()
 	s.mu.Lock()
 	current, exists := s.profileLocked(profile.ID)
-	valid := exists && current.Address == profile.Address && !current.SkipPasswordStorage && generation == s.generation && !s.shutdown
+	valid := exists && ProfileDestination(current) == ProfileDestination(profile) && !current.SkipPasswordStorage && generation == s.generation && !s.shutdown
 	s.mu.Unlock()
 	if !valid {
 		return

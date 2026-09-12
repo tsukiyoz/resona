@@ -1,0 +1,24 @@
+# syntax=docker/dockerfile:1
+FROM golang:1.26-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+COPY third_party/teamspeak-go/go.mod third_party/teamspeak-go/go.mod
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY cmd/resona-server/ cmd/resona-server/
+COPY internal/nativewire/ internal/nativewire/
+COPY internal/noiseudp/ internal/noiseudp/
+COPY internal/server/ internal/server/
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 go build -mod=readonly -trimpath -ldflags="-s -w" -o /out/resona-server ./cmd/resona-server
+
+FROM alpine:3.23
+RUN addgroup -S -g 10001 resona && adduser -S -D -H -u 10001 -G resona resona \
+    && mkdir /data && chown resona:resona /data && chmod 700 /data
+COPY --from=build /out/resona-server /usr/local/bin/resona-server
+COPY --chmod=755 deploy/server-entrypoint.sh /usr/local/bin/server-entrypoint
+COPY docs/noise-license.txt /usr/share/licenses/resona/noise-license.txt
+ENV XDG_CONFIG_HOME=/data
+USER 10001:10001
+EXPOSE 9988/udp
+ENTRYPOINT ["/usr/local/bin/server-entrypoint"]
+CMD ["--listen", "0.0.0.0:9988"]

@@ -1,5 +1,9 @@
 # 架构设计
 
+2026-09-12：用户选择 Noise UDP 作为原生主实验，QUIC 保留显式对照。`internal/noiseudp` 负责 NK 握手、认证数据报、防重放、有界可靠控制和生命周期，`internal/nativewire` 提供两种传输的最小共同接口。书签使用独立 `serverPublicKey`，不复用证书指纹；server 默认 `--transport noise`。语音仍在 Go core 编解码。见 [ADR-0019](adr/0019-noise-udp.md)。
+
+2026-09-11：新增原生 QUIC 实验路径，见 [ADR-0018](adr/0018-native-quic.md)。`cmd/resona-server` 是独立 Go 转发服务，不运行 Opus 编解码；`internal/protocol/native` 与 TS3 适配器共同实现客户端契约，书签明确选择协议。`internal/nativewire` 定义可靠控制流和紧凑语音 DATAGRAM。设备、DSP、gopus、混音继续在 Go core；GPUI 不接收逐帧音频。此决定更新下述历史段落中“暂不预建第二套协议”的范围。运行方法见 [server.md](server.md)。
+
 2026-09-10 当前架构：用户确认新黑色 GPUI 界面并授权删除旧产品前端，见 ADR-0016。产品入口为 `desktop/src/main.rs` 和 `cmd/resona-core`，控制仍经 `internal/desktopipc` 私有 NDJSON 管道。根目录 Wails 入口、桥接、专属测试与 `frontend/` 已移除；`docs/ui-prototype/` 仅为独立设计工具。下述 Wails/WebView/CSS 相关段落描述历史实现，不再是当前构建依赖或维护要求。
 
 日期：2026-09-08。Wails 基线已完成连接、频道文字与呈现；本轮增加 GPUI 与基础语音实验，验证结论见 verification.md。

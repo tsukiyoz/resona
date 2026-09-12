@@ -11,6 +11,8 @@ import (
 	"github.com/tsukiyoz/resona/internal/credentials"
 	"github.com/tsukiyoz/resona/internal/desktopipc"
 	"github.com/tsukiyoz/resona/internal/iconcache"
+	"github.com/tsukiyoz/resona/internal/protocol"
+	"github.com/tsukiyoz/resona/internal/protocol/native"
 	"github.com/tsukiyoz/resona/internal/protocol/ts3"
 )
 
@@ -30,7 +32,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("cannot initialize Resona identity: %w", err)
 	}
-	service, err := client.NewWithPasswordStore(store, connector, credentials.New())
+	service, err := client.NewWithPasswordStore(store, protocol.Router{TS3: connector, Native: native.Connector{}}, credentials.New())
 	if err != nil {
 		return err
 	}

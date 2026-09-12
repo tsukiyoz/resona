@@ -51,6 +51,7 @@ touch "$bundle_dir/Contents/.resona-bundle"
 cp "$desktop_dir/target/$profile/resona-desktop" "$bundle_dir/Contents/MacOS/resona-desktop"
 cp "$core_binary" "$bundle_dir/Contents/MacOS/resona-core"
 cp "$icon_tmp/Resona.icns" "$bundle_dir/Contents/Resources/Resona.icns"
+cp "$repo_dir/docs/noise-license.txt" "$bundle_dir/Contents/Resources/noise-license.txt"
 chmod 755 "$bundle_dir/Contents/MacOS/resona-desktop" "$bundle_dir/Contents/MacOS/resona-core"
 
 cat > "$bundle_dir/Contents/Info.plist" <<'PLIST'
@@ -64,8 +65,8 @@ cat > "$bundle_dir/Contents/Info.plist" <<'PLIST'
   <key>CFBundleName</key><string>Resona</string>
   <key>CFBundleIconFile</key><string>Resona.icns</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.0.1</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>0.0.2</string>
+  <key>CFBundleVersion</key><string>2</string>
   <key>LSMinimumSystemVersion</key><string>12.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSMicrophoneUsageDescription</key><string>Resona uses the microphone when you enable voice and unmute it, or explicitly start a local microphone test.</string>

@@ -18,11 +18,14 @@ import (
 )
 
 type ServerProfile struct {
-	ID                  string `json:"id"`
-	Name                string `json:"name"`
-	Address             string `json:"address"`
-	Nickname            string `json:"nickname"`
-	SkipPasswordStorage bool   `json:"skipPasswordStorage,omitempty"`
+	Protocol               string `json:"protocol,omitempty"`
+	CertificateFingerprint string `json:"certificateFingerprint,omitempty"`
+	ServerPublicKey        string `json:"serverPublicKey,omitempty"`
+	ID                     string `json:"id"`
+	Name                   string `json:"name"`
+	Address                string `json:"address"`
+	Nickname               string `json:"nickname"`
+	SkipPasswordStorage    bool   `json:"skipPasswordStorage,omitempty"`
 }
 
 type Session struct {
@@ -171,6 +174,12 @@ func (s *Service) SaveServer(profile ServerProfile) (Workspace, error) {
 	profile.Name = strings.TrimSpace(profile.Name)
 	profile.Address = strings.TrimSpace(profile.Address)
 	profile.Nickname = strings.TrimSpace(profile.Nickname)
+	profile.Protocol = strings.ToLower(strings.TrimSpace(profile.Protocol))
+	profile.CertificateFingerprint = strings.ToLower(strings.ReplaceAll(strings.TrimSpace(profile.CertificateFingerprint), ":", ""))
+	profile.ServerPublicKey = strings.ToLower(strings.TrimSpace(profile.ServerPublicKey))
+	if profile.Protocol == "ts3" {
+		profile.Protocol = ""
+	}
 	if err := ValidateProfile(profile); err != nil {
 		return Workspace{}, err
 	}
@@ -186,9 +195,9 @@ func (s *Service) SaveServer(profile ServerProfile) (Workspace, error) {
 		for i := range profiles {
 			if profiles[i].ID == profile.ID {
 				profile.SkipPasswordStorage = profiles[i].SkipPasswordStorage
-				if profiles[i].Address != profile.Address && s.passwords != nil {
+				if ProfileDestination(profiles[i]) != ProfileDestination(profile) && s.passwords != nil {
 					if err := s.passwords.Delete(passwordKey(profiles[i])); err != nil {
-						return Workspace{}, errors.New("无法清除原服务器密码，地址未更改")
+						return Workspace{}, errors.New("无法清除原服务器密码，连接目标未更改")
 					}
 				}
 				profiles[i] = profile
@@ -359,6 +368,31 @@ func (s *Service) snapshot() Workspace {
 }
 
 func ValidateProfile(profile ServerProfile) error {
+	if profile.Protocol != "" && profile.Protocol != "ts3" && profile.Protocol != "resona" && profile.Protocol != "resona-noise" {
+		return errors.New("未知的服务器协议")
+	}
+	if profile.Protocol == "resona-noise" {
+		if len(profile.ServerPublicKey) != 64 {
+			return errors.New("Noise 服务器公钥必须为64位X25519十六进制")
+		}
+		for _, r := range profile.ServerPublicKey {
+			if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+				return errors.New("Noise 服务器公钥包含无效字符")
+			}
+		}
+	} else if profile.ServerPublicKey != "" {
+		return errors.New("只有 Noise 协议使用服务器公钥")
+	}
+	if profile.CertificateFingerprint != "" {
+		if profile.Protocol != "resona" || len(profile.CertificateFingerprint) != 64 {
+			return errors.New("原生服务器证书指纹必须为64位SHA-256十六进制")
+		}
+		for _, r := range profile.CertificateFingerprint {
+			if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+				return errors.New("证书指纹包含无效字符")
+			}
+		}
+	}
 	for _, field := range []struct {
 		name  string
 		value string

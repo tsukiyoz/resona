@@ -12,6 +12,11 @@ type RemoteConnector interface {
 	Connect(context.Context, ServerProfile, string, func(RemoteState)) (RemoteConnection, error)
 }
 
+// ConnectFailure contains an adapter-authored, credential-free user message.
+type ConnectFailure struct{ Message string }
+
+func (e *ConnectFailure) Error() string { return e.Message }
+
 type RemoteConnection interface {
 	Close() error
 	// MoveChannel completes after the server acknowledges the move and publishes
@@ -72,9 +77,9 @@ func (s *Service) connectServerLocked(id, password string, remember bool, expect
 		s.mu.Unlock()
 		return Workspace{}, errors.New("服务器书签不存在")
 	}
-	if expectedAddress != "" && profile.Address != expectedAddress {
+	if expectedAddress != "" && ProfileDestination(profile) != expectedAddress {
 		s.mu.Unlock()
-		return Workspace{}, errors.New("服务器地址已更改，请重新连接")
+		return Workspace{}, errors.New("服务器连接目标已更改，请重新连接")
 	}
 
 	s.stopMicrophoneTestLocked()
@@ -133,6 +138,10 @@ func (s *Service) connect(ctx context.Context, connector RemoteConnector, profil
 			s.state.Session.Error = "连接服务器超时，请稍后重试"
 		} else {
 			s.state.Session.Error = "连接服务器失败，请检查地址、密码和网络"
+			var failure *ConnectFailure
+			if errors.As(err, &failure) {
+				s.state.Session.Error = failure.Message
+			}
 		}
 		s.clearRemoteCollectionsLocked()
 		s.notifyChangedLocked()

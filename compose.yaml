@@ -1,0 +1,27 @@
+services:
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    image: resona-server:local
+    ports:
+      - "${RESONA_BIND_IP:-127.0.0.1}:${RESONA_PORT:-9988}:9988/udp"
+    environment:
+      RESONA_SERVER_PASSWORD: "${RESONA_SERVER_PASSWORD:-}"
+    volumes:
+      - server-data:/data
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 10s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+volumes:
+  server-data:

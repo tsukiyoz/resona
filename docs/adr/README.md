@@ -17,5 +17,7 @@
 | [0013](0013-resource-references-and-details.md) | 独立图标引用与按需详情 | Accepted |
 | [0014](0014-audio-controls-and-shutdown.md) | 激活与音频处理、本地试听、有界退出 | Accepted（设备及平台验收待完成） |
 | [0015](0015-gui-maintenance-convergence.md) | GUI 开发收敛与冻结 Wails 基线 | Accepted（可逆维护策略） |
+| [0018](0018-native-quic.md) | 原生 QUIC 服务端与可选客户端适配器 | Accepted（实验） |
+| [0019](0019-noise-udp.md) | Noise UDP 主实验与显式 QUIC 对照 | Accepted（实验） |
 
 状态可为 Proposed、Accepted、Superseded、Rejected。新增重大决定使用递增编号，注明日期和替代关系。
