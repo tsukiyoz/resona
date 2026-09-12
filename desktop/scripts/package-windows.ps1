@@ -66,4 +66,5 @@ New-Item $OutputDirectory -ItemType Directory | Out-Null
 New-Item "$OutputDirectory\.resona-package" -ItemType File | Out-Null
 Copy-Item "$DesktopDirectory\target\x86_64-pc-windows-msvc\release\resona-desktop.exe" "$OutputDirectory\resona-desktop.exe"
 Copy-Item $CoreBinary "$OutputDirectory\resona-core.exe"
+Copy-Item "$DesktopDirectory\..\docs\noise-license.txt" "$OutputDirectory\noise-license.txt"
 Write-Output $OutputDirectory

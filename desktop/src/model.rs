@@ -4,6 +4,9 @@ use serde_json::Value;
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ServerProfile {
+    pub protocol: String,
+    pub certificate_fingerprint: String,
+    pub server_public_key: String,
     pub id: String,
     pub name: String,
     pub address: String,

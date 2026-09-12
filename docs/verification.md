@@ -1,5 +1,25 @@
 # 验证记录
 
+## 2026-09-12 Noise UDP 实验
+
+- Go 全核心回归通过：`go test ./internal/... ./cmd/resona-server`。Noise、原生适配器、凭据边界的竞态测试通过；原生多客户端场景同时覆盖 QUIC 与 Noise。
+- 固定依赖的 `go test github.com/flynn/noise` 通过，包括库自带握手与协议向量；这不是独立安全审计。
+- Noise 故障测试验证：控制数据和 ACK 各丢失一次仍完整且不重复交付；认证前篡改计数器不推进重放窗口；乱序可接收、重复和旧会话包被丢弃；篡改关闭类型不能关闭会话；nonce 预算耗尽不回绕；读 deadline 可唤醒；取消握手及错误公钥拒绝；应用密码错误拒绝。
+- 修复回环测试发现的关闭顺序问题：先尝试认证 Close，再关闭 UDP；关闭设 1 秒 socket 看门狗并回收维护任务。丢失 Close 仍需对端空闲超时，不声称可靠通知。
+- Rust 19 项测试通过；macOS core / debug app 打包通过；无 CGO 的 server 在 macOS 本机构建及 Windows/Linux amd64 交叉构建通过。Windows 实机未验收。
+- CLI 实测 `--init-key` 输出公钥、重复初始化报 file exists、再次启动公钥一致、仅监听回环临时端口、Ctrl+C 退出。私钥放在被忽略的 build/bin 测试目录，没有进入 Git。
+- macOS 实际打开 Noise 表单，确认三种协议、缺公钥禁止保存、公钥粘贴显示、切换 QUIC 时不复制到证书指纹、取消不保存书签。GUI 未连接用户 TS3 服务器。Windows IME、最小窗口全流程、真实双机设备音频仍待验收。
+- 尚无性能结论、独立安全审计、自动换钥或语音拥塞适应。控制 stop-and-wait 的 WAN 吞吐、长连接、丢包突发和容量需继续测量，见 ADR-0019。
+
+## 2026-09-11 原生 QUIC 服务端实验
+
+- `go test ./internal/... ./cmd/resona-server` 通过；监听回环端口的测试需在允许本机网络监听的环境执行。
+- `go test -race ./internal/client ./internal/protocol/... ./internal/nativewire ./internal/server ./cmd/resona-server` 通过；真实 QUIC 多客户端覆盖 TLS/指纹/错误密码、频道文字、频道隔离、gopus 合成帧收发与解码、旧频道 epoch 丢弃、成员退出、ID 不复用及服务端关闭。另覆盖凭据目标变更与证书不覆盖。
+- Rust 19 项测试通过；已有 `block 0.1.6` future-incompatibility 警告仍在。
+- `CGO_ENABLED=0` 服务端 macOS 本机构建、Windows amd64 / Linux amd64 交叉构建通过；交叉构建不等同于对应平台运行验收。
+- macOS core 构建及独立 debug 测试包 `desktop/dist/Resona-Native-Test.app` 打包通过。实际打开新增服务器表单，确认旧默认 TS3、可选 Resona QUIC、原生专属指纹字段以及缩小窗口后的完整显示；Escape 可取消表单，未保存测试书签、未连接用户 TS3 服务器。
+- 待验收：完整 GUI 原生登录/断开与设备音频、Windows 输入法及最小窗口、双机 WAN 丢包/延迟、长连接、CPU/内存/带宽容量压测。未将实验实现标记为公网生产就绪。
+
 ## 2026-09-10 发布入口、服务器菜单与钥匙串授权
 
 - release通过编译条件隐藏本地预览入口，离线引导不再提预览；debug保留。书签右键菜单绑定其自身ID，编辑/删除替代固定按钮，F2提供键盘编辑入口。沿用原表单验证和删除确认。
@@ -294,3 +314,50 @@ GUI 改为紧凑石墨深色布局，保留浅色、服务器书签管理、连�
 - 真实 GUI 最终测试使用自建临时频道 80，夹具转发 500 帧低音量音频：频道树与右侧成员列表对应图标同时亮绿，停止后恢复灰色，自身静音图标保持灰色，无红框。随后明确取消静音，麦克风图标实际亮起，夹具收到并解码 1408 帧；耳聋后熄灭，断开后成员清空。音频仅在内存中处理，没有生成录音文件。300ms 释放时间由测试时钟验证，窗口截图仅验证亮/灭结果。
 - 第一轮临时频道 79 与最终频道 80 均在退出后通过只读登录确认消失；临时 GUI 书签删除，原有书签保留。GUI 与核心退出后进程检查无残留。两轮网络测试均限于 Resona 自建频道，默认频道仅用于正常登录引导。
 - macOS debug/release 包重新构建并核对内置核心一致。Windows 本轮仍未运行；真实用户触发包及官方客户端交叉听测仍需后续复现，本轮不能宣称已覆盖所有 Opus 互通情形。
+## Docker Noise server (2026-09-12)
+
+- Built `resona-server:local` with Compose on macOS/OrbStack (Linux arm64)
+  and published only `127.0.0.1:9988/udp`. The build context was approximately
+  51 KB and excludes local identities, configuration and build artifacts.
+- `TestDockerNoiseSmoke` passed with `-race` against the running container:
+  two real Noise clients connected, exchanged a channel message and moved
+  channels. After `docker compose up -d --force-recreate`, the same public key
+  remained valid and the smoke test passed again.
+- Runtime UID/GID is `10001:10001`; the persisted private key has mode `600`.
+  Compose configuration validation and entrypoint shell syntax checks passed.
+- This verifies local container packaging and connectivity, not Windows Docker,
+  WAN behavior, load capacity or microphone audio quality. See [server.md](server.md)
+  for startup, persistent identity and optional LAN binding.
+## QUIC / Noise local performance baseline (2026-09-12)
+
+An opt-in Darwin benchmark now exercises identical native server/client paths
+through counting UDP relays. Three alternating rounds of 4-member/1-sender and
+16-member/4-sender workloads completed without a race detector. See
+[transport-performance.md](transport-performance.md) for measurements, exact
+scope and reproduction. CPU is aggregate harness CPU, not server-only; allocation
+rates are not RSS. QUIC missed 4 of 90,000 expected deliveries in the larger
+scenario, with no attribution established. Noise delivered all expected frames.
+This baseline does not validate WAN congestion behavior, capacity or audio quality.
+## Independent server GC investigation (2026-09-12)
+
+- Added opt-in Darwin subprocess diagnostics, a paired-run script and structured
+  summarizer. Ordinary core tests pass; short baseline and reconnect harness
+  checks pass with race detection. Scoring runs exclude race/profiling overhead.
+- Three alternating 10-second default/GC-off pairs at 64 clients completed,
+  120,000/120,000 deliveries per run. All final GC-off intervals recorded zero
+  collections. Tail latency did not consistently improve when GC was disabled.
+- A 30-minute default-GC run with four rooms, sixteen senders and 900 listener
+  reconnects completed. GC pause p99 bucket upper bound was 0.328 ms, worst bucket
+  upper bound 14.68 ms; forwarding max was 218.96 ms. Stable recipients missed
+  8,873/21,240,000 expected deliveries (0.0418%); cause remains unassigned.
+- Allocation profiling points primarily to per-packet contexts/timers/callbacks,
+  not solely byte buffers. No production pooling, GC tuning or protocol changes
+  were made. See [server-gc.md](server-gc.md) for scope, raw artifact locations,
+  exclusions and the distinction between test completion and latency acceptance.
+## v0.0.2 release checks (2026-09-12)
+
+`go test -race ./internal/... ./cmd/resona-server` passed. Desktop Cargo tests
+passed (19 tests), and the native macOS release bundle built successfully with
+version 0.0.2, its current Go core and icon/license resources. The existing
+`block 0.1.6` future-compatibility warning remains. Windows CI build and subsequent
+Windows native-protocol user acceptance are separate from these local checks.

@@ -18,7 +18,7 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
     input::{Input, InputEvent, InputState},
-    menu::{ContextMenuExt, PopupMenuItem},
+    menu::{ContextMenuExt, DropdownMenu, PopupMenuItem},
     scroll::ScrollableElement,
     tooltip::Tooltip,
 };
@@ -217,6 +217,9 @@ pub struct ResonaApp {
     name_input: Entity<InputState>,
     address_input: Entity<InputState>,
     nickname_input: Entity<InputState>,
+    certificate_input: Entity<InputState>,
+    public_key_input: Entity<InputState>,
+    server_protocol: String,
     password_input: Entity<InputState>,
     chat_input: Entity<InputState>,
     shortcut_input: Entity<InputState>,
@@ -231,8 +234,12 @@ impl ResonaApp {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let name_input = cx.new(|cx| InputState::new(window, cx).placeholder("服务器名称"));
         let address_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("voice.example.com:9987"));
+            cx.new(|cx| InputState::new(window, cx).placeholder("voice.example.com"));
         let nickname_input = cx.new(|cx| InputState::new(window, cx).placeholder("昵称"));
+        let certificate_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("可选，SHA-256"));
+        let public_key_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("必填，64位十六进制服务器公钥"));
         let password_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("服务器密码，可留空")
@@ -319,6 +326,8 @@ impl ResonaApp {
             name_input.clone(),
             address_input.clone(),
             nickname_input.clone(),
+            certificate_input.clone(),
+            public_key_input.clone(),
             password_input.clone(),
         ]
         .into_iter()
@@ -431,6 +440,9 @@ impl ResonaApp {
             name_input,
             address_input,
             nickname_input,
+            certificate_input,
+            public_key_input,
+            server_protocol: String::new(),
             password_input,
             chat_input,
             shortcut_input,
@@ -1461,6 +1473,13 @@ impl ResonaApp {
             nickname: "Resona".into(),
             ..Default::default()
         });
+        self.server_protocol = profile.protocol.clone();
+        self.public_key_input.update(cx, |input, cx| {
+            input.set_value(profile.server_public_key.clone(), window, cx)
+        });
+        self.certificate_input.update(cx, |input, cx| {
+            input.set_value(profile.certificate_fingerprint.clone(), window, cx)
+        });
         self.name_input
             .update(cx, |input, cx| input.set_value(profile.name, window, cx));
         self.address_input
@@ -1548,6 +1567,17 @@ impl ResonaApp {
             .find(|server| server.id == editing_id)
             .is_some_and(|server| server.skip_password_storage);
         let profile = ServerProfile {
+            protocol: self.server_protocol.clone(),
+            server_public_key: if self.server_protocol == "resona-noise" {
+                self.public_key_input.read(cx).value().to_string()
+            } else {
+                String::new()
+            },
+            certificate_fingerprint: if self.server_protocol == "resona" {
+                self.certificate_input.read(cx).value().to_string()
+            } else {
+                String::new()
+            },
             id: editing_id,
             name: self.name_input.read(cx).value().to_string(),
             address: self.address_input.read(cx).value().to_string(),
@@ -4222,63 +4252,114 @@ impl ResonaApp {
             Modal::Audio => self.render_audio_settings(view),
             Modal::Server { editing_id } => {
                 let editing = !editing_id.is_empty();
-                div()
-                    .w(px(440.))
-                    .p_5()
-                    .rounded(px(7.))
-                    .border_1()
-                    .border_color(rgb(LINE))
-                    .bg(rgb(PANEL_2))
-                    .shadow_lg()
-                    .flex()
-                    .flex_col()
-                    .gap_4()
-                    .child(modal_title(if editing {
-                        "编辑服务器"
-                    } else {
-                        "添加服务器"
-                    }))
-                    .when(!self.server_error.is_empty(), |card| {
-                        card.child(
-                            div()
-                                .p_3()
-                                .rounded(px(5.))
-                                .bg(rgb(0x40282b))
-                                .text_xs()
-                                .text_color(rgb(RED))
-                                .child(self.server_error.clone()),
-                        )
-                    })
-                    .child(field("名称", Input::new(&self.name_input)))
-                    .child(field("地址", Input::new(&self.address_input)))
-                    .child(field("昵称", Input::new(&self.nickname_input)))
-                    .child(
-                        div()
-                            .flex()
-                            .justify_end()
-                            .gap_2()
-                            .child(
-                                Button::new("cancel-server-form")
-                                    .label("取消")
-                                    .ghost()
-                                    .on_click({
-                                        let entity = entity.clone();
-                                        move |_, window, cx| {
-                                            entity
-                                                .update(cx, |this, cx| this.close_modal(window, cx))
-                                        }
-                                    }),
+                let protocol_entity = view.clone();
+                div().child(
+                    div()
+                        .id("server-profile-form")
+                        .w(px(440.))
+                        .max_h(px(500.))
+                        .overflow_y_scrollbar()
+                        .p_5()
+                        .rounded(px(7.))
+                        .border_1()
+                        .border_color(rgb(LINE))
+                        .bg(rgb(PANEL_2))
+                        .shadow_lg()
+                        .flex()
+                        .flex_col()
+                        .gap_4()
+                        .child(modal_title(if editing {
+                            "编辑服务器"
+                        } else {
+                            "添加服务器"
+                        }))
+                        .when(!self.server_error.is_empty(), |card| {
+                            card.child(
+                                div()
+                                    .p_3()
+                                    .rounded(px(5.))
+                                    .bg(rgb(0x40282b))
+                                    .text_xs()
+                                    .text_color(rgb(RED))
+                                    .child(self.server_error.clone()),
                             )
-                            .child(
-                                Button::new("save-server")
-                                    .label("保存")
-                                    .primary()
-                                    .disabled(self.is_busy())
-                                    .on_click(move |_, _, cx| {
-                                        entity.update(cx, |this, cx| this.save_server(cx))
-                                    }),
-                            ),
-                    )
+                        })
+                        .child(field("名称", Input::new(&self.name_input)))
+                        .child(field(
+                            "协议",
+                            Button::new("server-protocol")
+                                .label(if self.server_protocol == "resona-noise" {
+                                    "Resona (Noise UDP)"
+                                } else if self.server_protocol == "resona" {
+                                    "Resona (QUIC/TLS)"
+                                } else {
+                                    "TeamSpeak 3"
+                                })
+                                .icon(IconName::ChevronDown)
+                                .disabled(self.is_busy())
+                                .dropdown_menu(move |mut menu, _, _| {
+                                    for (label, value) in [
+                                        ("TeamSpeak 3", ""),
+                                        ("Resona (Noise UDP)", "resona-noise"),
+                                        ("Resona (QUIC/TLS)", "resona"),
+                                    ] {
+                                        let entity = protocol_entity.clone();
+                                        menu = menu.item(PopupMenuItem::new(label).on_click(
+                                            move |_, _, cx| {
+                                                entity.update(cx, |this, cx| {
+                                                    this.server_protocol = value.into();
+                                                    this.server_error.clear();
+                                                    cx.notify();
+                                                });
+                                            },
+                                        ));
+                                    }
+                                    menu
+                                }),
+                        ))
+                        .child(field("地址", Input::new(&self.address_input)))
+                        .child(field("昵称", Input::new(&self.nickname_input)))
+                        .when(self.server_protocol == "resona-noise", |form| {
+                            form.child(field(
+                                "服务器公钥 X25519（必填）",
+                                Input::new(&self.public_key_input),
+                            ))
+                        })
+                        .when(self.server_protocol == "resona", |form| {
+                            form.child(field(
+                                "证书指纹 SHA-256（可选）",
+                                Input::new(&self.certificate_input),
+                            ))
+                        })
+                        .child(
+                            div()
+                                .flex()
+                                .justify_end()
+                                .gap_2()
+                                .child(
+                                    Button::new("cancel-server-form")
+                                        .label("取消")
+                                        .ghost()
+                                        .on_click({
+                                            let entity = entity.clone();
+                                            move |_, window, cx| {
+                                                entity.update(cx, |this, cx| {
+                                                    this.close_modal(window, cx)
+                                                })
+                                            }
+                                        }),
+                                )
+                                .child(
+                                    Button::new("save-server")
+                                        .label("保存")
+                                        .primary()
+                                        .disabled(self.is_busy())
+                                        .on_click(move |_, _, cx| {
+                                            entity.update(cx, |this, cx| this.save_server(cx))
+                                        }),
+                                ),
+                        ),
+                )
             }
             Modal::Password { server_id } => {
                 let name = self
@@ -5037,7 +5118,7 @@ fn detail_text(value: Option<&Value>, key: &str, workspace: &Workspace) -> Strin
     }
 }
 
-fn field(label: &'static str, input: Input) -> AnyElement {
+fn field(label: &'static str, input: impl IntoElement) -> AnyElement {
     div()
         .flex()
         .flex_col()
