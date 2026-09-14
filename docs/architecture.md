@@ -1,5 +1,9 @@
 # 架构设计
 
+2026-09-14 控制协议更新：使用 Protobuf schema 和生成 Go 消息替换 CBOR，生成对象仅位于 `internal/nativewire/pb` 与 wire 映射边界，业务状态仍为普通 Go 值。语音固定头和 Opus 不变；QUIC ALPN 为 `resona-exp-2`，Noise 握手为 `resona-noise-exp-3`，匹配升级且不回退。生成入口 `make generate` / `go generate ./internal/nativewire/pb`；正式构建不要求 protoc。性能实测为解码较快、部分消息更大且分配更多，详见 ADR-0021 与 `test/controlcodec`。
+
+2026-09-14：server 采用每用户 mutex MPSC 语音环，满时覆盖最旧待发包；状态锁内仅验证和提取接收者快照，编码及入队移到锁外，发送保留过期丢弃和停滞保护。Noise exp-2 用方向独立的后台换钥保持连接，类型字节高位标记密钥阶段，不扩大 5 字节包头；取消固定 24 小时断线，更新失败仍有安全退出边界。旧 HTML 原型源码和 npm 工具链已退休。见 [ADR-0020](adr/0020-relay-rings-and-background-rekey.md)。
+
 2026-09-12：用户选择 Noise UDP 作为原生主实验，QUIC 保留显式对照。`internal/noiseudp` 负责 NK 握手、认证数据报、防重放、有界可靠控制和生命周期，`internal/nativewire` 提供两种传输的最小共同接口。书签使用独立 `serverPublicKey`，不复用证书指纹；server 默认 `--transport noise`。语音仍在 Go core 编解码。见 [ADR-0019](adr/0019-noise-udp.md)。
 
 2026-09-11：新增原生 QUIC 实验路径，见 [ADR-0018](adr/0018-native-quic.md)。`cmd/resona-server` 是独立 Go 转发服务，不运行 Opus 编解码；`internal/protocol/native` 与 TS3 适配器共同实现客户端契约，书签明确选择协议。`internal/nativewire` 定义可靠控制流和紧凑语音 DATAGRAM。设备、DSP、gopus、混音继续在 Go core；GPUI 不接收逐帧音频。此决定更新下述历史段落中“暂不预建第二套协议”的范围。运行方法见 [server.md](server.md)。

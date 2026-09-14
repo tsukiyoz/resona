@@ -27,10 +27,11 @@ func TestNativeKeychainRoundTrip(t *testing.T) {
 		if err := store.Set(key, value); err != nil {
 			t.Fatal(err)
 		}
-		if found, err := store.Has(key); err != nil || !found {
+		reader := New()
+		if found, err := reader.Has(key); err != nil || !found {
 			t.Fatalf("temporary item metadata was not found: %v", err)
 		}
-		actual, err := store.Get(key)
+		actual, err := reader.Get(key)
 		if err != nil || actual != value {
 			t.Fatalf("temporary item password did not round-trip: iteration=%d expected_bytes=%d actual_bytes=%d error=%v", index, len(value), len(actual), err)
 		}

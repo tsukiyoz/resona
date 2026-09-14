@@ -1,5 +1,68 @@
 # QUIC / Noise UDP local comparison
 
+## Latest rerun: 2026-09-14
+
+Latest uncommitted source on `feature/tsukiyo/server-20260912_voice-watchdog`,
+including Protobuf control (ADR-0021), per-peer mutex MPSC rings and background
+Noise rekey (ADR-0020). Apple M2, macOS 26.5.1 (25F80), Go 1.26.4 darwin/arm64.
+The short sample windows do not exercise scheduled key rotation.
+
+The workload and measurement definitions below still apply. This rerun compiled
+one optimized test executable without race instrumentation, then ran each leaf
+subtest in a fresh process. Three sequential rounds used QUIC/Noise, Noise/QUIC,
+QUIC/Noise order. All 18 cases completed successfully. Values are medians across
+three runs, including medians of per-run latency percentiles, not pooled samples.
+
+| Scenario | Transport | CPU % | IPv4 KiB/s | p50 ms | p95 ms | p99 ms | Alloc MiB/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4 members, 1 sender | QUIC | 6.59 | 33.33 | 0.544 | 1.467 | 3.185 | 0.201 |
+| 4 members, 1 sender | Noise | 3.73 | 27.16 | 0.389 | 0.669 | 1.015 | 0.094 |
+| 16 members, 4 senders | QUIC | 27.14 | 498.52 | 1.563 | 3.763 | 9.286 | 2.923 |
+| 16 members, 4 senders | Noise | 20.74 | 438.15 | 1.134 | 3.236 | 6.459 | 1.755 |
+
+- Noise reduced aggregate CPU by 43% / 24%, traffic by 18% / 12%, and allocation
+  rate by 53% / 40% in the 4-member / 16-member scenarios.
+- Each transport delivered 4,500/4,500 and 90,000/90,000 packets respectively
+  across the three rounds; every individual run matched its expected count.
+- The 16-member p99 ranges overlap: QUIC 6.875-9.472 ms, Noise 4.826-8.707 ms.
+  This supports a lower observed median, not a universal tail-latency guarantee.
+- Whole-process goroutines remain 68 vs 57 (4 members), 248 vs 213 (16 members).
+- Median end-window Go heap was 1.29 vs 1.71 MiB (4-member voice) and 4.59 vs
+  3.04 MiB (16-member voice), QUIC vs Noise. GC phase affects these snapshots;
+  they cannot establish an RSS or retained-memory ranking.
+
+| Four idle members | CPU % | IPv4 KiB/s | End-window Go heap MiB |
+| --- | ---: | ---: | ---: |
+| QUIC | 0.051 | 0.0619 | 1.15 |
+| Noise | 0.036 | 0.0509 | 0.77 |
+
+Idle CPU is tiny for both; the difference is only 0.015 percentage points of one
+core. All CPU, heap and allocation numbers include server, simulated clients and
+counting relays. These are not server-only results or desktop/audio performance.
+Neither the network conditions nor the load establish a high-concurrency ceiling.
+The current Noise implementation remains the lighter measured local voice path;
+QUIC and Noise do not provide equivalent congestion-control functionality.
+
+Allocation rates are lower than the September 12 baseline, but several changes
+and process isolation differ between runs. This is not an isolated attribution
+to Protobuf, MPSC, rekey, or timer changes.
+
+Raw records: `build/bin/transport-comparison-20260914-BesrKk/*.log` (ignored).
+Test executable SHA-256:
+`e878d9a1a427bc910a523301ed5fe7d256e233045707d2952d50ab551b03001c`.
+
+Build with `go test -c -o <output>/transport.test ./internal/protocol/native`.
+Run each combination separately, substituting round 1-3, scenario
+`idle4`/`voice4`/`voice16`, and mode `quic`/`noise`:
+
+```sh
+RESONA_TRANSPORT_PERF=1 <output>/transport.test \
+  -test.run='^TestTransportPerformance$/^1$/^voice4$/^quic$' \
+  -test.v -test.timeout=60s
+```
+
+## Historical baseline: 2026-09-12
+
 Date: 2026-09-12. Experimental implementations on the working branch, not a
 comparison of all possible QUIC and Noise implementations.
 
@@ -106,5 +169,6 @@ This is a low-load loopback protocol baseline, not a capacity ceiling, independe
 security review or WAN result. The counting relays add CPU, scheduling and socket
 work, and can affect transport batching. Absolute numbers should not be used as
 deployment sizing. No Windows/Linux device, GPU, congestion, loss, jitter or
-reordering experiment is claimed. Noise's simpler transport still needs automatic
-rekey and congestion adaptation; see ADR-0019.
+reordering experiment is claimed. The September 12 baseline predates automatic
+rekey; background rekey is now implemented (ADR-0020). Congestion adaptation
+remains separate work; see ADR-0019.

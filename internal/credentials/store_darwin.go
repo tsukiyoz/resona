@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	keychain "github.com/keybase/go-keychain"
@@ -19,24 +20,33 @@ type passwordPayload struct {
 }
 
 type keychainAPI struct {
-	query  func(keychain.Item) ([]keychain.QueryResult, error)
-	update func(keychain.Item, keychain.Item) error
-	add    func(keychain.Item) error
-	delete func(keychain.Item) error
+	query       func(keychain.Item) ([]keychain.QueryResult, error)
+	querySilent func(keychain.Item) ([]keychain.QueryResult, error)
+	update      func(keychain.Item, keychain.Item) error
+	add         func(keychain.Item) error
+	delete      func(keychain.Item) error
 }
 
 type Store struct {
-	api keychainAPI
+	mu    sync.Mutex
+	api   keychainAPI
+	cache map[string]string
 }
 
 func New() *Store {
 	return &Store{api: keychainAPI{
-		query: keychain.QueryItem, update: keychain.UpdateItem,
-		add: keychain.AddItem, delete: keychain.DeleteItem,
+		query: queryNativeKeychain, update: updateNativeKeychain,
+		querySilent: queryNativeKeychainSilent,
+		add:         addNativeKeychain, delete: deleteNativeKeychain,
 	}}
 }
 
 func (s *Store) Has(key string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.cache[key]; ok {
+		return true, nil
+	}
 	query, err := itemForKey(key)
 	if err != nil {
 		return false, err
@@ -45,7 +55,11 @@ func (s *Store) Has(key string) (bool, error) {
 	query.SetReturnAttributes(true)
 	query.SetReturnData(false)
 	disallowAuthenticationUI(&query)
-	results, err := s.api.query(query)
+	queryFn := s.api.querySilent
+	if queryFn == nil {
+		queryFn = s.api.query
+	}
+	results, err := queryFn(query)
 	// A locked/protected item is a candidate, not a missing password. Let the
 	// explicit Get perform authentication once; never prompt just for status.
 	if errors.Is(err, keychain.ErrorInteractionNotAllowed) {
@@ -61,6 +75,11 @@ func (s *Store) Has(key string) (bool, error) {
 }
 
 func (s *Store) Get(key string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if value, ok := s.cache[key]; ok {
+		return value, nil
+	}
 	query, err := itemForKey(key)
 	if err != nil {
 		return "", err
@@ -78,10 +97,26 @@ func (s *Store) Get(key string) (string, error) {
 	if err := json.Unmarshal(results[0].Data, &payload); err != nil || payload.Version != 1 || payload.Password == nil {
 		return "", errRead
 	}
+	s.cachePassword(key, *payload.Password)
 	return *payload.Password, nil
 }
 
+// Successful reads stay inside the core process. No cache is persisted or sent
+// to the GUI; destination changes already remove the corresponding store key.
+func (s *Store) cachePassword(key, value string) {
+	if s.cache == nil {
+		s.cache = make(map[string]string)
+	}
+	s.cache[key] = value
+}
+
 func (s *Store) Set(key, value string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if cached, ok := s.cache[key]; ok && cached == value {
+		return nil
+	}
+	delete(s.cache, key)
 	query, err := itemForKey(key)
 	if err != nil {
 		return err
@@ -99,6 +134,7 @@ func (s *Store) Set(key, value string) error {
 	changes.SetData(data)
 	err = s.api.update(query, changes)
 	if err == nil {
+		s.cachePassword(key, value)
 		return nil
 	}
 	if !errors.Is(err, keychain.ErrorItemNotFound) {
@@ -116,10 +152,14 @@ func (s *Store) Set(key, value string) error {
 	if err != nil {
 		return errWrite
 	}
+	s.cachePassword(key, value)
 	return nil
 }
 
 func (s *Store) Delete(key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.cache, key)
 	query, err := itemForKey(key)
 	if err != nil {
 		return err

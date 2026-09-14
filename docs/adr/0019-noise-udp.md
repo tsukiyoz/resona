@@ -48,7 +48,8 @@ are Resona experimental code and need further review/load/impairment testing.
 Cookie validation before DH bounds spoofed allocation and reflection size, but
 does not establish DDoS resistance. Current voice rate limits are not congestion
 control; adaptive sender rate and loss feedback remain required before broad WAN
-deployment. Packet counters never wrap. At 2^24-1 sent packets or 24-hour lifetime
-the session expires rather than reusing keys; automatic rekey is deferred.
+deployment. The initial experiment expired at 2^24-1 sent packets or 24 hours.
+ADR-0020 supersedes that lifetime policy with confirmed background key updates,
+retaining hard nonce limits and a bounded failure path.
 
 See [Noise wire specification](../noise-protocol.md) and [server operation](../server.md).

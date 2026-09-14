@@ -133,6 +133,10 @@ See [wire specification](native-protocol.md) and [ADR-0018](adr/0018-native-quic
 Noise framing and limitations are in [noise-protocol.md](noise-protocol.md) and
 [ADR-0019](adr/0019-noise-udp.md). Noise control currently uses stop-and-wait
 delivery. It has bounded queues and rate limits, but no adaptive voice congestion
-control or automatic rekey. A session expires at 24 hours or its packet budget;
-reconnect establishes new keys. QUIC and Noise use the same default port and must
+control. Noise exp-3 uses Protobuf control messages and updates directional keys in the background at 12 hours or
+2^23 packets without resetting membership or audio. Confirmation failure still
+closes the session after 30 seconds; it is not automatic reconnect. Upgrade server
+and client core together: older Noise experiments cannot handshake, though the existing
+server identity file and public-key bookmarks remain valid. See ADR-0020/0021.
+QUIC and Noise use the same default port and must
 use different listen ports when running together.

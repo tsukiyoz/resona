@@ -132,7 +132,11 @@ func TestReliableControlRetriesWithoutDuplicateDelivery(t *testing.T) {
 }
 func TestNonceBudgetAndReadCancellation(t *testing.T) {
 	a, _, out, _ := pair(t)
+	a.sendMu.Lock()
 	a.counter = maxCounter - 2
+	a.txConfirmed = false
+	a.updateSent = time.Now()
+	a.sendMu.Unlock()
 	if e := a.SendDatagram([]byte{1}); e != nil {
 		t.Fatal(e)
 	}
