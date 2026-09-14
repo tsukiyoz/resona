@@ -65,8 +65,8 @@ cat > "$bundle_dir/Contents/Info.plist" <<'PLIST'
   <key>CFBundleName</key><string>Resona</string>
   <key>CFBundleIconFile</key><string>Resona.icns</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.0.2</string>
-  <key>CFBundleVersion</key><string>2</string>
+  <key>CFBundleShortVersionString</key><string>0.0.3</string>
+  <key>CFBundleVersion</key><string>3</string>
   <key>LSMinimumSystemVersion</key><string>12.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSMicrophoneUsageDescription</key><string>Resona uses the microphone when you enable voice and unmute it, or explicitly start a local microphone test.</string>
