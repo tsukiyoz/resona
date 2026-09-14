@@ -57,7 +57,7 @@ func TestPipeCommandsEventsAndShutdown(t *testing.T) {
 			}
 		}
 	}
-	r := call(1, "SaveServer", map[string]any{"profile": client.ServerProfile{Name: "Club", Address: "example.invalid", Nickname: "Player"}})
+	r := call(1, "SaveServer", map[string]any{"profile": client.ServerProfile{Protocol: "resona-noise", ServerPublicKey: "abababababababababababababababababababababababababababababababab", Name: "Club", Address: "example.invalid", Nickname: "Player"}})
 	var w client.Workspace
 	if err := json.Unmarshal(r["result"], &w); err != nil || len(w.Servers) != 1 {
 		t.Fatalf("invalid saved snapshot: %s", r["result"])

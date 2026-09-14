@@ -2,37 +2,27 @@ package main
 
 import (
 	"bytes"
-	"crypto/tls"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/tsukiyoz/resona/internal/noiseudp"
 )
 
-func TestCertificateDoesNotOverwrite(t *testing.T) {
-	dir := t.TempDir()
-	cert, key := filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
-	if err := createCertificate(cert, key); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tls.LoadX509KeyPair(cert, key); err != nil {
-		t.Fatal(err)
-	}
-	original, err := os.ReadFile(key)
+func TestIdentityDoesNotOverwrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "noise.key")
+	key, err := noiseudp.GenerateKey()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := createCertificate(cert, key); err == nil {
+	if err := writeNew(path, key); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeNew(path, []byte("replacement")); err == nil {
 		t.Fatal("overwrote existing identity")
 	}
-	after, err := os.ReadFile(key)
-	if err != nil || !bytes.Equal(original, after) {
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(key, after) {
 		t.Fatal("existing key changed")
-	}
-	newKey := filepath.Join(dir, "new-key.pem")
-	if err := createCertificate(cert, newKey); err == nil {
-		t.Fatal("overwrote existing certificate")
-	}
-	if _, err := os.Stat(newKey); !os.IsNotExist(err) {
-		t.Fatal("left unmatched new key")
 	}
 }

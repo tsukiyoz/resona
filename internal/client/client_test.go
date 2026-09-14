@@ -76,7 +76,7 @@ func TestPreviewSessionBoundaries(t *testing.T) {
 func TestFailedPersistenceDoesNotChangeWorkspace(t *testing.T) {
 	store := &memoryStore{}
 	service, _ := New(store)
-	profile := ServerProfile{Name: "Home", Address: "localhost:9987", Nickname: "Alice"}
+	profile := ServerProfile{Protocol: "resona-noise", ServerPublicKey: "abababababababababababababababababababababababababababababababab", Name: "Home", Address: "localhost:9988", Nickname: "Alice"}
 	state, err := service.SaveServer(profile)
 	if err != nil || len(state.Servers) != 1 || state.Servers[0].ID == "" {
 		t.Fatalf("save failed: %+v %v", state, err)
@@ -102,17 +102,17 @@ func TestFailedPersistenceDoesNotChangeWorkspace(t *testing.T) {
 }
 
 func TestProfileValidation(t *testing.T) {
-	for _, address := range []string{"localhost", "voice.example.org:9987", "127.0.0.1", "::1", "[::1]:9987"} {
-		if err := ValidateProfile(ServerProfile{Name: "Home", Address: address, Nickname: "Alice"}); err != nil {
+	for _, address := range []string{"localhost", "voice.example.org:9988", "127.0.0.1", "::1", "[::1]:9988"} {
+		if err := ValidateProfile(ServerProfile{Protocol: "resona-noise", ServerPublicKey: "abababababababababababababababababababababababababababababababab", Name: "Home", Address: address, Nickname: "Alice"}); err != nil {
 			t.Errorf("valid address %q: %v", address, err)
 		}
 	}
 	for _, address := range []string{"", "https://example.org", "host:0", "host:65536", "host:abc", "bad host", "-bad.example", "example..org", "[::1]"} {
-		if err := ValidateProfile(ServerProfile{Name: "Home", Address: address, Nickname: "Alice"}); err == nil {
+		if err := ValidateProfile(ServerProfile{Protocol: "resona-noise", ServerPublicKey: "abababababababababababababababababababababababababababababababab", Name: "Home", Address: address, Nickname: "Alice"}); err == nil {
 			t.Errorf("accepted invalid address %q", address)
 		}
 	}
-	if err := ValidateProfile(ServerProfile{Name: "Home", Address: "localhost", Nickname: "\nAlice"}); err == nil {
+	if err := ValidateProfile(ServerProfile{Protocol: "resona-noise", ServerPublicKey: "abababababababababababababababababababababababababababababababab", Name: "Home", Address: "localhost", Nickname: "\nAlice"}); err == nil {
 		t.Fatal("nickname control characters accepted")
 	}
 }
@@ -125,7 +125,7 @@ func TestConcurrentBookmarkRequestsAreSerialized(t *testing.T) {
 	var group sync.WaitGroup
 	for range 20 {
 		group.Go(func() {
-			_, err := service.SaveServer(ServerProfile{Name: "Home", Address: "localhost", Nickname: "Alice"})
+			_, err := service.SaveServer(ServerProfile{Protocol: "resona-noise", ServerPublicKey: "abababababababababababababababababababababababababababababababab", Name: "Home", Address: "localhost", Nickname: "Alice"})
 			if err != nil {
 				t.Error(err)
 			}

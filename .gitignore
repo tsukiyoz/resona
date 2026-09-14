@@ -1,4 +1,5 @@
 /build/bin/
+/build/deploy-*/
 /desktop/target/
 /desktop/dist/
 /docs/ui-prototype/node_modules/

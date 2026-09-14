@@ -24,19 +24,20 @@ const (
 type Kind int32
 
 const (
-	Kind_KIND_UNSPECIFIED    Kind = 0
-	Kind_KIND_HELLO          Kind = 1
-	Kind_KIND_WELCOME        Kind = 2
-	Kind_KIND_STATE          Kind = 3
-	Kind_KIND_MOVE           Kind = 4
-	Kind_KIND_CHAT           Kind = 5
-	Kind_KIND_VOICE_STATE    Kind = 6
-	Kind_KIND_REPLY          Kind = 7
-	Kind_KIND_MESSAGE        Kind = 8
-	Kind_KIND_CLAIM_OWNER    Kind = 9
-	Kind_KIND_CREATE_CHANNEL Kind = 10
-	Kind_KIND_UPDATE_CHANNEL Kind = 11
-	Kind_KIND_DELETE_CHANNEL Kind = 12
+	Kind_KIND_UNSPECIFIED     Kind = 0
+	Kind_KIND_HELLO           Kind = 1
+	Kind_KIND_WELCOME         Kind = 2
+	Kind_KIND_STATE           Kind = 3
+	Kind_KIND_MOVE            Kind = 4
+	Kind_KIND_CHAT            Kind = 5
+	Kind_KIND_VOICE_STATE     Kind = 6
+	Kind_KIND_REPLY           Kind = 7
+	Kind_KIND_MESSAGE         Kind = 8
+	Kind_KIND_CLAIM_OWNER     Kind = 9
+	Kind_KIND_CREATE_CHANNEL  Kind = 10
+	Kind_KIND_UPDATE_CHANNEL  Kind = 11
+	Kind_KIND_DELETE_CHANNEL  Kind = 12
+	Kind_KIND_WATCH_RESOURCES Kind = 13
 )
 
 // Enum value maps for Kind.
@@ -55,21 +56,23 @@ var (
 		10: "KIND_CREATE_CHANNEL",
 		11: "KIND_UPDATE_CHANNEL",
 		12: "KIND_DELETE_CHANNEL",
+		13: "KIND_WATCH_RESOURCES",
 	}
 	Kind_value = map[string]int32{
-		"KIND_UNSPECIFIED":    0,
-		"KIND_HELLO":          1,
-		"KIND_WELCOME":        2,
-		"KIND_STATE":          3,
-		"KIND_MOVE":           4,
-		"KIND_CHAT":           5,
-		"KIND_VOICE_STATE":    6,
-		"KIND_REPLY":          7,
-		"KIND_MESSAGE":        8,
-		"KIND_CLAIM_OWNER":    9,
-		"KIND_CREATE_CHANNEL": 10,
-		"KIND_UPDATE_CHANNEL": 11,
-		"KIND_DELETE_CHANNEL": 12,
+		"KIND_UNSPECIFIED":     0,
+		"KIND_HELLO":           1,
+		"KIND_WELCOME":         2,
+		"KIND_STATE":           3,
+		"KIND_MOVE":            4,
+		"KIND_CHAT":            5,
+		"KIND_VOICE_STATE":     6,
+		"KIND_REPLY":           7,
+		"KIND_MESSAGE":         8,
+		"KIND_CLAIM_OWNER":     9,
+		"KIND_CREATE_CHANNEL":  10,
+		"KIND_UPDATE_CHANNEL":  11,
+		"KIND_DELETE_CHANNEL":  12,
+		"KIND_WATCH_RESOURCES": 13,
 	}
 )
 
@@ -446,6 +449,60 @@ func (x *DeleteChannel) GetId() uint32 {
 	return 0
 }
 
+// Atomically replace interest and enqueue its initial snapshot before the reply.
+// Current-channel voice state and the caller's permissions are always included.
+type WatchResources struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	AllChannels   bool                   `protobuf:"varint,1,opt,name=all_channels,json=allChannels,proto3" json:"all_channels,omitempty"`
+	AllMembers    bool                   `protobuf:"varint,2,opt,name=all_members,json=allMembers,proto3" json:"all_members,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WatchResources) Reset() {
+	*x = WatchResources{}
+	mi := &file_control_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WatchResources) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WatchResources) ProtoMessage() {}
+
+func (x *WatchResources) ProtoReflect() protoreflect.Message {
+	mi := &file_control_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WatchResources.ProtoReflect.Descriptor instead.
+func (*WatchResources) Descriptor() ([]byte, []int) {
+	return file_control_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *WatchResources) GetAllChannels() bool {
+	if x != nil {
+		return x.AllChannels
+	}
+	return false
+}
+
+func (x *WatchResources) GetAllMembers() bool {
+	if x != nil {
+		return x.AllMembers
+	}
+	return false
+}
+
 type Channel struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            uint32                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"` // Application range: 1..65535.
@@ -458,7 +515,7 @@ type Channel struct {
 
 func (x *Channel) Reset() {
 	*x = Channel{}
-	mi := &file_control_proto_msgTypes[6]
+	mi := &file_control_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -470,7 +527,7 @@ func (x *Channel) String() string {
 func (*Channel) ProtoMessage() {}
 
 func (x *Channel) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[6]
+	mi := &file_control_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -483,7 +540,7 @@ func (x *Channel) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Channel.ProtoReflect.Descriptor instead.
 func (*Channel) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{6}
+	return file_control_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *Channel) GetId() uint32 {
@@ -529,7 +586,7 @@ type Member struct {
 
 func (x *Member) Reset() {
 	*x = Member{}
-	mi := &file_control_proto_msgTypes[7]
+	mi := &file_control_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -541,7 +598,7 @@ func (x *Member) String() string {
 func (*Member) ProtoMessage() {}
 
 func (x *Member) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[7]
+	mi := &file_control_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -554,7 +611,7 @@ func (x *Member) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Member.ProtoReflect.Descriptor instead.
 func (*Member) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{7}
+	return file_control_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *Member) GetId() uint32 {
@@ -618,13 +675,18 @@ type State struct {
 	CanClaimOwner            bool                   `protobuf:"varint,8,opt,name=can_claim_owner,json=canClaimOwner,proto3" json:"can_claim_owner,omitempty"`
 	CanManageChannels        bool                   `protobuf:"varint,9,opt,name=can_manage_channels,json=canManageChannels,proto3" json:"can_manage_channels,omitempty"`
 	CanConfigureChannelAudio bool                   `protobuf:"varint,10,opt,name=can_configure_channel_audio,json=canConfigureChannelAudio,proto3" json:"can_configure_channel_audio,omitempty"`
+	CanWatchResources        bool                   `protobuf:"varint,11,opt,name=can_watch_resources,json=canWatchResources,proto3" json:"can_watch_resources,omitempty"`
+	Revision                 uint64                 `protobuf:"varint,12,opt,name=revision,proto3" json:"revision,omitempty"`
+	AllChannels              bool                   `protobuf:"varint,13,opt,name=all_channels,json=allChannels,proto3" json:"all_channels,omitempty"`
+	AllMembers               bool                   `protobuf:"varint,14,opt,name=all_members,json=allMembers,proto3" json:"all_members,omitempty"`
+	DefaultChannel           uint32                 `protobuf:"varint,15,opt,name=default_channel,json=defaultChannel,proto3" json:"default_channel,omitempty"`
 	unknownFields            protoimpl.UnknownFields
 	sizeCache                protoimpl.SizeCache
 }
 
 func (x *State) Reset() {
 	*x = State{}
-	mi := &file_control_proto_msgTypes[8]
+	mi := &file_control_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -636,7 +698,7 @@ func (x *State) String() string {
 func (*State) ProtoMessage() {}
 
 func (x *State) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[8]
+	mi := &file_control_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -649,7 +711,7 @@ func (x *State) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use State.ProtoReflect.Descriptor instead.
 func (*State) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{8}
+	return file_control_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *State) GetName() string {
@@ -722,6 +784,41 @@ func (x *State) GetCanConfigureChannelAudio() bool {
 	return false
 }
 
+func (x *State) GetCanWatchResources() bool {
+	if x != nil {
+		return x.CanWatchResources
+	}
+	return false
+}
+
+func (x *State) GetRevision() uint64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+func (x *State) GetAllChannels() bool {
+	if x != nil {
+		return x.AllChannels
+	}
+	return false
+}
+
+func (x *State) GetAllMembers() bool {
+	if x != nil {
+		return x.AllMembers
+	}
+	return false
+}
+
+func (x *State) GetDefaultChannel() uint32 {
+	if x != nil {
+		return x.DefaultChannel
+	}
+	return 0
+}
+
 // VoiceState sets both flags; it is not a partial update. Missing flags mean false.
 type Command struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -735,7 +832,7 @@ type Command struct {
 
 func (x *Command) Reset() {
 	*x = Command{}
-	mi := &file_control_proto_msgTypes[9]
+	mi := &file_control_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -747,7 +844,7 @@ func (x *Command) String() string {
 func (*Command) ProtoMessage() {}
 
 func (x *Command) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[9]
+	mi := &file_control_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -760,7 +857,7 @@ func (x *Command) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Command.ProtoReflect.Descriptor instead.
 func (*Command) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{9}
+	return file_control_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *Command) GetChannel() uint32 {
@@ -800,7 +897,7 @@ type Reply struct {
 
 func (x *Reply) Reset() {
 	*x = Reply{}
-	mi := &file_control_proto_msgTypes[10]
+	mi := &file_control_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -812,7 +909,7 @@ func (x *Reply) String() string {
 func (*Reply) ProtoMessage() {}
 
 func (x *Reply) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[10]
+	mi := &file_control_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -825,7 +922,7 @@ func (x *Reply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Reply.ProtoReflect.Descriptor instead.
 func (*Reply) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{10}
+	return file_control_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *Reply) GetCode() uint32 {
@@ -847,7 +944,7 @@ type Message struct {
 
 func (x *Message) Reset() {
 	*x = Message{}
-	mi := &file_control_proto_msgTypes[11]
+	mi := &file_control_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -859,7 +956,7 @@ func (x *Message) String() string {
 func (*Message) ProtoMessage() {}
 
 func (x *Message) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[11]
+	mi := &file_control_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -872,7 +969,7 @@ func (x *Message) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Message.ProtoReflect.Descriptor instead.
 func (*Message) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{11}
+	return file_control_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *Message) GetChannel() uint32 {
@@ -931,7 +1028,11 @@ const file_control_proto_rawDesc = "" +
 	"\vdescription\x18\x03 \x01(\tR\vdescription\x12\x18\n" +
 	"\abitrate\x18\x04 \x01(\rR\abitrate\"\x1f\n" +
 	"\rDeleteChannel\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\rR\x02id\"i\n" +
+	"\x02id\x18\x01 \x01(\rR\x02id\"T\n" +
+	"\x0eWatchResources\x12!\n" +
+	"\fall_channels\x18\x01 \x01(\bR\vallChannels\x12\x1f\n" +
+	"\vall_members\x18\x02 \x01(\bR\n" +
+	"allMembers\"i\n" +
 	"\aChannel\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\rR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12 \n" +
@@ -944,7 +1045,7 @@ const file_control_proto_rawDesc = "" +
 	"\binstance\x18\x04 \x01(\tR\binstance\x12\x14\n" +
 	"\x05muted\x18\x05 \x01(\bR\x05muted\x12\x1a\n" +
 	"\bdeafened\x18\x06 \x01(\bR\bdeafened\x12\x14\n" +
-	"\x05epoch\x18\a \x01(\rR\x05epoch\"\x8d\x03\n" +
+	"\x05epoch\x18\a \x01(\rR\x05epoch\"\xc6\x04\n" +
 	"\x05State\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04self\x18\x02 \x01(\rR\x04self\x12\x14\n" +
@@ -957,7 +1058,13 @@ const file_control_proto_rawDesc = "" +
 	"\x0fcan_claim_owner\x18\b \x01(\bR\rcanClaimOwner\x12.\n" +
 	"\x13can_manage_channels\x18\t \x01(\bR\x11canManageChannels\x12=\n" +
 	"\x1bcan_configure_channel_audio\x18\n" +
-	" \x01(\bR\x18canConfigureChannelAudio\"i\n" +
+	" \x01(\bR\x18canConfigureChannelAudio\x12.\n" +
+	"\x13can_watch_resources\x18\v \x01(\bR\x11canWatchResources\x12\x1a\n" +
+	"\brevision\x18\f \x01(\x04R\brevision\x12!\n" +
+	"\fall_channels\x18\r \x01(\bR\vallChannels\x12\x1f\n" +
+	"\vall_members\x18\x0e \x01(\bR\n" +
+	"allMembers\x12'\n" +
+	"\x0fdefault_channel\x18\x0f \x01(\rR\x0edefaultChannel\"i\n" +
 	"\aCommand\x12\x18\n" +
 	"\achannel\x18\x01 \x01(\rR\achannel\x12\x12\n" +
 	"\x04text\x18\x02 \x01(\tR\x04text\x12\x14\n" +
@@ -969,7 +1076,7 @@ const file_control_proto_rawDesc = "" +
 	"\achannel\x18\x01 \x01(\rR\achannel\x12\x16\n" +
 	"\x06sender\x18\x02 \x01(\rR\x06sender\x12\x1a\n" +
 	"\bnickname\x18\x03 \x01(\tR\bnickname\x12\x12\n" +
-	"\x04text\x18\x04 \x01(\tR\x04text*\x85\x02\n" +
+	"\x04text\x18\x04 \x01(\tR\x04text*\x9f\x02\n" +
 	"\x04Kind\x12\x14\n" +
 	"\x10KIND_UNSPECIFIED\x10\x00\x12\x0e\n" +
 	"\n" +
@@ -987,7 +1094,8 @@ const file_control_proto_rawDesc = "" +
 	"\x13KIND_CREATE_CHANNEL\x10\n" +
 	"\x12\x17\n" +
 	"\x13KIND_UPDATE_CHANNEL\x10\v\x12\x17\n" +
-	"\x13KIND_DELETE_CHANNEL\x10\fB3Z1github.com/tsukiyoz/resona/internal/nativewire/pbb\x06proto3"
+	"\x13KIND_DELETE_CHANNEL\x10\f\x12\x18\n" +
+	"\x14KIND_WATCH_RESOURCES\x10\rB3Z1github.com/tsukiyoz/resona/internal/nativewire/pbb\x06proto3"
 
 var (
 	file_control_proto_rawDescOnce sync.Once
@@ -1002,26 +1110,27 @@ func file_control_proto_rawDescGZIP() []byte {
 }
 
 var file_control_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_control_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_control_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_control_proto_goTypes = []any{
-	(Kind)(0),             // 0: resona.control.v1.Kind
-	(*Frame)(nil),         // 1: resona.control.v1.Frame
-	(*Hello)(nil),         // 2: resona.control.v1.Hello
-	(*ClaimOwner)(nil),    // 3: resona.control.v1.ClaimOwner
-	(*CreateChannel)(nil), // 4: resona.control.v1.CreateChannel
-	(*UpdateChannel)(nil), // 5: resona.control.v1.UpdateChannel
-	(*DeleteChannel)(nil), // 6: resona.control.v1.DeleteChannel
-	(*Channel)(nil),       // 7: resona.control.v1.Channel
-	(*Member)(nil),        // 8: resona.control.v1.Member
-	(*State)(nil),         // 9: resona.control.v1.State
-	(*Command)(nil),       // 10: resona.control.v1.Command
-	(*Reply)(nil),         // 11: resona.control.v1.Reply
-	(*Message)(nil),       // 12: resona.control.v1.Message
+	(Kind)(0),              // 0: resona.control.v1.Kind
+	(*Frame)(nil),          // 1: resona.control.v1.Frame
+	(*Hello)(nil),          // 2: resona.control.v1.Hello
+	(*ClaimOwner)(nil),     // 3: resona.control.v1.ClaimOwner
+	(*CreateChannel)(nil),  // 4: resona.control.v1.CreateChannel
+	(*UpdateChannel)(nil),  // 5: resona.control.v1.UpdateChannel
+	(*DeleteChannel)(nil),  // 6: resona.control.v1.DeleteChannel
+	(*WatchResources)(nil), // 7: resona.control.v1.WatchResources
+	(*Channel)(nil),        // 8: resona.control.v1.Channel
+	(*Member)(nil),         // 9: resona.control.v1.Member
+	(*State)(nil),          // 10: resona.control.v1.State
+	(*Command)(nil),        // 11: resona.control.v1.Command
+	(*Reply)(nil),          // 12: resona.control.v1.Reply
+	(*Message)(nil),        // 13: resona.control.v1.Message
 }
 var file_control_proto_depIdxs = []int32{
 	0, // 0: resona.control.v1.Frame.kind:type_name -> resona.control.v1.Kind
-	7, // 1: resona.control.v1.State.channels:type_name -> resona.control.v1.Channel
-	8, // 2: resona.control.v1.State.members:type_name -> resona.control.v1.Member
+	8, // 1: resona.control.v1.State.channels:type_name -> resona.control.v1.Channel
+	9, // 2: resona.control.v1.State.members:type_name -> resona.control.v1.Member
 	3, // [3:3] is the sub-list for method output_type
 	3, // [3:3] is the sub-list for method input_type
 	3, // [3:3] is the sub-list for extension type_name
@@ -1040,7 +1149,7 @@ func file_control_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_control_proto_rawDesc), len(file_control_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   12,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

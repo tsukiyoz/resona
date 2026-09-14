@@ -11,7 +11,7 @@ import (
 
 func channelState(id string) RemoteState {
 	return RemoteState{
-		ServerName: "Test TS3", ChannelID: id, SelfID: "self",
+		ServerName: "Test 服务器", ChannelID: id, SelfID: "self",
 		Channels: []Channel{{ID: "1", Name: "Lobby"}, {ID: "2", Name: "Test"}, {ID: "3", Name: "Locked", PasswordRequired: true}},
 		Users:    []User{{ID: "self", ChannelID: id, Nickname: "Alice", Self: true}},
 	}

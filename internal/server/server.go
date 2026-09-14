@@ -6,9 +6,9 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
-	"crypto/tls"
 	"errors"
 	"net"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -40,6 +40,9 @@ type Server struct {
 	wg              sync.WaitGroup
 }
 type peer struct {
+	watch         w.WatchResources
+	lastState     *w.State
+	revision      uint64
 	identity      string
 	conn          w.Connection
 	stream        w.Stream
@@ -70,7 +73,7 @@ func (b *bucket) take(rate, burst float64) bool {
 	b.tokens--
 	return true
 }
-func Listen(address string, cfg Config, tlsConfig *tls.Config) (*Server, error) {
+func Listen(address string, cfg Config) (*Server, error) {
 	if cfg.ChannelStore != nil {
 		cfg.Channels = cfg.ChannelStore.record.Channels
 	}
@@ -94,19 +97,7 @@ func Listen(address string, cfg Config, tlsConfig *tls.Config) (*Server, error) 
 		return nil, errors.New("channel configuration exceeds snapshot budget")
 	}
 	cfg.Channels = append([]w.Channel(nil), cfg.Channels...)
-	var l w.Listener
-	var err error
-	if len(cfg.NoiseKey) != 0 {
-		l, err = w.ListenNoise(address, cfg.NoiseKey, cfg.MaxClients)
-	} else {
-		if tlsConfig == nil || len(tlsConfig.Certificates) == 0 {
-			return nil, errors.New("TLS certificate required")
-		}
-		tc := tlsConfig.Clone()
-		tc.MinVersion = tls.VersionTLS13
-		tc.NextProtos = []string{w.ALPN}
-		l, err = w.ListenQUIC(address, tc)
-	}
+	l, err := w.ListenNoise(address, cfg.NoiseKey, cfg.MaxClients)
 	if err != nil {
 		return nil, err
 	}
@@ -170,6 +161,7 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 	_ = stream.SetDeadline(time.Time{})
 	p := &peer{conn: c, stream: stream, epoch: 1, out: make(chan []byte, 16), voiceOut: w.NewVoiceRing(4), done: make(chan struct{})}
 	p.identity = nativeidentity.UID(hello.PublicKey)
+	// Bootstrap only the current channel; the client explicitly lists what its UI needs.
 	s.mu.Lock()
 	// IDs are never reused during this server lifetime, including after disconnect.
 	if s.next >= 65535 {
@@ -179,7 +171,7 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 	s.next++
 	p.member = w.Member{ID: uint16(s.next), Channel: s.config.Channels[0].ID, Nickname: hello.Nickname, Instance: rand.Text(), Muted: true, Epoch: 1}
 	s.peers[p.member.ID] = p
-	s.enqueueLocked(p, w.WelcomeKind, 0, s.stateLocked(p))
+	s.sendStateLocked(p, w.WelcomeKind, true)
 	s.broadcastLocked(p)
 	s.mu.Unlock()
 	var workers sync.WaitGroup
@@ -204,6 +196,22 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 		}
 		if f.Request == 0 {
 			return
+		}
+		if f.Kind == w.WatchResourcesKind {
+			var watch w.WatchResources
+			if w.Decode(f, &watch) != nil || (watch.AllMembers && !watch.AllChannels) {
+				return
+			}
+			s.mu.Lock()
+			if p.commandBucket.take(10, 20) {
+				p.watch = watch
+				s.sendStateLocked(p, w.StateKind, true)
+				s.enqueueLocked(p, w.ReplyKind, f.Request, w.Reply{Code: w.OK})
+			} else {
+				s.enqueueLocked(p, w.ReplyKind, f.Request, w.Reply{Code: w.RateLimited})
+			}
+			s.mu.Unlock()
+			continue
 		}
 		if f.Kind >= w.CreateChannelKind && f.Kind <= w.DeleteChannelKind {
 			if !s.channelCommand(p, f) {
@@ -293,16 +301,43 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 func (s *Server) stateLocked(p *peer) w.State {
 	members := make([]w.Member, 0, len(s.peers))
 	for _, v := range s.peers {
-		members = append(members, v.member)
+		if p.watch.AllMembers || v.member.Channel == p.member.Channel {
+			members = append(members, v.member)
+		}
 	}
 	sort.Slice(members, func(i, j int) bool { return members[i].ID < members[j].ID })
 	role, canClaim := s.config.Ownership.Status(p.identity)
-	return w.State{Name: s.config.Name, Self: p.member.ID, Epoch: p.epoch, Channels: s.config.Channels, Members: members, IdentityUID: p.identity, ServerRole: role, CanClaimOwner: canClaim, CanManageChannels: role == "owner" && s.config.ChannelStore != nil, CanConfigureChannelAudio: role == "owner" && s.config.ChannelStore != nil}
+	channels := s.config.Channels
+	if !p.watch.AllChannels {
+		channels = nil
+		for _, ch := range s.config.Channels {
+			if ch.ID == p.member.Channel {
+				channels = append(channels, ch)
+			}
+		}
+	}
+	return w.State{Name: s.config.Name, Self: p.member.ID, Epoch: p.epoch, Channels: channels, Members: members, IdentityUID: p.identity, ServerRole: role, CanClaimOwner: canClaim, CanManageChannels: role == "owner" && s.config.ChannelStore != nil, CanConfigureChannelAudio: role == "owner" && s.config.ChannelStore != nil, CanWatchResources: true, AllChannels: p.watch.AllChannels, AllMembers: p.watch.AllMembers, DefaultChannel: s.config.Channels[0].ID}
+}
+
+// A scoped snapshot replaces prior resource state. Reliable stream ordering plus
+// a per-session revision avoids a gap between listing and starting the watch.
+func (s *Server) sendStateLocked(p *peer, kind uint8, force bool) {
+	state := s.stateLocked(p)
+	if !force && p.lastState != nil && reflect.DeepEqual(*p.lastState, state) {
+		return
+	}
+	p.revision++
+	state.Revision = p.revision
+	s.enqueueLocked(p, kind, 0, state)
+	// Keep the comparison snapshot immutable and independent of the wire revision.
+	copy := state
+	copy.Revision = 0
+	p.lastState = &copy
 }
 func (s *Server) broadcastLocked(except *peer) {
 	for _, p := range s.peers {
 		if p != except {
-			s.enqueueLocked(p, w.StateKind, 0, s.stateLocked(p))
+			s.sendStateLocked(p, w.StateKind, false)
 		}
 	}
 }

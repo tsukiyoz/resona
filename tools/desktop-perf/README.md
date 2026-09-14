@@ -1,14 +1,14 @@
 # Windows 进程性能采集与对比
 
-独立命令行工具，比较 TeamSpeak、Resona 或其他指定进程组。运行不需要 Go、Node、Python、MSYS2，也不安装服务或修改被测应用。普通桌面进程通常不需要管理员权限；权限拒绝时会报错，不会漏算。
+独立命令行工具，比较 基线应用、Resona 或其他指定进程组。运行不需要 Go、Node、Python、MSYS2，也不安装服务或修改被测应用。普通桌面进程通常不需要管理员权限；权限拒绝时会报错，不会漏算。
 
 ## 最简单的用法
 
 从 GitHub Actions 的 [Desktop performance tools 工作流](https://github.com/tsukiyoz/resona/actions/workflows/desktop-perf.yml) 最近一次成功运行下载 `desktop-perf-win-x64-<commit>`，完整解压到可写目录。工具不在 **Windows build** 应用产物中，两个工作流独立发布，构建提交号可以不同。工具构建只需要 Go；本地交叉编译也可以生成同一工具。
 
-1. 打开 TeamSpeak 和 Resona，让双方进入同样的测试场景。
+1. 打开 基线应用 和 Resona，让双方进入同样的测试场景。
 2. 双击 `compare.cmd`。进程表有 PID、父 PID、线程数和 EXE 名称。
-3. 填写 TeamSpeak 主进程 PID，再填写 `resona-desktop.exe` 的 PID。默认会计入已有子进程，包括 `resona-core.exe`，无需再填一次。
+3. 填写 基线应用 主进程 PID，再填写 `resona-desktop.exe` 的 PID。默认会计入已有子进程，包括 `resona-core.exe`，无需再填一次。
 4. 填写场景名称，例如 `offline-minimized`、`connected-listening` 或 `voice-vad-noise-medium`。不要填写密码或服务器地址。
 5. 有 10 秒准备时间，随后每秒采样一次，共两分钟。最小化场景请将两个客户端都最小化；工具不会恢复窗口、截屏或操作麦克风。
 6. 完成后同目录出现 `perf-日期时间/` 和 `perf-日期时间-report/`。前者含原始 `samples.csv` 和 `capture.json`，后者含 `report.md` 与 `report.json`。
@@ -21,8 +21,8 @@
 
 ```powershell
 .\desktop-perf.exe list
-.\desktop-perf.exe collect --group teamspeak=1234 --group resona=5678 --duration 120s --warmup 10s --interval 1s --scenario offline-minimized --out capture-01
-.\desktop-perf.exe analyze --input capture-01/samples.csv --baseline teamspeak --out report-01
+.\desktop-perf.exe collect --group baseline=1234 --group resona=5678 --duration 120s --warmup 10s --interval 1s --scenario offline-minimized --out capture-01
+.\desktop-perf.exe analyze --input capture-01/samples.csv --baseline baseline --out report-01
 ```
 
 `--group` 可重复使用，也可显式指定多个进程，例如 `--group resona=5678,5679 --children=false`。请检查采集开始时打印的进程名单和 `capture.json`；辅助进程不一定是主进程后代，例如某些共享浏览器或系统服务，必须人工确认归属，不能仅凭相同 EXE 名把其他应用的进程全部计入。
@@ -52,7 +52,7 @@ CPU 和 I/O 的 P95 是按持续时间加权的**采样间隔平均速率**，�
 分析器可在 Windows、macOS、Linux 运行。继续使用仓库原有 `tools/desktop-metrics.c` 采集 macOS；指定原 CSV 中的进程归属：
 
 ```sh
-go run ./tools/desktop-perf analyze --input /tmp/mac.csv --group teamspeak=1234 --group resona=5678,5679 --baseline teamspeak --out /tmp/mac-report
+go run ./tools/desktop-perf analyze --input /tmp/mac.csv --group baseline=1234 --group resona=5678,5679 --baseline baseline --out /tmp/mac-report
 ```
 
 额外的未选中进程被忽略，所有指定 PID 必须存在。旧格式没有进程创建时间或采集完成标记，报告会明确提示无法验证 PID 复用及是否完整结束。保留原采集记录作为旁证。
@@ -70,7 +70,7 @@ Windows CSV 自带进程组，不再接受 `--group`。请把 Windows CSV 与同
 - 每个场景至少做三次独立采集，并交换启动顺序；短时间很低的 CPU 数值不要只看倍数。
 - 两者同时运行适合静置对比。语音互测可能产生设备竞争和回声反馈，需相同录音输入、独立可控场景；进程资源结果不等于音质或游戏体验结论。
 
-工具只读取进程，不会自动连接 TS3 或进入频道。涉及用户服务器的测试仍须遵守仓库要求，只在 Resona 专用测试频道进行。
+工具只读取进程，不会自动连接 服务器 或进入频道。涉及用户服务器的测试仍须遵守仓库要求，只在 Resona 专用测试频道进行。
 
 ## 开发与验证
 

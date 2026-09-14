@@ -85,6 +85,10 @@ func (s *Service) connectServerLocked(id, password string, remember bool, expect
 		s.mu.Unlock()
 		return Workspace{}, errors.New("服务器连接目标已更改，请重新连接")
 	}
+	if err := ValidateServerTrust(profile); err != nil {
+		s.mu.Unlock()
+		return Workspace{}, err
+	}
 
 	s.stopMicrophoneTestLocked()
 	s.generation++
@@ -94,6 +98,7 @@ func (s *Service) connectServerLocked(id, password string, remember bool, expect
 	s.connectCancel = cancel
 	s.connectDone = done
 	s.state.Session = Session{
+		Protocol:   profile.Protocol,
 		ID:         rand.Text(),
 		Mode:       "connecting",
 		Nickname:   profile.Nickname,
@@ -189,7 +194,7 @@ func (s *Service) applyRemoteState(generation uint64, remote RemoteState) {
 		s.state.Session.Error = remote.Error
 	}
 	s.state.Channels = cloneChannels(remote.Channels)
-	s.state.Users = reconcileUserPlayback(s.state.Users, remote.Users)
+	s.state.Users = s.reconcileScopedUserPlayback(remote.Users, remote.MemberSyncState == "limited")
 	s.syncUserPlaybackLocked()
 	var connection RemoteConnection
 	var voice voiceEngine

@@ -39,7 +39,7 @@ func (c shutdownConnector) Connect(context.Context, client.ServerProfile, string
 
 func shutdownService(t *testing.T, connection *shutdownConnection) *client.Service {
 	t.Helper()
-	s, err := client.NewWithConnector(&memoryProfiles{profiles: []client.ServerProfile{{ID: "test", Name: "Test", Address: "example.invalid", Nickname: "Tester"}}}, shutdownConnector{connection})
+	s, err := client.NewWithConnector(&memoryProfiles{profiles: []client.ServerProfile{{Protocol: "resona-noise", ServerPublicKey: "abababababababababababababababababababababababababababababababab", ID: "test", Name: "Test", Address: "example.invalid", Nickname: "Tester"}}}, shutdownConnector{connection})
 	if err != nil {
 		t.Fatal(err)
 	}

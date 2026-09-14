@@ -1,107 +1,40 @@
-# Experimental native wire protocol
+# Resona 应用协议
 
-2026-09-14: CreateChannel field 3, UpdateChannel/Channel field 4 carry `bitrate`
-in bits/second; State field 10 is `can_configure_channel_audio`. Positive values
-are 16000..64000 in steps of 1000. Zero creates at 32000, preserves the old value
-on update, and means legacy 48000 in snapshots/stores. Voice framing and protocol
-versions are unchanged. This is a client encoder target, not congestion control
-or a server-enforced limit; older clients continue encoding at their original
-rate. See [ADR-0024](adr/0024-channel-audio-quality.md).
+唯一传输为 [Noise UDP](noise-protocol.md)，版本 `resona-noise-exp-5` / `RN05`。开发版客户端与服务端需匹配升级，不进行旧协议回退。
 
-2026-09-14: this document describes the QUIC candidate and shared application
-messages. The default server now uses [Noise UDP](noise-protocol.md); voice and
-Protobuf application bodies are shared, but transport framing and trust differ.
+## 控制消息
 
-QUIC v1, TLS 1.3, ALPN `resona-exp-3`, default UDP port 9988. One client-opened
-bidirectional stream carries reliable control; QUIC DATAGRAM carries voice.
-This is not HTTP/3. Datagram negotiation is mandatory; 0-RTT commands are disabled.
+可靠流上每帧为 `length:u32 big-endian | Protobuf Frame`。Frame 包含 kind、request 和 body；长度上限 65536 字节，body 按 kind 解码。命令 request 非零；事件 request 为零。普通命令由 Reply 表示服务端处理结果，不能把传输 ACK 当作业务成功。
 
-## Control
+Schema 在 `internal/nativewire/pb/control.proto`，用 `make generate` 生成 Go 文件，正常构建不需要 protoc。保留字段编号，删除字段时 reserve，不复用编号。多字节语音头用大端序，Protobuf 使用其标准编码。
 
-Identity is mandatory: Hello includes Ed25519 public key and a signature bound
-to this encrypted transport session. State includes the recipient's identityUID,
-serverRole and canClaimOwner. ClaimOwner kind 9 has its own `{token}` protobuf
-body and a nonzero request ID. Server-side identity verification and ownership
-checks are authoritative; see ADR-0022 for exact proof and persistence rules.
+| kind | 用途 |
+| --- | --- |
+| 1 / 2 | Hello / Welcome |
+| 3 | 带 revision 的资源状态 |
+| 4 / 5 / 6 | 移动频道 / 频道聊天 / 本人静音状态 |
+| 7 / 8 | 命令结果 / 收到聊天 |
+| 9 | 所有者认领 |
+| 10 / 11 / 12 | 创建 / 编辑 / 删除频道 |
+| 13 | 原子替换 List+Watch 关注范围 |
 
-Frame: 4-byte big-endian length followed by 1-65536 bytes of Protobuf Frame.
-Schema: `internal/nativewire/pb/control.proto`. Frame fields are kind (enum, 1),
-request (uint32, 2), body (bytes, 3). Body contains the selected protobuf message;
-it has no additional frame prefix. Empty bodies are valid for default-valued
-messages such as a successful Reply. Application Go structs are mapped explicitly
-at the wire boundary and are not the schema.
+Hello 的 Ed25519 签名绑定 Noise 握手和登录参数，验证成功后才加入成员。服务器角色目前为 owner/member；owner 可管理频道。频道数量与并发成员上限均为 64，服务端限制命令与发言速率。
 
-Decoding bounds recursion, validates numeric ranges before narrowing, and limits
-snapshot members/channels before allocating repeated message objects. Unknown
-fields in known messages are discarded; deprecated group fields in State are
-rejected. New fields require safe defaults; field numbers cannot be reused.
-Schema compatibility does not imply compatibility of new commands/semantics.
-The CBOR-to-Protobuf change requires matching client/server versions; no fallback.
+Watch 选择全部频道、全部成员，全部成员要求全部频道。当前频道成员、音质、本人身份和权限始终存在。初始快照在 Reply 前排入同一可靠流，随后递增 revision，避免 list/watch 间隙。当前是范围集合快照，不是逐对象 delta。Watch 等待回复超时不直接关闭健康语音连接；被取消的部分控制写仍关闭连接。
 
-| Kind | Value | Body |
-| --- | --- | --- |
-| Hello | 1 | Hello, request 0 |
-| Welcome | 2 | initial State, request 0 |
-| State | 3 | State |
-| Move | 4 | Command |
-| Chat | 5 | Command |
-| VoiceState | 6 | Command |
-| Reply | 7 | Reply, matching request ID |
-| Message | 8 | Message |
-| ClaimOwner | 9 | ClaimOwner {token} |
-| CreateChannel | 10 | CreateChannel {name, description} |
-| UpdateChannel | 11 | UpdateChannel {id, name, description} |
-| DeleteChannel | 12 | DeleteChannel {id} |
+## 语音包
 
-Channel, Member and Command fields are defined in the schema. Unused command
-fields use proto3 defaults. VoiceState sets both flags, not a partial patch.
-Reply codes: 0 success, 1 rejected, 2 wrong channel, 3 rate limited.
-Channel management additionally uses 4 permission denied, 5 channel not empty,
-6 default channel, 7 persistence failed/unconfirmed, 8 channel count/ID exhausted.
-State field 9 (`can_manage_channels`) defaults false; only owners on a configured
-persistent server receive true. Commands 10-12 require server-side owner checks.
-The first channel in the ordered state is the default channel. These additive
-changes retain the current transport versions; no voice header fields change.
-QUIC application close code 2 means authentication failure.
+每个数据报一帧 Opus，20ms、48kHz、单声道。服务端不接受客户端声称的发送者身份或任意目标频道。
 
-Welcome follows authentication and member registration. Snapshots are pushed on
-changes. Move state precedes its success reply. Chat names an explicit target and
-is rejected if different from the sender's current channel; no sender echo (local
-pending row is confirmed by Reply). Text limit is 8192 UTF-8 bytes; nickname limit
-30 code points; password limit 1024 bytes.
+| 方向 | 字段 |
+| --- | --- |
+| 上行 7 字节 | end:u8、发送者 epoch:u32、sequence:u16 |
+| 下行 13 字节 | end:u8、接收者 epoch:u32、sequence:u16、sender:u16、发送者 epoch:u32 |
 
-Commands serialize per connection with nonreused uint32 request IDs and 8-second
-deadlines. Cancellation after starting transmission closes the connection to
-avoid continuing with uncertain state; it cannot undo an accepted command.
-There is no exactly-once promise. Client session generations isolate old callbacks.
+随后为最多 1024 字节的 Opus。end 只能为 0/1；结束包正文为空，普通包必须非空。epoch 非零，用于拒绝切频道前的迟到包。加密层另有 5 字节认证头和 16 字节 tag，因此 Opus 之外为上行 28、下行 34 字节，不含 UDP/IP。
 
-## Voice
+语音不可靠重传；发送环满时覆盖旧语音。可靠控制不会采用这一丢弃策略。原生成员提示由客户端比较每次已验证的当前频道成员快照生成，不新增语音字段。
 
-All integers are big-endian. Upload header is 7 bytes:
-`flags:u8 | senderEpoch:u32 | sequence:u16 | Opus`.
-Download header is 13 bytes:
-`flags:u8 | recipientEpoch:u32 | sequence:u16 | senderID:u16 | senderEpoch:u32 | Opus`.
-These sizes exclude QUIC, TLS, UDP and IP overhead.
+## 当前限制
 
-Flags: 0 audio, 1 end. Audio payload is 1-1024 bytes; end has no payload. Codec is
-fixed Opus mono, 48 kHz, 20 ms. Oversized packets are rejected, never truncated.
-The server derives identity/channel from the connection, rejects wrong epochs
-or muted senders and forwards only to other non-deafened members of the same
-channel. Moving increments the member's epoch. Receivers check both recipient
-and sender epochs against current membership, dropping stale channel audio.
-Control and datagrams can arrive in different orders; unmatched voice is dropped.
-
-## Bounds and shutdown
-
-Per connection: 16 control messages and four voice packets queued. Control writes
-have a 5-second deadline; overflow disconnects slow consumers. Voice overflow
-replaces the oldest queued server voice; the client capture queue drops arrivals.
-Locally queued packets older than 100 ms are discarded.
-SendDatagram may block internally in quic-go, so dedicated workers call it, with
-a 250 ms watchdog that closes stalled connections. These bounds do not guarantee
-end-to-end latency or remove already-sent packets.
-
-Per-client token buckets: 10 commands/s (burst 20), 60 voice packets/s (burst 10).
-Handshake timeout 5 seconds, idle timeout 30 seconds, keepalive 10 seconds.
-Shutdown closes connections and joins workers. Accepted-session caps do not bound
-every handshake allocation; public deployment requires load and abuse testing.
+没有自动重连、端点迁移、拥塞估计或自适应码率。服务端使用逐跳加密，具有解密内容的能力。独立安全审查、网络损伤测试与长期设备测试仍待完成。

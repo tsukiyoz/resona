@@ -5,7 +5,6 @@ use serde_json::Value;
 #[serde(rename_all = "camelCase", default)]
 pub struct ServerProfile {
     pub protocol: String,
-    pub certificate_fingerprint: String,
     pub server_public_key: String,
     pub id: String,
     pub name: String,
@@ -14,9 +13,16 @@ pub struct ServerProfile {
     pub skip_password_storage: bool,
 }
 
+impl ServerProfile {
+    pub fn supports_connection(&self) -> bool {
+        self.protocol == "resona-noise"
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Session {
+    pub protocol: String,
     pub id: String,
     #[serde(rename = "sendingMessageID")]
     pub sending_message_id: String,
@@ -69,6 +75,9 @@ pub struct Channel {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct User {
+    pub voice_state_known: bool,
+    pub input_muted: bool,
+    pub output_muted: bool,
     pub instance: String,
     #[serde(default = "default_playback_volume")]
     pub playback_volume: u16,
@@ -270,5 +279,21 @@ mod tests {
         let voice: VoiceState = serde_json::from_str("{}").unwrap();
         assert!(voice.speaking_client_ids.is_empty());
         assert!(!voice.local_speaking);
+    }
+
+    #[test]
+    fn obsolete_bookmarks_never_enter_password_flow() {
+        for protocol in ["", "unsupported"] {
+            let profile = super::ServerProfile {
+                protocol: protocol.into(),
+                ..Default::default()
+            };
+            assert!(!profile.supports_connection());
+        }
+        let profile = super::ServerProfile {
+            protocol: "resona-noise".into(),
+            ..Default::default()
+        };
+        assert!(profile.supports_connection());
     }
 }

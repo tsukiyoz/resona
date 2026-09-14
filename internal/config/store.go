@@ -42,15 +42,22 @@ func (s *Store) Load() ([]client.ServerProfile, error) {
 	if info.Size() > 1024*1024 {
 		return nil, fmt.Errorf("read %s: server profiles exceed the 1 MiB limit", s.path)
 	}
-	var profiles []client.ServerProfile
+	var stored []struct {
+		client.ServerProfile
+		RetiredTrust json.RawMessage `json:"certificateFingerprint,omitempty"`
+	}
 	decoder := json.NewDecoder(io.LimitReader(file, 1024*1024+1))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&profiles); err != nil {
+	if err := decoder.Decode(&stored); err != nil {
 		return nil, fmt.Errorf("read %s: %w", s.path, err)
 	}
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
 		return nil, fmt.Errorf("read %s: unexpected trailing data", s.path)
+	}
+	profiles := make([]client.ServerProfile, 0, len(stored))
+	for _, entry := range stored {
+		profiles = append(profiles, entry.ServerProfile)
 	}
 	if err := validate(profiles); err != nil {
 		return nil, fmt.Errorf("read %s: %w", s.path, err)
@@ -111,8 +118,13 @@ func validate(profiles []client.ServerProfile) error {
 			return errors.New("server profiles require unique nonempty IDs")
 		}
 		ids[profile.ID] = true
-		if err := client.ValidateProfile(profile); err != nil {
-			return err
+		// Obsolete bookmarks remain editable/deletable, but cannot connect.
+		// Validate current records strictly; never discard the whole file merely
+		// because it also contains a bookmark from an unsupported version.
+		if profile.Protocol == "resona-noise" {
+			if err := client.ValidateProfile(profile); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

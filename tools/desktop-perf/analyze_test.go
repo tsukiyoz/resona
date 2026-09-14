@@ -21,7 +21,7 @@ func fixture() string {
 			id       int
 			group    string
 			cpu, mem float64
-		}{{1, "teamspeak", .1, 40}, {2, "resona", .02, 10}, {3, "resona", .03, 20}} {
+		}{{1, "baseline", .1, 40}, {2, "resona", .02, 10}, {3, "resona", .03, 20}} {
 			_ = w.Write([]string{fmt.Sprint(t), p.group, fmt.Sprint(p.id), "123456", fmt.Sprint(100 + float64(t)*p.cpu), fmt.Sprint(p.mem * 1048576), fmt.Sprint(p.mem * 1048576), fmt.Sprint(t * 1024), "0", "0", "10", "2"})
 		}
 	}
@@ -37,16 +37,20 @@ func near(t *testing.T, got, want float64) {
 }
 
 func TestGroupTotalsAndDifferences(t *testing.T) {
-	r, err := analyze(strings.NewReader(fixture()), nil, "teamspeak", 0)
+	r, err := analyze(strings.NewReader(fixture()), nil, "baseline", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if r.Seconds != 3 || r.Samples != 3 || len(r.Processes) != 3 {
 		t.Fatalf("bad report %+v", r)
 	}
-	near(t, r.Groups[0].Metrics["cpu_one_core"].Mean, 5)
-	near(t, r.Groups[0].Metrics["private_commit"].Mean, 30)
-	near(t, r.Groups[0].Metrics["io_read"].Mean, 2)
+	for _, group := range r.Groups {
+		if group.Name == "resona" {
+			near(t, group.Metrics["cpu_one_core"].Mean, 5)
+			near(t, group.Metrics["private_commit"].Mean, 30)
+			near(t, group.Metrics["io_read"].Mean, 2)
+		}
+	}
 	for _, d := range r.Differences {
 		switch d.Metric {
 		case "private_commit":
@@ -80,21 +84,21 @@ func TestRejectCorruptOrIncomparableCSV(t *testing.T) {
 		"nan":           strings.Replace(base, "100,", "NaN,", 1),
 		"negative":      strings.Replace(base, "100,", "-1,", 1),
 		"counter reset": strings.Replace(base, "100.1,", "99,", 1),
-		"identity":      strings.Replace(base, "1,teamspeak,1,123456", "1,teamspeak,1,654321", 1),
-		"group":         strings.Replace(base, "1,teamspeak,1", "1,other,1", 1),
-		"timestamp":     strings.Replace(base, "1,teamspeak,1", "0,teamspeak,1", 1),
+		"identity":      strings.Replace(base, "1,baseline,1,123456", "1,baseline,1,654321", 1),
+		"group":         strings.Replace(base, "1,baseline,1", "1,other,1", 1),
+		"timestamp":     strings.Replace(base, "1,baseline,1", "0,baseline,1", 1),
 		"missing row":   strings.Join(strings.Split(strings.TrimSpace(base), "\n")[:9], "\n"),
-		"unaligned":     strings.Replace(base, "1,teamspeak,1", "1.2,teamspeak,1", 1),
+		"unaligned":     strings.Replace(base, "1,baseline,1", "1.2,baseline,1", 1),
 		"truncated row": base + "4,resona,3\n",
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := analyze(strings.NewReader(input), nil, "teamspeak", 0); err == nil {
+			if _, err := analyze(strings.NewReader(input), nil, "baseline", 0); err == nil {
 				t.Fatal("accepted invalid CSV")
 			}
 		})
 	}
 	for _, skip := range []float64{-1, math.NaN(), math.Inf(1), 3} {
-		if _, err := analyze(strings.NewReader(base), nil, "teamspeak", skip); err == nil {
+		if _, err := analyze(strings.NewReader(base), nil, "baseline", skip); err == nil {
 			t.Fatal("accepted invalid trim")
 		}
 	}
@@ -125,7 +129,7 @@ func TestCLIReportAndNoOverwrite(t *testing.T) {
 	if err := os.WriteFile(input, []byte(fixture()), 0600); err != nil {
 		t.Fatal(err)
 	}
-	args := []string{"analyze", "--input", input, "--out", filepath.Join(dir, "report"), "--baseline", "teamspeak"}
+	args := []string{"analyze", "--input", input, "--out", filepath.Join(dir, "report"), "--baseline", "baseline"}
 	if err := run(context.Background(), args, io.Discard); err != nil {
 		t.Fatal(err)
 	}
@@ -147,11 +151,11 @@ func TestCLIReportAndNoOverwrite(t *testing.T) {
 }
 
 func TestMetadataRejectsTruncatedCapture(t *testing.T) {
-	r, err := analyze(strings.NewReader(fixture()), nil, "teamspeak", 0)
+	r, err := analyze(strings.NewReader(fixture()), nil, "baseline", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := captureMeta{Schema: 1, Samples: 3, Processes: []processInfo{{PID: 1, Group: "teamspeak", Creation: "123456"}, {PID: 2, Group: "resona", Creation: "123456"}, {PID: 3, Group: "resona", Creation: "123456"}}}
+	m := captureMeta{Schema: 1, Samples: 3, Processes: []processInfo{{PID: 1, Group: "baseline", Creation: "123456"}, {PID: 2, Group: "resona", Creation: "123456"}, {PID: 3, Group: "resona", Creation: "123456"}}}
 	if err := r.validateMeta(m); err != nil {
 		t.Fatal(err)
 	}

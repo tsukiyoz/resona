@@ -36,7 +36,7 @@ func TestNewSelectionAndNavigationCancelObsoleteDetails(t *testing.T) {
 	for _, next := range []string{"GetChannelDetails", "SelectChannel", "CancelDetails"} {
 		t.Run(next, func(t *testing.T) {
 			connection := &blockingDetails{started: make(chan struct{}), canceled: make(chan struct{})}
-			service, err := client.NewWithConnector(&memoryProfiles{profiles: []client.ServerProfile{{ID: "test", Name: "Test", Address: "example.invalid", Nickname: "Tester"}}}, detailsConnector{connection})
+			service, err := client.NewWithConnector(&memoryProfiles{profiles: []client.ServerProfile{{Protocol: "resona-noise", ServerPublicKey: "abababababababababababababababababababababababababababababababab", ID: "test", Name: "Test", Address: "example.invalid", Nickname: "Tester"}}}, detailsConnector{connection})
 			if err != nil {
 				t.Fatal(err)
 			}

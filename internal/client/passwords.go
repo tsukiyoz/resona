@@ -24,15 +24,9 @@ func passwordKey(profile ServerProfile) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// Preserve historical TS3 keys, while separating native protocol and trust changes.
+// Bind passwords to both the endpoint and authenticated server key.
 func ProfileDestination(p ServerProfile) string {
-	if p.Protocol == "" || p.Protocol == "ts3" {
-		return p.Address
-	}
-	if p.Protocol == "resona-noise" {
-		return p.Protocol + "\x00" + p.Address + "\x00" + p.ServerPublicKey
-	}
-	return p.Protocol + "\x00" + p.Address + "\x00" + p.CertificateFingerprint
+	return p.Protocol + "\x00" + p.Address + "\x00" + p.ServerPublicKey
 }
 
 func (s *Service) GetServerCredentialStatus(id string) (CredentialStatus, error) {
@@ -43,6 +37,9 @@ func (s *Service) GetServerCredentialStatus(id string) (CredentialStatus, error)
 	s.mu.Unlock()
 	if !ok {
 		return CredentialStatus{}, errors.New("服务器书签不存在")
+	}
+	if err := ValidateServerTrust(profile); err != nil {
+		return CredentialStatus{}, err
 	}
 	status := CredentialStatus{Remember: !profile.SkipPasswordStorage}
 	if s.passwords == nil {
@@ -82,6 +79,9 @@ func (s *Service) connectWithCredentials(id, password string, remember, saved bo
 	if !exists {
 		return Workspace{}, errors.New("服务器书签不存在")
 	}
+	if err := ValidateServerTrust(target); err != nil {
+		return Workspace{}, err
+	}
 	preparedPassword, err := s.prepareCredentials(id, ProfileDestination(target), password, remember, saved)
 	if err != nil {
 		return Workspace{}, err
@@ -110,6 +110,9 @@ func (s *Service) prepareCredentials(id, expectedAddress, password string, remem
 	s.mu.Unlock()
 	if !ok {
 		return "", errors.New("服务器书签不存在")
+	}
+	if err := ValidateServerTrust(profile); err != nil {
+		return "", err
 	}
 	if ProfileDestination(profile) != expectedAddress {
 		return "", errors.New("服务器连接目标已更改，请重新连接")

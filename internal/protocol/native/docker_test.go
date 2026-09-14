@@ -10,7 +10,7 @@ import (
 	"github.com/tsukiyoz/resona/internal/client"
 )
 
-// Opt-in smoke test for our local Compose instance, never the user's TS3 server.
+// Opt-in smoke test for our local Compose instance, never the user's 服务器 server.
 func TestDockerNoiseSmoke(t *testing.T) {
 	address := os.Getenv("RESONA_TEST_NOISE_ADDRESS")
 	if address == "" {

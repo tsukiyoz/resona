@@ -24,6 +24,7 @@ enum Kind {
   KIND_CREATE_CHANNEL = 10;
   KIND_UPDATE_CHANNEL = 11;
   KIND_DELETE_CHANNEL = 12;
+  KIND_WATCH_RESOURCES = 13;
 }
 message Hello {
   string nickname = 1;
@@ -35,6 +36,9 @@ message ClaimOwner { string token = 1; }
 message CreateChannel { string name = 1; string description = 2; uint32 bitrate = 3; }
 message UpdateChannel { uint32 id = 1; string name = 2; string description = 3; uint32 bitrate = 4; }
 message DeleteChannel { uint32 id = 1; }
+// Atomically replace interest and enqueue its initial snapshot before the reply.
+// Current-channel voice state and the caller's permissions are always included.
+message WatchResources { bool all_channels = 1; bool all_members = 2; }
 message Channel {
   uint32 id = 1; // Application range: 1..65535.
   string name = 2;
@@ -61,6 +65,11 @@ message State {
   bool can_claim_owner = 8;
   bool can_manage_channels = 9;
   bool can_configure_channel_audio = 10;
+  bool can_watch_resources = 11;
+  uint64 revision = 12;
+  bool all_channels = 13;
+  bool all_members = 14;
+  uint32 default_channel = 15;
 }
 // VoiceState sets both flags; it is not a partial update. Missing flags mean false.
 message Command {

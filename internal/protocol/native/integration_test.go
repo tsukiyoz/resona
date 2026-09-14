@@ -2,13 +2,7 @@ package native
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/hex"
-	"math/big"
 	"strings"
 	"sync"
 	"testing"
@@ -22,32 +16,22 @@ import (
 	"github.com/tsukiyoz/resona/internal/server"
 )
 
-func startServer(t *testing.T, useNoise ...bool) (client.ServerProfile, context.CancelFunc, <-chan error) {
-	return startServerOwned(t, nil, useNoise...)
+func startServer(t *testing.T) (client.ServerProfile, context.CancelFunc, <-chan error) {
+	return startServerOwned(t, nil)
 }
 
-func startServerOwned(t *testing.T, ownership *server.Ownership, useNoise ...bool) (client.ServerProfile, context.CancelFunc, <-chan error) {
-	return startServerConfigured(t, server.Config{Name: "test", Password: "test-password", Channels: []w.Channel{{ID: 1, Name: "one"}, {ID: 2, Name: "two"}}, Ownership: ownership}, useNoise...)
+func startServerOwned(t *testing.T, ownership *server.Ownership) (client.ServerProfile, context.CancelFunc, <-chan error) {
+	return startServerConfigured(t, server.Config{Name: "test", Password: "test-password", Channels: []w.Channel{{ID: 1, Name: "one"}, {ID: 2, Name: "two"}}, Ownership: ownership})
 }
 
-func startServerConfigured(t *testing.T, cfg server.Config, useNoise ...bool) (client.ServerProfile, context.CancelFunc, <-chan error) {
+func startServerConfigured(t *testing.T, cfg server.Config) (client.ServerProfile, context.CancelFunc, <-chan error) {
 	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	var err error
+	cfg.NoiseKey, err = noiseudp.GenerateKey()
 	if err != nil {
 		t.Fatal(err)
 	}
-	template := &x509.Certificate{SerialNumber: big.NewInt(1), NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
-	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(useNoise) > 0 && useNoise[0] {
-		cfg.NoiseKey, err = noiseudp.GenerateKey()
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	s, err := server.Listen("127.0.0.1:0", cfg, &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}})
+	s, err := server.Listen("127.0.0.1:0", cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,13 +39,8 @@ func startServerConfigured(t *testing.T, cfg server.Config, useNoise ...bool) (c
 	done := make(chan error, 1)
 	go func() { done <- s.Serve(ctx) }()
 	t.Cleanup(cancel)
-	p := client.ServerProfile{Protocol: "resona", Address: s.Addr().String(), Nickname: "test", CertificateFingerprint: w.Fingerprint(der)}
-	if len(cfg.NoiseKey) > 0 {
-		pub, _ := noiseudp.PublicKey(cfg.NoiseKey)
-		p.Protocol = "resona-noise"
-		p.CertificateFingerprint = ""
-		p.ServerPublicKey = hex.EncodeToString(pub)
-	}
+	pub, _ := noiseudp.PublicKey(cfg.NoiseKey)
+	p := client.ServerProfile{Protocol: "resona-noise", Address: s.Addr().String(), Nickname: "test", ServerPublicKey: hex.EncodeToString(pub)}
 	return p, cancel, done
 }
 
@@ -69,12 +48,14 @@ type observer struct {
 	mu       sync.Mutex
 	state    client.RemoteState
 	messages []client.RemoteMessage
+	events   []client.RemoteEvent
 }
 
 func (o *observer) update(s client.RemoteState) {
 	o.mu.Lock()
 	o.state = s
 	o.messages = append(o.messages, s.Messages...)
+	o.events = append(o.events, s.Events...)
 	o.mu.Unlock()
 }
 func (o *observer) snapshot() client.RemoteState { o.mu.Lock(); defer o.mu.Unlock(); return o.state }
@@ -89,6 +70,9 @@ func connectTest(t *testing.T, p client.ServerProfile) (*connection, *observer) 
 	}
 	c := remote.(*connection)
 	t.Cleanup(func() { _ = c.Close() })
+	if err := c.SetResourceInterest(ctx, true, true); err != nil {
+		t.Fatal(err)
+	}
 	return c, o
 }
 func eventually(t *testing.T, predicate func() bool) {
@@ -102,17 +86,8 @@ func eventually(t *testing.T, predicate func() bool) {
 	}
 	t.Fatal("condition did not become true")
 }
-func TestNativeQUICChatVoiceIsolationAndShutdown(t *testing.T) {
-	for _, mode := range []bool{false, true} {
-		name := "quic"
-		if mode {
-			name = "noise"
-		}
-		t.Run(name, func(t *testing.T) { testChatVoiceIsolationAndShutdown(t, mode) })
-	}
-}
-func testChatVoiceIsolationAndShutdown(t *testing.T, useNoise bool) {
-	p, stop, done := startServer(t, useNoise)
+func TestNativeChatVoiceIsolationAndShutdown(t *testing.T) {
+	p, stop, done := startServer(t)
 	a, ao := connectTest(t, p)
 	p.Nickname = "B"
 	b, bo := connectTest(t, p)
@@ -279,7 +254,7 @@ func testChatVoiceIsolationAndShutdown(t *testing.T, useNoise bool) {
 func TestNativeTrustPasswordAndCancelledSetup(t *testing.T) {
 	p, stop, done := startServer(t)
 	defer func() { stop(); <-done }()
-	for _, mode := range []string{"pin", "system", "password", "cancel"} {
+	for _, mode := range []string{"pin", "missing", "password", "cancel"} {
 		t.Run(mode, func(t *testing.T) {
 			q := p
 			password := "test-password"
@@ -287,9 +262,9 @@ func TestNativeTrustPasswordAndCancelledSetup(t *testing.T) {
 			defer cancel()
 			switch mode {
 			case "pin":
-				q.CertificateFingerprint = strings.Repeat("0", 64)
-			case "system":
-				q.CertificateFingerprint = ""
+				q.ServerPublicKey = strings.Repeat("0", 64)
+			case "missing":
+				q.ServerPublicKey = ""
 			case "password":
 				password = "bad"
 			case "cancel":
@@ -307,7 +282,7 @@ func TestNativeTrustPasswordAndCancelledSetup(t *testing.T) {
 }
 
 func TestNoisePasswordRejection(t *testing.T) {
-	p, stop, done := startServer(t, true)
+	p, stop, done := startServer(t)
 	defer func() { stop(); <-done }()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()

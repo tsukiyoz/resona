@@ -1,11 +1,107 @@
 {
   "workspace": {
-    "servers": [{"id":"server-1","name":"Contract","address":"localhost:9987","nickname":"Tester","skipPasswordStorage":true}],
-    "session": {"id":"session-1","sendingMessageID":"message-1","mode":"connected","channelID":"channel-1","nickname":"Tester","serverID":"server-1","serverName":"Contract","identityUID":"identity-1","serverRole":"","canClaimOwner":false,"selfID":"user-1","error":"","switchingChannelID":"channel-2","credentialError":"","memberSyncState":"ready","memberSyncError":"","canManageChannels":false},
-    "channels": [{"kind":"channel","align":"left","repeat":false,"iconID":"1001","iconRef":"icon-ref-1","id":"channel-1","name":"Voice","description":"Contract channel","members":1,"parentID":"parent-1","order":"0","passwordRequired":false,"isDefault":false}],
-    "users": [{"id":"user-1","instance":"member-1","playbackVolume":130,"playbackMuted":true,"nickname":"Tester","channelID":"channel-1","self":true}],
-    "messages": [{"authorID":"user-1","status":"sending","error":"","id":"message-1","channelID":"channel-1","author":"Tester","text":"Contract message","createdAt":"2026-09-08T00:00:00Z"}],
-    "notifications": [{"id":"notification-1","kind":"connected","channelID":"channel-1","createdAt":"2026-09-08T00:00:00Z"}]
+    "servers": [
+      {
+        "id": "server-1",
+        "name": "Contract",
+        "address": "localhost:9988",
+        "nickname": "Tester",
+        "skipPasswordStorage": true,
+        "protocol": "resona-noise",
+        "serverPublicKey": "abababababababababababababababababababababababababababababababab"
+      }
+    ],
+    "session": {
+      "id": "session-1",
+      "sendingMessageID": "message-1",
+      "mode": "connected",
+      "channelID": "channel-1",
+      "nickname": "Tester",
+      "serverID": "server-1",
+      "serverName": "Contract",
+      "identityUID": "identity-1",
+      "serverRole": "",
+      "canClaimOwner": false,
+      "selfID": "user-1",
+      "error": "",
+      "switchingChannelID": "channel-2",
+      "credentialError": "",
+      "memberSyncState": "ready",
+      "memberSyncError": "",
+      "canManageChannels": false
+    },
+    "channels": [
+      {
+        "kind": "channel",
+        "align": "left",
+        "repeat": false,
+        "iconID": "1001",
+        "iconRef": "icon-ref-1",
+        "id": "channel-1",
+        "name": "Voice",
+        "description": "Contract channel",
+        "members": 1,
+        "parentID": "parent-1",
+        "order": "0",
+        "passwordRequired": false,
+        "isDefault": false
+      }
+    ],
+    "users": [
+      {
+        "id": "user-1",
+        "instance": "member-1",
+        "playbackVolume": 130,
+        "playbackMuted": true,
+        "nickname": "Tester",
+        "channelID": "channel-1",
+        "self": true
+      }
+    ],
+    "messages": [
+      {
+        "authorID": "user-1",
+        "status": "sending",
+        "error": "",
+        "id": "message-1",
+        "channelID": "channel-1",
+        "author": "Tester",
+        "text": "Contract message",
+        "createdAt": "2026-09-08T00:00:00Z"
+      }
+    ],
+    "notifications": [
+      {
+        "id": "notification-1",
+        "kind": "connected",
+        "channelID": "channel-1",
+        "createdAt": "2026-09-08T00:00:00Z"
+      }
+    ]
   },
-  "voice": {"enabled":true,"muted":true,"deafened":false,"inputDeviceID":"input-1","outputDeviceID":"output-1","volume":75,"inputGain":150,"active":true,"channelCodec":4,"error":"","busy":false,"speakingClientIDs":["42"],"localSpeaking":false,"activationMode":"","vadThresholdDB":0,"noiseSuppression":"","echoCancellation":false,"echoSuppression":false,"ducking":false,"pushToTalkPressed":false,"inputLevelDB":0}
+  "voice": {
+    "enabled": true,
+    "muted": true,
+    "deafened": false,
+    "inputDeviceID": "input-1",
+    "outputDeviceID": "output-1",
+    "volume": 75,
+    "inputGain": 150,
+    "active": true,
+    "channelCodec": 4,
+    "error": "",
+    "busy": false,
+    "speakingClientIDs": [
+      "42"
+    ],
+    "localSpeaking": false,
+    "activationMode": "",
+    "vadThresholdDB": 0,
+    "noiseSuppression": "",
+    "echoCancellation": false,
+    "echoSuppression": false,
+    "ducking": false,
+    "pushToTalkPressed": false,
+    "inputLevelDB": 0
+  }
 }

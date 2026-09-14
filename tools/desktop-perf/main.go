@@ -72,9 +72,9 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
 		fmt.Fprintln(out, `desktop-perf compare
 desktop-perf list
-desktop-perf collect --group teamspeak=1234 --group resona=5678 --duration 120s --warmup 10s --scenario offline-minimized --out capture
-desktop-perf analyze --input capture/samples.csv --baseline teamspeak --out report
-For old macOS CSV, add --group teamspeak=1234 --group resona=5678,5679 to analyze.
+desktop-perf collect --group baseline=1234 --group resona=5678 --duration 120s --warmup 10s --scenario offline-minimized --out capture
+desktop-perf analyze --input capture/samples.csv --baseline baseline --out report
+For old macOS CSV, add --group baseline=1234 --group resona=5678,5679 to analyze.
 Capture/report directories must be new. Collect is Windows-only; analyze is cross-platform.`)
 		return nil
 	}

@@ -28,7 +28,7 @@ func thumbnail(t *testing.T, size int) string {
 }
 
 func testKey() Key {
-	return Key{Protocol: "ts3", ServerUID: "server", Address: "example:9987", Endpoint: "127.0.0.1:9987", IdentityUID: "user", IconID: "1000", TransformVersion: "v1"}
+	return Key{Protocol: "resona-noise", ServerUID: "server", Address: "example:9987", Endpoint: "127.0.0.1:9987", IdentityUID: "user", IconID: "1000", TransformVersion: "v1"}
 }
 
 func testDir(t *testing.T) string { return filepath.Join(t.TempDir(), "resona", "icons") }

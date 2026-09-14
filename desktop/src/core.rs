@@ -26,6 +26,8 @@ pub enum Incoming {
         result: Result<Value, String>,
     },
     Workspace(Value),
+    ResourceSync(Value),
+    Notifications(Value),
     Voice(Value),
     MicrophoneTest(Value),
     ProtocolError(String),
@@ -301,6 +303,8 @@ fn parse_line(line: &str) -> Result<Incoming> {
         let result = value.get("result").cloned().unwrap_or(Value::Null);
         return match event {
             "workspace" => Ok(Incoming::Workspace(result)),
+            "resourceSync" => Ok(Incoming::ResourceSync(result)),
+            "notifications" => Ok(Incoming::Notifications(result)),
             "voice" => Ok(Incoming::Voice(result)),
             "microphoneTest" => Ok(Incoming::MicrophoneTest(result)),
             _ => Err(anyhow!("核心返回了未知事件：{event}")),

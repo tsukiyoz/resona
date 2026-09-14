@@ -13,18 +13,21 @@ import (
 type memoryPasswords struct {
 	mu                        sync.Mutex
 	values                    map[string]string
+	reads                     int
 	setErr, getErr, deleteErr error
 }
 
 func (p *memoryPasswords) Has(key string) (bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.reads++
 	_, found := p.values[key]
 	return found, nil
 }
 func (p *memoryPasswords) Get(key string) (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.reads++
 	if p.getErr != nil {
 		return "", p.getErr
 	}
@@ -56,8 +59,8 @@ func (p *memoryPasswords) Delete(key string) error {
 func passwordService(t *testing.T, connector RemoteConnector) (*Service, *memoryPasswords, *memoryStore) {
 	t.Helper()
 	profiles := &memoryStore{profiles: []ServerProfile{
-		{ID: "one", Name: "One", Address: "one.invalid", Nickname: "Tester"},
-		{ID: "two", Name: "Two", Address: "two.invalid", Nickname: "Tester"},
+		{Protocol: "resona-noise", ServerPublicKey: "abababababababababababababababababababababababababababababababab", ID: "one", Name: "One", Address: "one.invalid", Nickname: "Tester"},
+		{Protocol: "resona-noise", ServerPublicKey: "abababababababababababababababababababababababababababababababab", ID: "two", Name: "Two", Address: "two.invalid", Nickname: "Tester"},
 	}}
 	passwords := &memoryPasswords{values: map[string]string{}}
 	s, err := NewWithPasswordStore(profiles, connector, passwords)
