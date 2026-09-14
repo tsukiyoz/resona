@@ -19,5 +19,10 @@
 | [0015](0015-gui-maintenance-convergence.md) | GUI 开发收敛与冻结 Wails 基线 | Accepted（可逆维护策略） |
 | [0018](0018-native-quic.md) | 原生 QUIC 服务端与可选客户端适配器 | Accepted（实验） |
 | [0019](0019-noise-udp.md) | Noise UDP 主实验与显式 QUIC 对照 | Accepted（实验） |
+| [0020](0020-relay-rings-and-background-rekey.md) | 语音环与后台换钥 | Accepted（实验） |
+| [0021](0021-protobuf-control-messages.md) | Protobuf 控制消息 | Accepted（实验） |
+| [0022](0022-native-identity-and-ownership.md) | 原生身份与首位所有者认领 | Accepted（实验） |
+| [0023](0023-channel-management-and-claim-renewal.md) | 持久频道管理与认领码刷新 | Accepted（实验） |
+| [0024](0024-channel-audio-quality.md) | 原生频道音质与编码码率热更新 | Accepted（实验） |
 
 状态可为 Proposed、Accepted、Superseded、Rejected。新增重大决定使用递增编号，注明日期和替代关系。

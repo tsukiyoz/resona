@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -14,6 +15,7 @@ import (
 	"github.com/tsukiyoz/resona/internal/protocol"
 	"github.com/tsukiyoz/resona/internal/protocol/native"
 	"github.com/tsukiyoz/resona/internal/protocol/ts3"
+	"github.com/tsukiyoz/resona/internal/version"
 )
 
 func main() {
@@ -24,6 +26,15 @@ func main() {
 }
 
 func run() error {
+	showVersion := flag.Bool("version", false, "print build version and exit")
+	flag.Parse()
+	if *showVersion {
+		fmt.Println("resona-core", version.Current())
+		return nil
+	}
+	if flag.NArg() != 0 {
+		return fmt.Errorf("unexpected positional arguments")
+	}
 	store, err := config.NewDefault()
 	if err != nil {
 		return fmt.Errorf("cannot open Resona profiles: %w", err)
@@ -32,7 +43,11 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("cannot initialize Resona identity: %w", err)
 	}
-	service, err := client.NewWithPasswordStore(store, protocol.Router{TS3: connector, Native: native.Connector{}}, credentials.New())
+	nativeConnector, err := native.NewDefault()
+	if err != nil {
+		return err
+	}
+	service, err := client.NewWithPasswordStore(store, protocol.Router{TS3: connector, Native: nativeConnector}, credentials.New())
 	if err != nil {
 		return err
 	}

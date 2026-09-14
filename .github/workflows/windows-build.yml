@@ -4,6 +4,18 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+    tags: ['v*']
+    paths:
+      - '.github/workflows/windows-build.yml'
+      - 'build-windows.cmd'
+      - 'build/appicon.png'
+      - 'desktop/**'
+      - 'cmd/resona-core/**'
+      - 'internal/**'
+      - 'third_party/**'
+      - 'go.mod'
+      - 'go.sum'
+  pull_request:
     paths:
       - '.github/workflows/windows-build.yml'
       - 'build-windows.cmd'
@@ -32,6 +44,23 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Resolve build version
+        id: version
+        shell: pwsh
+        env:
+          BUILD_REF_TYPE: ${{ github.ref_type }}
+          BUILD_REF_NAME: ${{ github.ref_name }}
+        run: |
+          $metadata = cargo metadata --no-deps --format-version 1 --manifest-path desktop/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $package = ($metadata | ConvertFrom-Json).packages | Where-Object { $_.name -eq 'resona-desktop' }
+          if (-not $package) { throw 'Desktop package metadata missing' }
+          $version = "v$($package.version)-dev"
+          if ($env:BUILD_REF_TYPE -eq 'tag') {
+            if ($env:BUILD_REF_NAME -ne "v$($package.version)") { throw 'Tag and desktop version disagree' }
+            $version = $env:BUILD_REF_NAME
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
       - name: Set up UCRT64 compiler
         id: msys2
         uses: msys2/setup-msys2@v2
@@ -50,11 +79,12 @@ jobs:
         shell: pwsh
         env:
           RESONA_MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
-        run: ./desktop/scripts/build-windows.ps1 -Msys2Root $env:RESONA_MSYS2_ROOT
+          RESONA_BUILD_VERSION: ${{ steps.version.outputs.version }}
+        run: ./desktop/scripts/build-windows.ps1 -Msys2Root $env:RESONA_MSYS2_ROOT -Version $env:RESONA_BUILD_VERSION
       - name: Upload Windows package
         uses: actions/upload-artifact@v6
         with:
-          name: Resona-v0.0.2-win-x64-${{ github.sha }}
+          name: Resona-${{ steps.version.outputs.version }}-win-x64-${{ github.sha }}
           path: desktop/dist/Resona-win-x64.zip
           if-no-files-found: error
           retention-days: 14

@@ -1,5 +1,11 @@
 # 架构设计
 
+2026-09-14 频道音质：频道持久状态保存目标码率，原生适配器按本人的当前频道原子发布，编码线程在帧边界更新Opus参数。音质更新不重开设备，编码器不暴露给控制线程；配置与用户全局偏好独立，TS3默认码率不变。见ADR-0024。
+
+2026-09-14 频道管理切片：所有者通过独立 Protobuf 创建/编辑/删除命令管理持久频道，服务端返回 `canManageChannels` 能力。管理写入串行化，持久化不持有语音路由锁；删除中的目标暂拒绝加入。CLI 用 OS 文件锁隔离同一权限目录的服务与离线认领码刷新。详见 ADR-0023；不增加语音包字段，不引入 HTTP 管理页。
+
+2026-09-14 身份与管理方向更新：最终只支持 Resona 自有协议，不再规划兼容 TS3 server。先提供持久原生身份及首位所有者认领，再接简化角色和频道管理，管理入口放 GPUI；暂不引入 HTTP 管理服务。Ed25519 身份证明绑定 Noise 握手哈希 / QUIC TLS exporter，首位所有者以原子文件持久化。当前协议为 Noise exp-4、QUIC ALPN exp-3；详见 ADR-0022。下方历史兼容服务端目标已被本决定替代。
+
 2026-09-14 控制协议更新：使用 Protobuf schema 和生成 Go 消息替换 CBOR，生成对象仅位于 `internal/nativewire/pb` 与 wire 映射边界，业务状态仍为普通 Go 值。语音固定头和 Opus 不变；QUIC ALPN 为 `resona-exp-2`，Noise 握手为 `resona-noise-exp-3`，匹配升级且不回退。生成入口 `make generate` / `go generate ./internal/nativewire/pb`；正式构建不要求 protoc。性能实测为解码较快、部分消息更大且分配更多，详见 ADR-0021 与 `test/controlcodec`。
 
 2026-09-14：server 采用每用户 mutex MPSC 语音环，满时覆盖最旧待发包；状态锁内仅验证和提取接收者快照，编码及入队移到锁外，发送保留过期丢弃和停滞保护。Noise exp-2 用方向独立的后台换钥保持连接，类型字节高位标记密钥阶段，不扩大 5 字节包头；取消固定 24 小时断线，更新失败仍有安全退出边界。旧 HTML 原型源码和 npm 工具链已退休。见 [ADR-0020](adr/0020-relay-rings-and-background-rekey.md)。

@@ -52,6 +52,7 @@ func (r *replayWindow) add(n uint32) {
 }
 
 type Conn struct {
+	binding               [32]byte
 	ctx                   context.Context
 	cancel                context.CancelFunc
 	sendRaw               func([]byte) error
@@ -83,6 +84,9 @@ type Conn struct {
 	lastReceive, lastSend atomic.Int64
 	done                  chan struct{}
 }
+
+// ChannelBinding is the completed handshake hash, immutable across rekeys.
+func (c *Conn) ChannelBinding() []byte { return append([]byte(nil), c.binding[:]...) }
 
 func newConn(tx, rx *noise.CipherState, local, remote net.Addr, send func([]byte) error, closed func()) *Conn {
 	ctx, cancel := context.WithCancel(context.Background())

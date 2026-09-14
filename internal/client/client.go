@@ -29,23 +29,29 @@ type ServerProfile struct {
 }
 
 type Session struct {
-	ID                 string `json:"id"`
-	SendingMessageID   string `json:"sendingMessageID"`
-	Mode               string `json:"mode"`
-	ChannelID          string `json:"channelID"`
-	Nickname           string `json:"nickname"`
-	ServerID           string `json:"serverID"`
-	ServerName         string `json:"serverName"`
-	IdentityUID        string `json:"identityUID"`
-	SelfID             string `json:"selfID"`
-	Error              string `json:"error"`
-	SwitchingChannelID string `json:"switchingChannelID"`
-	CredentialError    string `json:"credentialError"`
-	MemberSyncState    string `json:"memberSyncState"`
-	MemberSyncError    string `json:"memberSyncError"`
+	ID                       string `json:"id"`
+	SendingMessageID         string `json:"sendingMessageID"`
+	Mode                     string `json:"mode"`
+	ChannelID                string `json:"channelID"`
+	Nickname                 string `json:"nickname"`
+	ServerID                 string `json:"serverID"`
+	ServerName               string `json:"serverName"`
+	IdentityUID              string `json:"identityUID"`
+	ServerRole               string `json:"serverRole"`
+	CanClaimOwner            bool   `json:"canClaimOwner"`
+	CanManageChannels        bool   `json:"canManageChannels"`
+	CanConfigureChannelAudio bool   `json:"canConfigureChannelAudio,omitempty"`
+	SelfID                   string `json:"selfID"`
+	Error                    string `json:"error"`
+	SwitchingChannelID       string `json:"switchingChannelID"`
+	CredentialError          string `json:"credentialError"`
+	MemberSyncState          string `json:"memberSyncState"`
+	MemberSyncError          string `json:"memberSyncError"`
 }
 
 type Channel struct {
+	Bitrate          uint32 `json:"bitrate,omitempty"`
+	IsDefault        bool   `json:"isDefault"`
 	Kind             string `json:"kind"`
 	Align            string `json:"align"`
 	Repeat           bool   `json:"repeat"`
@@ -96,6 +102,7 @@ type ProfileStore interface {
 }
 
 type Service struct {
+	channelMutationSession string
 	mu                     sync.Mutex
 	lifecycleMu            sync.Mutex
 	credentialMu           sync.Mutex

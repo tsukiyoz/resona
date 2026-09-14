@@ -1,5 +1,33 @@
 # Native server (experimental)
 
+## Build version
+
+```sh
+resona-server --version
+resona-core --version
+docker exec resona-server /resona-server --version
+```
+
+The current binary names are `resona-server` and `resona-core`, not `resona`.
+Version queries exit before initializing configuration, keys or network services.
+Normal server startup also logs its version. Output contains version, full Git
+commit, dirty state, UTC build time, Go runtime and target OS/architecture.
+`dirty=true` means the binary includes uncommitted source; it is not a release tag.
+
+`internal/version` reads embedded Go VCS metadata for ordinary builds. Version
+defaults to `dev`; unavailable commit, dirty state or build time says `unknown`.
+A commit timestamp is deliberately not presented as the build time.
+Build overrides use `-ldflags -X` with `internal/version.Version`, `.Commit`,
+`.BuildTime`, `.Dirty` under the full module path
+`github.com/tsukiyoz/resona/internal/version`.
+
+`make core VERSION=vX.Y.Z` sets the version and build time. Windows builds accept
+`desktop/scripts/build-windows.ps1 -Version vX.Y.Z`. Docker builds accept build
+args `VERSION`, `COMMIT`, `BUILD_TIME`, `DIRTY`; pass them explicitly because the
+Docker context excludes Git metadata. These inputs label a build and do not
+create commits or tags. Desktop's Rust executable retains its existing GUI
+version; this slice adds queries to the Go server/core binaries.
+
 The Go server relays compressed Opus. It does not decode, mix, encode, or depend
 on devices, GPUI or TS3. Noise UDP is the default native experiment; QUIC remains
 an explicit baseline. Deploy matching client/server builds. This is not yet a
@@ -10,6 +38,81 @@ alongside the applicable existing dependency notices. Desktop packaging includes
 this newly introduced dependency's notice automatically.
 
 ## Build and run
+
+Current protocol: Noise exp-4 / QUIC ALPN exp-3, mandatory native client identity.
+The previously deployed exp-3 Noise server must be upgraded together with core.
+
+### First owner
+
+Provision offline, before starting the server (native binary):
+
+```sh
+./build/bin/resona-server --init-owner --access-dir /path/to/resona-access
+./build/bin/resona-server --access-dir /path/to/resona-access
+```
+
+The first command prints a one-time 64-hex claim code, valid for 24 hours. Store
+it privately; normal server startup does not print it. Only its digest is saved.
+Existing provisioning and owner files are never overwritten. An unprovisioned
+server permits member connections but has no claim action. After provisioning,
+connect with the matching client, open the identity/permissions button in the
+channel header, and submit the code. The same native client identity remains owner
+after reconnect/server restart. Member IDs and nicknames do not confer ownership.
+
+With Docker Compose, stop the server before provisioning and use the same data
+volume and default access directory as normal startup:
+
+```sh
+docker compose stop server
+docker compose run --rm --no-deps --entrypoint /usr/local/bin/resona-server server --init-owner
+docker compose up -d server
+```
+
+The access directory must be writable by the server user, unlike a read-only
+identity-key mount. Back it up along with the client native identity file. Do not
+delete `owner.json` to routinely reset credentials. Lost-identity recovery and
+ownership transfer are not yet implemented. To replace an expired or unused code,
+stop the server and run:
+
+```sh
+resona-server --reset-owner-claim --access-dir /path/to/resona-access
+```
+
+This atomically replaces the unused code and prints a fresh code valid for 24
+hours. It refuses an existing or corrupt owner record. No startup auto-reset and
+no requirement to claim within 24 hours of server creation. Startup, init and
+reset use the same OS process lock; do not remove `access.lock`. Old server builds
+without this lock must also be stopped before renewal.
+
+For the manually deployed Docker instance, use the installed image and the same
+access mount. Run this on the remote host (replace IMAGE with the upgraded image):
+
+```sh
+docker stop resona-server
+docker run --rm --log-driver none --read-only --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  -v /opt/resona/access:/access IMAGE --reset-owner-claim --access-dir /access
+docker start resona-server
+```
+
+## Channel management
+
+An authenticated owner uses the desktop channel header Plus to create and the
+channel context menu to edit/delete. The server enforces authorization. Ordinary
+members cannot mutate. Default channel may be renamed but never deleted; occupied
+channels cannot be deleted. Creation leaves users in their existing channels.
+
+Channels are persisted in `access-dir/channels.json`. `--channels` seeds only the
+first startup; once persisted, the file is authoritative. Back up the complete
+access directory. At most 64 channels, names 1-100 Unicode code points without
+control characters, descriptions at most 1024 UTF-8 bytes; combined text budget
+16 KiB. IDs never reuse deleted values, including after restart. Nested channels,
+passwords, admin delegation and recovery remain future work. See ADR-0023.
+
+Owner/member recognition, claim and channel CRUD are implemented. Role delegation
+remains subsequent work. Matching server management capability is required; an
+older server leaves the native channel context menu disabled with an authorization
+notice. The title-bar create shortcut is only shown when authorized.
 
 ### Docker (local Noise testing)
 
@@ -133,7 +236,7 @@ See [wire specification](native-protocol.md) and [ADR-0018](adr/0018-native-quic
 Noise framing and limitations are in [noise-protocol.md](noise-protocol.md) and
 [ADR-0019](adr/0019-noise-udp.md). Noise control currently uses stop-and-wait
 delivery. It has bounded queues and rate limits, but no adaptive voice congestion
-control. Noise exp-3 uses Protobuf control messages and updates directional keys in the background at 12 hours or
+control. Noise exp-4 uses signed-identity Protobuf control messages and updates directional keys in the background at 12 hours or
 2^23 packets without resetting membership or audio. Confirmation failure still
 closes the session after 30 seconds; it is not automatic reconnect. Upgrade server
 and client core together: older Noise experiments cannot handshake, though the existing

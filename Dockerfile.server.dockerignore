@@ -7,6 +7,12 @@
 !internal/
 !internal/nativewire/
 !internal/nativewire/*.go
+!internal/nativewire/pb/
+!internal/nativewire/pb/*.go
+!internal/nativeidentity/
+!internal/nativeidentity/*.go
+!internal/version/
+!internal/version/*.go
 !internal/noiseudp/
 !internal/noiseudp/*.go
 !internal/server/

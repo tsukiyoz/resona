@@ -1,5 +1,42 @@
 # 验证记录
 
+## 2026-09-14 原生频道音质
+
+- `go test ./internal/... ./cmd/resona-core ./cmd/resona-server` 通过。相关 audio/server/native/client/desktopipc/nativewire race 通过；补充解码验证后再次运行 audio/client race 通过。
+- 覆盖20/32/48预设与16–64整数边界、无效值拒绝且不修改元数据、旧配置48回退、旧客户端编辑保留码率、无能力服务器拒绝音质调用、保存后重载一致。QUIC和Noise UDP双客户端测试验证频道配置同步、当前频道码率更新及离开后恢复目标频道码率。
+- 音频测试在同一编码器跨20/64/16/48/32 kbps发送并连续解码20ms帧，设备只打开一次且PTT保持；静音在线试听改变码率不发送网络音频，旧TS3语音/音乐默认48/96不变。合成测试不代表声学质量或实机延迟已验收。
+- `cargo test --manifest-path desktop/Cargo.toml` 23项通过；macOS debug与release构建、Linux amd64服务端交叉构建通过。Rust依赖已有`block v0.1.6`未来兼容性告警，没有新增构建失败。
+- 本地真实Noise服务器+GPUI临时身份验收：新建默认32，自定义65回车显示边界错误并保留草稿；37回车创建，资料确认37，右键编辑预填37；选择省流并保存后资料确认20，创建/编辑未移动本人频道。窗口从1173×768缩至956×669，表单/错误/按钮均可见，未出现重叠。未声称精确900×600或Windows实机已验收。
+- 产品体验审查发现音质菜单动作需隔离旧面板，已加入原session/channel/revision、当前权限与目标存在检查。规则记录于product.md及ADR-0024。
+- 最新正常使用包：`desktop/dist/Resona-Channels.app`；临时验收包使用独立bundle ID和临时本地server，测试数据不入Git。远端尚未部署本次音质切片，连接旧server时音质编辑明确不可用。未提交、推送或打tag；Windows设备听测待用户验收。
+
+## 2026-09-14 频道版远端部署与版本信息
+
+- `go test ./internal/... ./cmd/resona-server ./cmd/resona-core` 通过；version 测试覆盖 VCS fallback、链接注入优先级、unknown 值、提交时间不冒充构建时间和参数值不误识别。新增版本查询不进入配置/钥匙串/网络初始化。
+- 部署镜像 `resona-server:exp-20260914-channels-version`，摘要 `sha256:16e22c434eb7b951797a400b799040610d7b17fc2cf8008192d685024eafad2d`。实际容器查询输出 `dev-20260914-channels`、commit `0fbe46ad6c5a5585293a2b24d853c8c197a3fa78`、dirty=true、built `2026-09-14T08:15:41Z`、Go 1.26.4 linux/amd64；此为未提交源码构建，不是新 tag。
+- 部署前后 owner.json 与 Noise 私钥 SHA-256 一致，原公钥和 UDP 9988 保留，TeamSpeak 服务仍 active。旧容器 `resona-server-rollback-prechannels-20260914` 停止保留，权限目录在远端发布目录备份，环境参数私有保存并沿用，未输出凭据。
+- 切换后公网 Noise 签名登录通过：临时测试身份为 member、不可再次认领、无频道管理权限，收到两个频道。容器 running=true、restarts=0，channels.json 已持久化。探针不认领、不发送聊天/语音或修改频道。
+- macOS core 实际 `--version` 查询通过，release App 已重新打包到 `desktop/dist/Resona-Channels.app`。Windows 构建脚本新增版本参数和构建时间注入，本轮未在 Windows 执行脚本；Rust GUI 自身版本查询不在本切片范围。
+
+2026-09-14 频道入口反馈修订：原生频道右键统一提供新建、编辑、删除；未授权时显示禁用原因，默认/非空频道仍保护删除。原生识别来自当前会话对应书签协议，不依赖新权限字段，因此旧服务端也能显示原因。产品流程复审完成，Rust 22 项测试通过；本次菜单文字与入口修订未单独进行新的窗口点击验收。
+
+## 2026-09-14 频道管理与认领码刷新
+
+- `go test ./internal/... ./cmd/resona-server ./cmd/resona-core` 通过；`go test -race ./internal/server ./internal/client ./internal/desktopipc ./internal/protocol/native` 通过，nativewire race 与新增 uint16 越界测试通过。Go 缓存/回环监听限制已在允许环境下重跑。
+- QUIC 和 Noise 双客户端真实连接覆盖所有者创建、名称/多行描述修改、空频道删除及同步，普通成员创建/编辑/删除拒绝，创建不移动用户，默认/占用频道拒绝删除；重启保留频道与 owner，已删除 ID 不复用。
+- 服务端测试覆盖并发创建唯一 ID、64 频道上限、非法输入、写入失败保留状态和清除删除预留。IPC 阻塞管理测试验证快照读取和 Shutdown 不等待远端管理回复；Service 测试覆盖重复提交、越权、旧会话及迟到完成。
+- 认领测试覆盖过期与仍有效未用码刷新、旧码失效、24 小时有效期、已认领 owner 拒绝重置、锁关闭后可重获。实际 macOS server CLI 在独立临时目录完成 init/reset、跨进程锁拒绝、旧码失效和已认领保护，未操作真实服务器凭证。
+- Rust 22 项测试通过，包含 Channel modal 会话/面板版本/权限/断线隔离；已有详情更新及 IPC 契约继续通过。macOS debug/release 原生编译打包，Windows/Linux amd64 server 交叉构建通过。
+- 隔离 GPUI App 连接真实回环 Noise server，以临时持久身份认领测试 owner，实测标题栏新建、多行描述、名称 Enter 保存、右键编辑预填与改名、空频道删除确认及列表移除；本人始终留在 Lobby。1173×768 与缩小到约 955×638 的窗口截图检查确认表单和按钮不重叠。使用临时 profile/owner/频道数据，没有连接远端或修改用户书签。
+- 产品客户端产物 `desktop/dist/Resona-Channels.app`，core/server 产物 `build/bin/channels/`；与上一个 Noise exp-4 / QUIC exp-3 协议兼容，但旧服务端不宣告频道管理能力。此切片尚未部署远端，Windows GUI/设备与长期负载仍待实机验收；编译结果不能替代它们。
+
+## 2026-09-14 身份版本远端部署
+
+- 用户授权部署到 tsukiyo，运行镜像 `resona-server:exp-20260914-identity`，协议 Noise exp-4；保留 UDP 9988 和原服务端公钥。旧容器 `resona-server-rollback-preidentity-20260914` 停止并保留用于回滚，TeamSpeak 服务保持运行。
+- 公网探针使用临时 Ed25519 身份完成真实 Noise 握手和签名登录，收到 member 身份、可认领状态和两个频道；未发送认领、聊天、语音或切换频道请求。检查容器运行且重启次数为 0。
+- 权限状态使用独立可写目录，Noise 私钥挂载仍只读。首位所有者认领码仅保存于被忽略的本机私有文件，24 小时有效；验证结束时所有者仍未认领，由用户通过持久客户端身份完成。
+- 匹配客户端为 `desktop/dist/Resona-Identity.app`；旧版客户端不能连接升级后的原生协议。此次验证不替代 Windows 实机、长时间语音和权限管理完整验收。
+
 ## 2026-09-14 Protobuf 控制消息
 
 - `go test ./internal/... ./cmd/resona-server ./cmd/resona-core` 通过，相关 nativewire、原生适配器、Noise 和 server race 测试通过。沙箱缓存/UDP 限制导致的首次失败已在允许环境下重跑通过。
@@ -395,3 +432,23 @@ Windows native-protocol user acceptance are separate from these local checks.
 - Current packaged core uses linker ad-hoc signing (`a.out`, no TeamIdentifier).
   Repeated switch behavior and same-build restart with system Always Allow still
   require user acceptance. No stable signing identity has been configured.
+# Native identity and ownership (2026-09-14, ADR-0022)
+
+- Full Go core/server/core-command regression passed. Related native identity,
+  wire, Noise, server and native adapter race tests passed. Client/IPC/server
+  race tests also passed after adding session and persistence failure cases.
+- Tests cover concurrent key creation, corrupt-key preservation, proof binding
+  to nickname/password/session, missing/forged/replayed signatures on both Noise
+  and QUIC, wrong/expired/consumed claim codes, concurrent single-winner claim,
+  owner restoration after server restart and publication failure without grant.
+- GPUI: 21 tests passed, including stale modal/session responses and duplicate
+  submission. Native macOS debug build passed; Windows amd64 server cross-build
+  passed. This is not Windows GUI/device acceptance.
+- Native UI checked on macOS in a separate app backed by a real loopback server,
+  temporary identity and isolated bookmark store. Verified full identity display,
+  masked code, Enter submission, rejection of an incorrect code, error display,
+  successful owner state and removal of claim input. No overlap in the observed
+  1173x768 window. Test app/core/server exited and disposable artifacts removed.
+- No real user credentials, remote server permissions or TS3 data changed.
+  Remote remains the prior Noise exp-3 deployment; this branch requires exp-4.
+  Stable Resona.app is preserved; release identity build is separate.

@@ -3,22 +3,40 @@ package native
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"net"
+	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/quic-go/quic-go"
 	"github.com/tsukiyoz/resona/internal/audio"
 	"github.com/tsukiyoz/resona/internal/client"
+	"github.com/tsukiyoz/resona/internal/nativeidentity"
 	w "github.com/tsukiyoz/resona/internal/nativewire"
 	"github.com/tsukiyoz/resona/internal/noiseudp"
 )
 
-type Connector struct{}
+// An empty IdentityPath explicitly uses an ephemeral identity for tests/bots.
+// Product construction uses NewDefault and a native-only persistent seed file.
+type Connector struct{ IdentityPath string }
+
+func NewDefault() (Connector, error) {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return Connector{}, err
+	}
+	return Connector{IdentityPath: filepath.Join(dir, "resona", "native-identity.key")}, nil
+}
+
 type connection struct {
+	voiceBitrate atomic.Uint32
 	conn         w.Connection
 	stream       w.Stream
 	mu           sync.Mutex
@@ -34,7 +52,17 @@ type connection struct {
 	workers      sync.WaitGroup
 }
 
-func (Connector) Connect(ctx context.Context, profile client.ServerProfile, password string, update func(client.RemoteState)) (client.RemoteConnection, error) {
+func (connector Connector) Connect(ctx context.Context, profile client.ServerProfile, password string, update func(client.RemoteState)) (client.RemoteConnection, error) {
+	var identity ed25519.PrivateKey
+	var err error
+	if connector.IdentityPath == "" {
+		_, identity, err = ed25519.GenerateKey(rand.Reader)
+	} else {
+		identity, err = nativeidentity.LoadOrCreate(connector.IdentityPath)
+	}
+	if err != nil {
+		return nil, &client.ConnectFailure{Message: "无法加载原生身份，原文件已保留"}
+	}
 	tlsConfig, err := w.ClientTLS(profile.CertificateFingerprint)
 	if err != nil {
 		return nil, err
@@ -74,7 +102,11 @@ func (Connector) Connect(ctx context.Context, profile client.ServerProfile, pass
 	stop := context.AfterFunc(ctx, func() { _ = q.CloseWithError(0, "setup cancelled") })
 	defer stop()
 	_ = stream.SetDeadline(time.Now().Add(8 * time.Second))
-	if err = w.Write(stream, w.HelloKind, 0, w.Hello{Nickname: profile.Nickname, Password: password}); err != nil {
+	hello := w.Hello{Nickname: profile.Nickname, Password: password}
+	if err = w.SignHello(q, identity, &hello); err != nil {
+		return nil, err
+	}
+	if err = w.Write(stream, w.HelloKind, 0, hello); err != nil {
 		return nil, err
 	}
 	frame, err := w.Read(stream)
@@ -93,11 +125,15 @@ func (Connector) Connect(ctx context.Context, profile client.ServerProfile, pass
 	if frame.Kind != w.WelcomeKind || frame.Request != 0 || w.Decode(frame, &state) != nil || !validState(state) || !q.SupportsDatagrams() {
 		return nil, errors.New("invalid native welcome")
 	}
+	if state.IdentityUID != nativeidentity.UID(hello.PublicKey) {
+		return nil, errors.New("server returned wrong identity")
+	}
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
 	_ = stream.SetDeadline(time.Time{})
 	c := &connection{conn: q, stream: stream, state: state, pending: map[uint32]chan uint8{}, gate: make(chan struct{}, 1), onState: update, voiceOut: make(chan w.QueuedVoice, 4)}
+	c.voiceBitrate.Store(stateVoiceBitrate(state))
 	update(c.remote(state, nil))
 	c.workers.Add(3)
 	go func() { defer c.workers.Done(); c.readLoop() }()
@@ -112,7 +148,7 @@ func validState(s w.State) bool {
 	}
 	channels := map[uint16]bool{}
 	for _, ch := range s.Channels {
-		if ch.ID == 0 || channels[ch.ID] {
+		if ch.ID == 0 || channels[ch.ID] || !w.ValidChannelBitrate(ch.Bitrate) {
 			return false
 		}
 		channels[ch.ID] = true
@@ -128,9 +164,11 @@ func validState(s w.State) bool {
 }
 func id(v uint16) string { return strconv.Itoa(int(v)) }
 func (c *connection) remote(s w.State, messages []client.RemoteMessage) client.RemoteState {
-	r := client.RemoteState{ServerName: s.Name, SelfID: id(s.Self), MemberSyncState: "ready", Messages: messages}
+	r := client.RemoteState{ServerName: s.Name, SelfID: id(s.Self), MemberSyncState: "ready", Messages: messages, IdentityUID: s.IdentityUID, ServerRole: s.ServerRole, CanClaimOwner: s.CanClaimOwner}
+	r.CanManageChannels = s.CanManageChannels
+	r.CanConfigureChannelAudio = s.CanConfigureChannelAudio
 	for i, ch := range s.Channels {
-		r.Channels = append(r.Channels, client.Channel{ID: id(ch.ID), Name: ch.Name, Description: ch.Description, Kind: "channel", Order: strconv.Itoa(i)})
+		r.Channels = append(r.Channels, client.Channel{ID: id(ch.ID), Name: ch.Name, Description: ch.Description, Kind: "channel", Order: strconv.Itoa(i), IsDefault: i == 0, Bitrate: w.ChannelBitrate(ch.Bitrate)})
 	}
 	for _, u := range s.Members {
 		r.Users = append(r.Users, client.User{ID: id(u.ID), Nickname: u.Nickname, ChannelID: id(u.Channel), Self: u.ID == s.Self, Instance: u.Instance, PlaybackVolume: 100})
@@ -168,11 +206,12 @@ func (c *connection) readLoop() {
 				return
 			}
 			c.mu.Lock()
-			if s.Self != c.state.Self || s.Epoch < c.state.Epoch {
+			if s.Self != c.state.Self || s.Epoch < c.state.Epoch || s.IdentityUID != c.state.IdentityUID {
 				c.mu.Unlock()
 				return
 			}
 			c.state = s
+			c.voiceBitrate.Store(stateVoiceBitrate(s))
 			c.mu.Unlock()
 			c.onState(c.remote(s, nil))
 		case w.ReplyKind:
@@ -203,7 +242,17 @@ func (c *connection) readLoop() {
 		}
 	}
 }
-func (c *connection) command(ctx context.Context, kind uint8, cmd w.Command) error {
+func (c *connection) ClaimOwner(ctx context.Context, token string) error {
+	if len(token) != 64 {
+		return errors.New("认领码格式无效")
+	}
+	if err := c.command(ctx, w.ClaimOwnerKind, w.ClaimOwner{Token: token}); err != nil {
+		return errors.New("认领未成功确认，请检查认领码及服务器角色状态")
+	}
+	return nil
+}
+
+func (c *connection) command(ctx context.Context, kind uint8, cmd any) error {
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	select {
@@ -245,6 +294,9 @@ func (c *connection) command(ctx context.Context, kind uint8, cmd w.Command) err
 			_ = c.conn.CloseWithError(0, "operation cancelled")
 			return ctx.Err()
 		}
+		if kind >= w.CreateChannelKind && kind <= w.DeleteChannelKind {
+			return channelReply(code)
+		}
 		switch code {
 		case w.OK:
 			return nil
@@ -252,6 +304,16 @@ func (c *connection) command(ctx context.Context, kind uint8, cmd w.Command) err
 			return client.ErrMessageChannelChanged
 		case w.RateLimited:
 			return client.ErrMessageRateLimited
+		case w.PermissionDenied:
+			return errors.New("没有频道管理权限")
+		case w.ChannelNotEmpty:
+			return errors.New("频道内仍有成员，不能删除")
+		case w.DefaultChannel:
+			return errors.New("默认频道不能删除")
+		case w.StorageFailed:
+			return errors.New("服务器保存失败，结果未确认，请检查频道列表后再操作")
+		case w.ChannelLimit:
+			return errors.New("频道数量或 ID 已达上限")
 		default:
 			return &client.MessageSendError{Message: "服务器拒绝此操作"}
 		}
@@ -292,6 +354,23 @@ func (c *connection) VoiceCodec() (audio.Codec, error) {
 		return 0, context.Canceled
 	}
 	return audio.CodecOpusVoice, nil
+}
+
+// Read by the encoder at frame boundaries; control updates never touch Opus.
+func (c *connection) VoiceBitrate() int { return int(w.ChannelBitrate(c.voiceBitrate.Load())) }
+
+func stateVoiceBitrate(s w.State) uint32 {
+	for _, member := range s.Members {
+		if member.ID != s.Self {
+			continue
+		}
+		for _, ch := range s.Channels {
+			if ch.ID == member.Channel {
+				return w.ChannelBitrate(ch.Bitrate)
+			}
+		}
+	}
+	return 48000
 }
 func (c *connection) SetVoiceMuted(ctx context.Context, muted, deafened bool) error {
 	return c.command(ctx, w.VoiceStateKind, w.Command{Muted: muted, Deafened: deafened})
@@ -364,7 +443,7 @@ func (c *connection) ReadChannelDetails(ctx context.Context, channel string) (cl
 	r := c.remote(s, nil)
 	for _, ch := range r.Channels {
 		if ch.ID == channel {
-			codec := "Opus mono / 48 kHz / 20 ms"
+			codec := "Opus mono / 48 kHz / 20 ms / " + strconv.Itoa(int(ch.Bitrate)/1000) + " kbps"
 			return client.ChannelDetails{ID: ch.ID, Name: ch.Name, Description: &ch.Description, Codec: &codec, Members: ch.Members, MemberSyncState: "ready"}, nil
 		}
 	}

@@ -1,14 +1,28 @@
 # Experimental native wire protocol
 
+2026-09-14: CreateChannel field 3, UpdateChannel/Channel field 4 carry `bitrate`
+in bits/second; State field 10 is `can_configure_channel_audio`. Positive values
+are 16000..64000 in steps of 1000. Zero creates at 32000, preserves the old value
+on update, and means legacy 48000 in snapshots/stores. Voice framing and protocol
+versions are unchanged. This is a client encoder target, not congestion control
+or a server-enforced limit; older clients continue encoding at their original
+rate. See [ADR-0024](adr/0024-channel-audio-quality.md).
+
 2026-09-14: this document describes the QUIC candidate and shared application
 messages. The default server now uses [Noise UDP](noise-protocol.md); voice and
 Protobuf application bodies are shared, but transport framing and trust differ.
 
-QUIC v1, TLS 1.3, ALPN `resona-exp-2`, default UDP port 9988. One client-opened
+QUIC v1, TLS 1.3, ALPN `resona-exp-3`, default UDP port 9988. One client-opened
 bidirectional stream carries reliable control; QUIC DATAGRAM carries voice.
 This is not HTTP/3. Datagram negotiation is mandatory; 0-RTT commands are disabled.
 
 ## Control
+
+Identity is mandatory: Hello includes Ed25519 public key and a signature bound
+to this encrypted transport session. State includes the recipient's identityUID,
+serverRole and canClaimOwner. ClaimOwner kind 9 has its own `{token}` protobuf
+body and a nonzero request ID. Server-side identity verification and ownership
+checks are authoritative; see ADR-0022 for exact proof and persistence rules.
 
 Frame: 4-byte big-endian length followed by 1-65536 bytes of Protobuf Frame.
 Schema: `internal/nativewire/pb/control.proto`. Frame fields are kind (enum, 1),
@@ -34,10 +48,20 @@ The CBOR-to-Protobuf change requires matching client/server versions; no fallbac
 | VoiceState | 6 | Command |
 | Reply | 7 | Reply, matching request ID |
 | Message | 8 | Message |
+| ClaimOwner | 9 | ClaimOwner {token} |
+| CreateChannel | 10 | CreateChannel {name, description} |
+| UpdateChannel | 11 | UpdateChannel {id, name, description} |
+| DeleteChannel | 12 | DeleteChannel {id} |
 
 Channel, Member and Command fields are defined in the schema. Unused command
 fields use proto3 defaults. VoiceState sets both flags, not a partial patch.
 Reply codes: 0 success, 1 rejected, 2 wrong channel, 3 rate limited.
+Channel management additionally uses 4 permission denied, 5 channel not empty,
+6 default channel, 7 persistence failed/unconfirmed, 8 channel count/ID exhausted.
+State field 9 (`can_manage_channels`) defaults false; only owners on a configured
+persistent server receive true. Commands 10-12 require server-side owner checks.
+The first channel in the ordered state is the default channel. These additive
+changes retain the current transport versions; no voice header fields change.
 QUIC application close code 2 means authentication failure.
 
 Welcome follows authentication and member registration. Snapshots are pushed on

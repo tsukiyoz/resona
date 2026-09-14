@@ -485,6 +485,8 @@ type engineRun struct {
 	captureMu              sync.Mutex
 	captureEpoch           atomic.Uint64
 	lastMeter              time.Time
+	bitrate                int
+	bitrateSource          ChannelBitrateSource
 	vadUntil               time.Time
 }
 
@@ -507,6 +509,16 @@ func newEngineRun(engine *Engine, codec Codec, volume int) (*engineRun, error) {
 	if codec == CodecOpusMusic {
 		channels, application, bitrate = 2, gopus.ApplicationAudio, 96000
 	}
+	if codec == CodecOpusVoice {
+		r.bitrateSource, _ = engine.transport.(ChannelBitrateSource)
+		if r.bitrateSource != nil {
+			bitrate = r.bitrateSource.VoiceBitrate()
+			if bitrate < 16000 || bitrate > 64000 {
+				cancel()
+				return nil, errors.New("invalid channel bitrate")
+			}
+		}
+	}
 	encoder, err := gopus.NewEncoder(gopus.EncoderConfig{SampleRate: SampleRate, Channels: channels, Application: application})
 	if err != nil {
 		cancel()
@@ -518,7 +530,27 @@ func newEngineRun(engine *Engine, codec Codec, volume int) (*engineRun, error) {
 	}
 	_ = encoder.SetComplexity(5)
 	r.encoder = encoder
+	r.bitrate = bitrate
 	return r, nil
+}
+
+// Called exclusively by the encoder owner, never by control/UI goroutines.
+func (r *engineRun) applyChannelBitrate() error {
+	if r.bitrateSource == nil {
+		return nil
+	}
+	bitrate := r.bitrateSource.VoiceBitrate()
+	if bitrate == r.bitrate {
+		return nil
+	}
+	if bitrate < 16000 || bitrate > 64000 {
+		return errors.New("invalid channel bitrate")
+	}
+	if err := r.encoder.SetBitrate(bitrate); err != nil {
+		return err
+	}
+	r.bitrate = bitrate
+	return nil
 }
 
 func (r *engineRun) start() {
@@ -695,6 +727,10 @@ func (r *engineRun) encodeLoop() {
 				for i, sample := range mono {
 					pcm[i*2], pcm[i*2+1] = sample, sample
 				}
+			}
+			if err := r.applyChannelBitrate(); err != nil {
+				r.fail(fmt.Errorf("无法更新频道码率: %w", err), true)
+				return
 			}
 			n, encodeErr := r.encoder.Encode(pcm, encoded)
 			if encodeErr != nil {
