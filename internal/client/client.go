@@ -18,17 +18,17 @@ import (
 )
 
 type ServerProfile struct {
-	Protocol               string `json:"protocol,omitempty"`
-	CertificateFingerprint string `json:"certificateFingerprint,omitempty"`
-	ServerPublicKey        string `json:"serverPublicKey,omitempty"`
-	ID                     string `json:"id"`
-	Name                   string `json:"name"`
-	Address                string `json:"address"`
-	Nickname               string `json:"nickname"`
-	SkipPasswordStorage    bool   `json:"skipPasswordStorage,omitempty"`
+	Protocol            string `json:"protocol,omitempty"`
+	ServerPublicKey     string `json:"serverPublicKey,omitempty"`
+	ID                  string `json:"id"`
+	Name                string `json:"name"`
+	Address             string `json:"address"`
+	Nickname            string `json:"nickname"`
+	SkipPasswordStorage bool   `json:"skipPasswordStorage,omitempty"`
 }
 
 type Session struct {
+	Protocol                 string `json:"protocol,omitempty"`
 	ID                       string `json:"id"`
 	SendingMessageID         string `json:"sendingMessageID"`
 	Mode                     string `json:"mode"`
@@ -67,13 +67,16 @@ type Channel struct {
 }
 
 type User struct {
-	Instance       string `json:"instance"`
-	PlaybackVolume int    `json:"playbackVolume"`
-	PlaybackMuted  bool   `json:"playbackMuted"`
-	ID             string `json:"id"`
-	Nickname       string `json:"nickname"`
-	ChannelID      string `json:"channelID"`
-	Self           bool   `json:"self"`
+	VoiceStateKnown bool   `json:"voiceStateKnown,omitempty"`
+	InputMuted      bool   `json:"inputMuted,omitempty"`
+	OutputMuted     bool   `json:"outputMuted,omitempty"`
+	Instance        string `json:"instance"`
+	PlaybackVolume  int    `json:"playbackVolume"`
+	PlaybackMuted   bool   `json:"playbackMuted"`
+	ID              string `json:"id"`
+	Nickname        string `json:"nickname"`
+	ChannelID       string `json:"channelID"`
+	Self            bool   `json:"self"`
 }
 
 type Message struct {
@@ -102,6 +105,8 @@ type ProfileStore interface {
 }
 
 type Service struct {
+	playbackCacheSession   string
+	playbackCache          map[[2]string]userPlaybackPreference
 	channelMutationSession string
 	mu                     sync.Mutex
 	lifecycleMu            sync.Mutex
@@ -182,11 +187,7 @@ func (s *Service) SaveServer(profile ServerProfile) (Workspace, error) {
 	profile.Address = strings.TrimSpace(profile.Address)
 	profile.Nickname = strings.TrimSpace(profile.Nickname)
 	profile.Protocol = strings.ToLower(strings.TrimSpace(profile.Protocol))
-	profile.CertificateFingerprint = strings.ToLower(strings.ReplaceAll(strings.TrimSpace(profile.CertificateFingerprint), ":", ""))
 	profile.ServerPublicKey = strings.ToLower(strings.TrimSpace(profile.ServerPublicKey))
-	if profile.Protocol == "ts3" {
-		profile.Protocol = ""
-	}
 	if err := ValidateProfile(profile); err != nil {
 		return Workspace{}, err
 	}
@@ -375,30 +376,8 @@ func (s *Service) snapshot() Workspace {
 }
 
 func ValidateProfile(profile ServerProfile) error {
-	if profile.Protocol != "" && profile.Protocol != "ts3" && profile.Protocol != "resona" && profile.Protocol != "resona-noise" {
-		return errors.New("未知的服务器协议")
-	}
-	if profile.Protocol == "resona-noise" {
-		if len(profile.ServerPublicKey) != 64 {
-			return errors.New("Noise 服务器公钥必须为64位X25519十六进制")
-		}
-		for _, r := range profile.ServerPublicKey {
-			if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
-				return errors.New("Noise 服务器公钥包含无效字符")
-			}
-		}
-	} else if profile.ServerPublicKey != "" {
-		return errors.New("只有 Noise 协议使用服务器公钥")
-	}
-	if profile.CertificateFingerprint != "" {
-		if profile.Protocol != "resona" || len(profile.CertificateFingerprint) != 64 {
-			return errors.New("原生服务器证书指纹必须为64位SHA-256十六进制")
-		}
-		for _, r := range profile.CertificateFingerprint {
-			if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
-				return errors.New("证书指纹包含无效字符")
-			}
-		}
+	if err := ValidateServerTrust(profile); err != nil {
+		return err
 	}
 	for _, field := range []struct {
 		name  string
@@ -440,6 +419,23 @@ func ValidateProfile(profile ServerProfile) error {
 			if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-') {
 				return errors.New("hostname must use ASCII letters, digits, hyphens and dots")
 			}
+		}
+	}
+	return nil
+}
+
+// The persisted marker rejects obsolete bookmarks before credentials or I/O.
+// It is not a user-selectable transport.
+func ValidateServerTrust(profile ServerProfile) error {
+	if profile.Protocol != "resona-noise" {
+		return errors.New("此书签版本已停止支持，请删除后使用服务器地址和公钥重新添加")
+	}
+	if len(profile.ServerPublicKey) != 64 {
+		return errors.New("服务器公钥必须为64位X25519十六进制")
+	}
+	for _, r := range profile.ServerPublicKey {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+			return errors.New("服务器公钥包含无效字符")
 		}
 	}
 	return nil

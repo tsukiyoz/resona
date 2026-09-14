@@ -11,7 +11,6 @@ import (
 )
 
 const (
-	ALPN                 = "resona-exp-3"
 	DefaultPort          = "9988"
 	MaxFrame             = 65536
 	MaxVoicePayload      = 1024
@@ -34,6 +33,7 @@ const (
 	CreateChannelKind
 	UpdateChannelKind
 	DeleteChannelKind
+	WatchResourcesKind
 )
 
 var ErrPacket = errors.New("invalid Resona packet")
@@ -61,6 +61,7 @@ type UpdateChannel struct {
 	Bitrate           uint32
 }
 type DeleteChannel struct{ ID uint16 }
+type WatchResources struct{ AllChannels, AllMembers bool }
 type Channel struct {
 	ID          uint16
 	Name        string
@@ -77,6 +78,10 @@ type Member struct {
 	Epoch    uint32
 }
 type State struct {
+	CanWatchResources        bool
+	Revision                 uint64
+	AllChannels, AllMembers  bool
+	DefaultChannel           uint16
 	Name                     string
 	Self                     uint16
 	Epoch                    uint32

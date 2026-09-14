@@ -1,22 +1,7 @@
-# ADR-0001：单仓库与单 Go module 起步
+# ADR-0001：单仓库
 
-- 日期：2026-09-07
-- 状态：Accepted
+状态：Accepted，2026-09-15 更新当前布局。
 
-## 背景
+客户端核心、服务端和协议在一个 Go module 内；Rust GPUI 使用 desktop/Cargo.toml。入口为 cmd/resona-core、cmd/resona-server 和 desktop，产品通过同一提交构建配套两端。
 
-长期目标含客户端、服务端、插件和 Go SDK；当前只有客户端起步需求，协议和扩展接口尚未稳定。
-
-## 决定
-
-使用 `resona` 仓库和 `github.com/tsukiyoz/resona` Go module。内部职责按包拆分，未承诺外部兼容性的实现放在 internal。前端拥有自己的 npm manifest 和 lockfile，这不意味着独立仓库。
-
-不预先创建 infra/common 仓库或空 server 服务。Wails 启动入口按其工具链保留在根目录；未来增加多个程序时再整理入口。
-
-## 代价
-
-客户端与未来服务端共享仓库权限和变更记录；构建与 CI 随项目增长需按目标拆分。单仓库不代表协议兼容性可以省略测试。
-
-## 重新评估条件
-
-出现独立团队、不同发布节奏，或 SDK 有外部消费者并需要独立版本承诺时，可先拆 module，再考虑拆仓库。
+未承诺外部稳定性的 Go 实现放 internal。先稳定设备、生命周期及嵌入契约，再为真实 SDK 消费者拆 module；不按平台名称提前拆仓库。独立团队或发布节奏形成后重新评估。

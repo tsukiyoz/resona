@@ -70,6 +70,7 @@ impl IconNamed for VoiceIcon {
 
 #[derive(Clone)]
 enum Pending {
+    ResourceInterest(u64),
     ChannelMutation {
         session: String,
         revision: u64,
@@ -99,11 +100,6 @@ enum Pending {
     Icon {
         session: String,
         reference: String,
-    },
-    Details {
-        session: String,
-        selection: DetailSelection,
-        revision: u64,
     },
 }
 
@@ -188,6 +184,11 @@ enum DeviceMenu {
 }
 
 pub struct ResonaApp {
+    resource_interest: Option<(bool, bool)>,
+    resource_generation: u64,
+    resources_syncing: bool,
+    composer_height: f32,
+    composer_drag: Option<(f32, f32)>,
     logo: Arc<Image>,
     core: Option<CoreClient>,
     workspace: Workspace,
@@ -204,7 +205,6 @@ pub struct ResonaApp {
     detail_error: String,
     playback_error: Option<(UserPlaybackTarget, String)>,
     input_gain_error: String,
-    detail_revision: u64,
     ptt_pressed: bool,
     ptt_key_down: bool,
     hotkey_manager: Option<GlobalHotKeyManager>,
@@ -221,7 +221,6 @@ pub struct ResonaApp {
     queued_voice: Option<VoiceState>,
     voice_target: Option<VoiceState>,
     _audio_update: Option<gpui::Task<()>>,
-    _detail_update: Option<gpui::Task<()>>,
     seen_notifications: HashSet<String>,
     notification_order: VecDeque<String>,
     last_member_notification: Option<Instant>,
@@ -250,9 +249,7 @@ pub struct ResonaApp {
     name_input: Entity<InputState>,
     address_input: Entity<InputState>,
     nickname_input: Entity<InputState>,
-    certificate_input: Entity<InputState>,
     public_key_input: Entity<InputState>,
-    server_protocol: String,
     password_input: Entity<InputState>,
     chat_input: Entity<InputState>,
     shortcut_input: Entity<InputState>,
@@ -276,8 +273,6 @@ impl ResonaApp {
         let address_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("voice.example.com"));
         let nickname_input = cx.new(|cx| InputState::new(window, cx).placeholder("昵称"));
-        let certificate_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("可选，SHA-256"));
         let public_key_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("必填，64位十六进制服务器公钥"));
         let password_input = cx.new(|cx| {
@@ -292,7 +287,7 @@ impl ResonaApp {
         });
         let chat_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .auto_grow(1, 5)
+                .multi_line(true)
                 .placeholder("发送到当前频道")
         });
         let preferences = Preferences::load();
@@ -371,7 +366,6 @@ impl ResonaApp {
             name_input.clone(),
             address_input.clone(),
             nickname_input.clone(),
-            certificate_input.clone(),
             public_key_input.clone(),
             password_input.clone(),
             claim_input.clone(),
@@ -414,7 +408,9 @@ impl ResonaApp {
         })
         .collect::<Vec<_>>();
         let activation_subscription = cx.observe_window_activation(window, |this, window, cx| {
+            this.sync_resource_interest(window.is_window_active());
             if !window.is_window_active() {
+                this.composer_drag = None;
                 if this.hotkey.is_none() {
                     this.ptt_key_down = false;
                     this.set_push_to_talk(false, cx);
@@ -441,6 +437,11 @@ impl ResonaApp {
             async {}
         });
         let mut this = Self {
+            resource_interest: None,
+            resource_generation: 0,
+            resources_syncing: false,
+            composer_height: 96.,
+            composer_drag: None,
             logo: Arc::new(Image::from_bytes(
                 ImageFormat::Png,
                 include_bytes!("../../build/appicon.png").to_vec(),
@@ -460,7 +461,6 @@ impl ResonaApp {
             detail_error: String::new(),
             playback_error: None,
             input_gain_error: String::new(),
-            detail_revision: 0,
             ptt_pressed: false,
             ptt_key_down: false,
             hotkey_manager: GlobalHotKeyManager::new().ok(),
@@ -477,7 +477,6 @@ impl ResonaApp {
             queued_voice: None,
             voice_target: None,
             _audio_update: None,
-            _detail_update: None,
             seen_notifications: HashSet::new(),
             notification_order: VecDeque::new(),
             last_member_notification: None,
@@ -506,9 +505,7 @@ impl ResonaApp {
             name_input,
             address_input,
             nickname_input,
-            certificate_input,
             public_key_input,
-            server_protocol: String::new(),
             password_input,
             chat_input,
             shortcut_input,
@@ -638,18 +635,6 @@ impl ResonaApp {
             }
             Pending::InputGain => self.input_gain_error = format!("输入增益未应用：{error}"),
             Pending::UserPlayback(target) => self.user_playback_failed(target, error),
-            Pending::Details {
-                session,
-                selection,
-                revision,
-            } => {
-                if session == self.workspace.session.id
-                    && self.detail_selection.as_ref() == Some(&selection)
-                    && revision == self.detail_revision
-                {
-                    self.detail_error = error;
-                }
-            }
             Pending::Icon { reference, .. } => {
                 self.icon_requested.remove(&reference);
                 self.icon_failures.insert(reference, error);
@@ -663,18 +648,32 @@ impl ResonaApp {
     }
 
     fn clear_selected_details(&mut self) {
-        self._detail_update = None;
-        if self.core.is_some() && !self.closing {
-            self.request("CancelDetails", json!({}), Pending::Notification);
-        }
         self.detail_selection = None;
         self.detail_value = None;
         self.detail_error.clear();
-        self.detail_revision = self.detail_revision.wrapping_add(1);
     }
 
     fn handle_incoming(&mut self, incoming: Incoming, window: &mut Window, cx: &mut Context<Self>) {
         match incoming {
+            Incoming::Notifications(value) => {
+                if let Ok(workspace) = serde_json::from_value::<Workspace>(value) {
+                    if workspace.session.id == self.workspace.session.id {
+                        self.process_notifications(&workspace);
+                    }
+                }
+            }
+            Incoming::ResourceSync(value) => {
+                if value.get("generation").and_then(Value::as_u64) == Some(self.resource_generation)
+                {
+                    self.apply_workspace(value["workspace"].clone(), window, cx);
+                    self.apply_voice(value["voice"].clone());
+                    self.apply_microphone_test(value["microphoneTest"].clone());
+                    self.resources_syncing = false;
+                    if let Some(error) = value["error"].as_str().filter(|s| !s.is_empty()) {
+                        self.error = error.to_owned();
+                    }
+                }
+            }
             Incoming::Workspace(value) => self.apply_workspace(value, window, cx),
             Incoming::Voice(value) => self.apply_voice(value),
             Incoming::MicrophoneTest(value) => self.apply_microphone_test(value),
@@ -685,6 +684,7 @@ impl ResonaApp {
                     return;
                 }
                 self.error = error.clone();
+                self.resources_syncing = false;
                 if let Some(core) = &self.core {
                     core.finish_shutdown();
                 }
@@ -723,6 +723,14 @@ impl ResonaApp {
             Incoming::Response { id, result } => {
                 let pending = self.pending.remove(&id);
                 match (pending, result) {
+                    (Some(Pending::ResourceInterest(generation)), result) => {
+                        if generation == self.resource_generation {
+                            if let Err(error) = result {
+                                self.resources_syncing = false;
+                                self.error = error;
+                            }
+                        }
+                    }
                     (Some(Pending::ChannelMutation { session, revision }), result) => {
                         if self.channel_matches(&session, revision) {
                             match result {
@@ -922,27 +930,6 @@ impl ResonaApp {
                         let workspace = self.workspace.clone();
                         self.update_icon_cache(&workspace);
                     }
-                    (
-                        Some(Pending::Details {
-                            session,
-                            selection,
-                            revision,
-                        }),
-                        result,
-                    ) => {
-                        if session == self.workspace.session.id
-                            && self.detail_selection.as_ref() == Some(&selection)
-                            && revision == self.detail_revision
-                        {
-                            match result {
-                                Ok(value) => {
-                                    self.detail_value = Some(value);
-                                    self.detail_error.clear();
-                                }
-                                Err(error) => self.detail_error = error,
-                            }
-                        }
-                    }
                     (Some(Pending::Icon { session, reference }), Err(error)) => {
                         if session == self.workspace.session.id {
                             self.request_failed(Pending::Icon { session, reference }, error);
@@ -993,8 +980,10 @@ impl ResonaApp {
                             cx.notify();
                             return;
                         }
-                        self.connect_error = error;
-                        self.open_password(server_id, window, cx);
+                        if self.check_connection_profile(&server_id) {
+                            self.connect_error = error;
+                            self.open_password(server_id, window, cx);
+                        }
                     }
                     (Some(Pending::SaveServer(revision)), Err(error)) => {
                         if revision == self.server_form_revision
@@ -1013,6 +1002,27 @@ impl ResonaApp {
         self.flush_queued_voice(cx);
         self.sync_hotkey(cx);
         cx.notify();
+    }
+
+    fn sync_resource_interest(&mut self, active: bool) {
+        if self.closing || self.core.is_none() {
+            return;
+        }
+        let all = active
+            && resource_needs_full_list(
+                &self.workspace,
+                &self.selected_server,
+                self.preferences.channel_sidebar_collapsed,
+                self.detail_selection.as_ref(),
+            );
+        let next = (active, all);
+        if self.resource_interest == Some(next) {
+            return;
+        }
+        self.resource_interest = Some(next);
+        self.resource_generation = self.resource_generation.wrapping_add(1);
+        self.resources_syncing = active;
+        self.request("SetResourceInterest", json!({"active":active, "allChannels":all, "allMembers":all, "generation":self.resource_generation}), Pending::ResourceInterest(self.resource_generation));
     }
 
     fn flush_queued_voice(&mut self, cx: &mut Context<Self>) {
@@ -1134,6 +1144,14 @@ impl ResonaApp {
                 self.workspace = workspace;
                 if let Some(selection) = refresh_details {
                     self.select_details(selection, cx);
+                } else {
+                    if let Some(selection) = &self.detail_selection {
+                        let next = native_detail_value(&self.workspace, selection);
+                        if next != self.detail_value {
+                            self.detail_value = next;
+                            self.detail_error.clear();
+                        }
+                    }
                 }
             }
             Err(error) => self.error = format!("核心工作区格式无效：{error}"),
@@ -1168,7 +1186,6 @@ impl ResonaApp {
             return;
         }
         self._audio_update = None;
-        self._detail_update = None;
         self.flush_preferences();
         self.clear_hotkey(cx);
         self.closing = true;
@@ -1307,46 +1324,11 @@ impl ResonaApp {
         self.detail_selection = Some(selection.clone());
         self.detail_value = None;
         self.detail_error.clear();
-        self.detail_revision = self.detail_revision.wrapping_add(1);
-        let revision = self.detail_revision;
-        self._detail_update = Some(cx.spawn(async move |view, cx| {
-            cx.background_executor()
-                .timer(Duration::from_millis(200))
-                .await;
-            let _ = view.update(cx, |this, cx| {
-                if !this.closing && this.detail_revision == revision && this.workspace.connected() {
-                    this.request_selected_details();
-                    cx.notify();
-                }
-            });
-        }));
+        self.detail_value = native_detail_value(&self.workspace, &selection);
+        if self.detail_value.is_none() {
+            self.clear_selected_details();
+        }
         cx.notify();
-    }
-
-    fn request_selected_details(&mut self) {
-        let Some(selection) = self.detail_selection.clone() else {
-            return;
-        };
-        let session = self.workspace.session.id.clone();
-        let (method, params) = match &selection {
-            DetailSelection::Channel(id) => (
-                "GetChannelDetails",
-                json!({"sessionID": session, "channelID": id}),
-            ),
-            DetailSelection::User(id) => (
-                "GetUserDetails",
-                json!({"sessionID": session, "userID": id}),
-            ),
-        };
-        self.request(
-            method,
-            params,
-            Pending::Details {
-                session,
-                selection,
-                revision: self.detail_revision,
-            },
-        );
     }
 
     fn join_channel(&mut self, id: &str, cx: &mut Context<Self>) {
@@ -1449,8 +1431,8 @@ impl ResonaApp {
             !matches!(
                 pending,
                 Pending::Notification
+                    | Pending::ResourceInterest(_)
                     | Pending::Icon { .. }
-                    | Pending::Details { .. }
                     | Pending::PushToTalk
             )
         })
@@ -1539,7 +1521,11 @@ impl ResonaApp {
                         .num_milliseconds();
                     (-1_000..=5_000).contains(&age)
                 });
-            if !fresh || !self.preferences.notifications_enabled || self.voice.deafened {
+            if self.resources_syncing
+                || !fresh
+                || !self.preferences.notifications_enabled
+                || self.voice.deafened
+            {
                 continue;
             }
             let applicable = match notification.kind.as_str() {
@@ -1613,12 +1599,8 @@ impl ResonaApp {
             nickname: "Resona".into(),
             ..Default::default()
         });
-        self.server_protocol = profile.protocol.clone();
         self.public_key_input.update(cx, |input, cx| {
             input.set_value(profile.server_public_key.clone(), window, cx)
-        });
-        self.certificate_input.update(cx, |input, cx| {
-            input.set_value(profile.certificate_fingerprint.clone(), window, cx)
         });
         self.name_input
             .update(cx, |input, cx| input.set_value(profile.name, window, cx));
@@ -1737,6 +1719,9 @@ impl ResonaApp {
     }
 
     fn submit_channel(&mut self, cx: &mut Context<Self>) {
+        if self.resources_syncing {
+            return;
+        }
         let Some(Modal::Channel {
             session,
             id,
@@ -1923,17 +1908,8 @@ impl ResonaApp {
             .find(|server| server.id == editing_id)
             .is_some_and(|server| server.skip_password_storage);
         let profile = ServerProfile {
-            protocol: self.server_protocol.clone(),
-            server_public_key: if self.server_protocol == "resona-noise" {
-                self.public_key_input.read(cx).value().to_string()
-            } else {
-                String::new()
-            },
-            certificate_fingerprint: if self.server_protocol == "resona" {
-                self.certificate_input.read(cx).value().to_string()
-            } else {
-                String::new()
-            },
+            protocol: "resona-noise".into(),
+            server_public_key: self.public_key_input.read(cx).value().to_string(),
             id: editing_id,
             name: self.name_input.read(cx).value().to_string(),
             address: self.address_input.read(cx).value().to_string(),
@@ -1950,6 +1926,10 @@ impl ResonaApp {
     }
 
     fn begin_connect(&mut self, server_id: String, cx: &mut Context<Self>) {
+        if !self.check_connection_profile(&server_id) {
+            cx.notify();
+            return;
+        }
         if self.microphone_test.enabled || self.microphone_test.busy {
             self.configure_microphone_test(false, cx);
         }
@@ -1964,11 +1944,33 @@ impl ResonaApp {
     }
 
     fn request_connection_credentials(&mut self, server_id: String) {
+        if !self.check_connection_profile(&server_id) {
+            return;
+        }
         self.request(
             "GetServerCredentialStatus",
             json!({"id": server_id}),
             Pending::Credential(server_id, self.connect_revision),
         );
+    }
+
+    fn check_connection_profile(&mut self, server_id: &str) -> bool {
+        match self
+            .workspace
+            .servers
+            .iter()
+            .find(|server| server.id == server_id)
+        {
+            Some(server) if server.supports_connection() => true,
+            Some(_) => {
+                self.error = "此书签版本已停止支持，请使用服务器地址和公钥重新添加".into();
+                false
+            }
+            None => {
+                self.error = "服务器书签不存在".into();
+                false
+            }
+        }
     }
 
     fn store_voice_preferences(&mut self, connect: Option<String>) {
@@ -2008,6 +2010,9 @@ impl ResonaApp {
     }
 
     fn send_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.resources_syncing {
+            return;
+        }
         if self.pending.values().any(|p| matches!(p, Pending::Send(_))) {
             return;
         }
@@ -2063,6 +2068,9 @@ impl ResonaApp {
     }
 
     fn retry_message(&mut self, message_id: String, allow_duplicate: bool, cx: &mut Context<Self>) {
+        if self.resources_syncing {
+            return;
+        }
         let Some(message) = self
             .workspace
             .messages
@@ -2739,11 +2747,7 @@ impl ResonaApp {
     }
 
     fn render_channels(&self, view: &Entity<Self>) -> AnyElement {
-        let native_session = self.workspace.connected()
-            && self.workspace.servers.iter().any(|server| {
-                server.id == self.workspace.session.server_id
-                    && matches!(server.protocol.as_str(), "resona" | "resona-noise")
-            });
+        let native_session = self.workspace.connected();
         let current = self.workspace.session.channel_id.clone();
         let switching = self.workspace.session.switching_channel_id.clone();
         let users = self.workspace.users.clone();
@@ -3252,6 +3256,7 @@ impl ResonaApp {
             })
             .collect::<Vec<_>>();
         let can_send = (self.workspace.session.mode == "preview" || self.workspace.connected())
+            && !self.resources_syncing
             && channel.as_ref().is_some_and(|c| c.kind != "separator")
             && self.workspace.session.switching_channel_id.is_empty()
             && self.workspace.session.sending_message_id.is_empty()
@@ -3361,32 +3366,88 @@ impl ResonaApp {
                     .overflow_y_scrollbar()
                     .into_any_element()
             })
+            .child({
+                let drag = view.clone();
+                div()
+                    .id("composer-resize")
+                    .h(px(8.))
+                    .w_full()
+                    .flex_shrink_0()
+                    .cursor_row_resize()
+                    .border_t_1()
+                    .border_color(rgb(LINE))
+                    .hover(|s| s.bg(gpui::rgba(0xffffff16)))
+                    .on_mouse_down(gpui::MouseButton::Left, move |event, _, cx| {
+                        drag.update(cx, |this, _| {
+                            this.composer_drag =
+                                Some((f32::from(event.position.y), this.composer_height));
+                        });
+                        cx.stop_propagation();
+                    })
+            })
             .child(
                 div()
                     .px_4()
-                    .pt_2()
                     .pb_3()
-                    .border_t_1()
-                    .border_color(rgb(LINE))
                     .bg(gpui::rgba(0xffffff04))
-                    .flex()
-                    .gap_2()
-                    .items_end()
+                    .flex_shrink_0()
                     .child(
                         div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(Input::new(&self.chat_input).h(px(64.)).disabled(!can_send)),
-                    )
-                    .child(
-                        Button::new("send-message")
-                            .icon(IconName::ArrowUp)
-                            .primary()
-                            .tooltip("发送消息")
-                            .disabled(!can_send)
-                            .on_click(move |_, window, cx| {
-                                entity.update(cx, |this, cx| this.send_message(window, cx));
-                            }),
+                            .w_full()
+                            .h(px(self.composer_height))
+                            .flex()
+                            .flex_col()
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(rgb(LINE))
+                            .bg(gpui::rgba(0xffffff08))
+                            .overflow_hidden()
+                            .child(
+                                Input::new(&self.chat_input)
+                                    .appearance(false)
+                                    .h(px(self.composer_height - 38.))
+                                    .px(px(12.))
+                                    .py(px(2.))
+                                    .disabled(!can_send),
+                            )
+                            .child(
+                                div()
+                                    .h(px(36.))
+                                    .flex_shrink_0()
+                                    .flex()
+                                    .justify_end()
+                                    .pr(px(6.))
+                                    .pb(px(4.))
+                                    .child(
+                                        div()
+                                            .w(px(32.))
+                                            .h(px(32.))
+                                            .flex_shrink_0()
+                                            .rounded(px(6.))
+                                            .border_1()
+                                            .border_color(gpui::rgba(0xffffff00))
+                                            .when(can_send, |this| {
+                                                this.hover(|style| {
+                                                    style.border_color(gpui::rgba(0xffffff40))
+                                                })
+                                            })
+                                            .child(
+                                                Button::new("send-message")
+                                                    .icon(IconName::ArrowUp)
+                                                    .text()
+                                                    .h_full()
+                                                    .w_full()
+                                                    .flex_shrink_0()
+                                                    .tooltip("发送消息")
+                                                    .disabled(!can_send)
+                                                    .on_click(move |_, window, cx| {
+                                                        entity.update(cx, |this, cx| {
+                                                            this.send_message(window, cx)
+                                                        });
+                                                    }),
+                                            ),
+                                    ),
+                            ),
                     ),
             )
             .into_any_element()
@@ -4061,34 +4122,13 @@ impl ResonaApp {
                 )
                 .into_any_element();
         };
-        let fields: &[(&str, &str)] = match selection {
-            DetailSelection::Channel(_) => &[
-                ("topic", "主题"),
-                ("description", "描述"),
-                ("codec", "编码"),
-                ("codecQuality", "编码质量"),
-                ("permanent", "永久频道"),
-                ("semiPermanent", "半永久频道"),
-                ("default", "默认频道"),
-                ("passwordRequired", "需要密码"),
-                ("maxClients", "人数上限"),
-                ("maxClientsUnlimited", "人数不设上限"),
-                ("maxFamilyClients", "频道组人数上限"),
-                ("maxFamilyClientsUnlimited", "频道组不设上限"),
-                ("maxFamilyClientsInherited", "继承上级限制"),
-            ],
-            DetailSelection::User(_) => &[
-                ("description", "描述"),
-                ("identityUID", "身份"),
-                ("channelID", "所在频道"),
-                ("away", "离开"),
-                ("awayMessage", "离开消息"),
-                ("inputMuted", "麦克风静音"),
-                ("outputMuted", "输出静音"),
-            ],
-        };
+        let fields = detail_fields(selection);
         for (key, label) in fields {
-            let text = if *key == "maxClients"
+            let text = if *key == "members"
+                && value.get("memberSyncState").and_then(Value::as_str) != Some("ready")
+            {
+                "同步中".into()
+            } else if *key == "maxClients"
                 && value.get("maxClientsUnlimited").and_then(Value::as_bool) == Some(true)
             {
                 "无限制".into()
@@ -5026,7 +5066,6 @@ impl ResonaApp {
             Modal::Audio => self.render_audio_settings(view),
             Modal::Server { editing_id } => {
                 let editing = !editing_id.is_empty();
-                let protocol_entity = view.clone();
                 div().child(
                     div()
                         .id("server-profile-form")
@@ -5059,52 +5098,12 @@ impl ResonaApp {
                             )
                         })
                         .child(field("名称", Input::new(&self.name_input)))
-                        .child(field(
-                            "协议",
-                            Button::new("server-protocol")
-                                .label(if self.server_protocol == "resona-noise" {
-                                    "Resona (Noise UDP)"
-                                } else if self.server_protocol == "resona" {
-                                    "Resona (QUIC/TLS)"
-                                } else {
-                                    "TeamSpeak 3"
-                                })
-                                .icon(IconName::ChevronDown)
-                                .disabled(self.is_busy())
-                                .dropdown_menu(move |mut menu, _, _| {
-                                    for (label, value) in [
-                                        ("TeamSpeak 3", ""),
-                                        ("Resona (Noise UDP)", "resona-noise"),
-                                        ("Resona (QUIC/TLS)", "resona"),
-                                    ] {
-                                        let entity = protocol_entity.clone();
-                                        menu = menu.item(PopupMenuItem::new(label).on_click(
-                                            move |_, _, cx| {
-                                                entity.update(cx, |this, cx| {
-                                                    this.server_protocol = value.into();
-                                                    this.server_error.clear();
-                                                    cx.notify();
-                                                });
-                                            },
-                                        ));
-                                    }
-                                    menu
-                                }),
-                        ))
                         .child(field("地址", Input::new(&self.address_input)))
                         .child(field("昵称", Input::new(&self.nickname_input)))
-                        .when(self.server_protocol == "resona-noise", |form| {
-                            form.child(field(
-                                "服务器公钥 X25519（必填）",
-                                Input::new(&self.public_key_input),
-                            ))
-                        })
-                        .when(self.server_protocol == "resona", |form| {
-                            form.child(field(
-                                "证书指纹 SHA-256（可选）",
-                                Input::new(&self.certificate_input),
-                            ))
-                        })
+                        .child(field(
+                            "服务器公钥 X25519（必填）",
+                            Input::new(&self.public_key_input),
+                        ))
                         .child(
                             div()
                                 .flex()
@@ -5614,6 +5613,11 @@ impl ResonaApp {
 
 impl Render for ResonaApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_resource_interest(window.is_window_active());
+        self.composer_height = composer_height(
+            self.composer_height,
+            f32::from(window.viewport_size().height),
+        );
         let selected = match &self.detail_selection {
             Some(DetailSelection::User(id)) if self.workspace.connected() => self
                 .workspace
@@ -5665,9 +5669,36 @@ impl Render for ResonaApp {
             .min_h(px(600.))
             .overflow_hidden()
             .track_focus(&self.focus)
+            .on_mouse_move(
+                cx.listener(|this, event: &gpui::MouseMoveEvent, window, cx| {
+                    if let Some((start_y, start_height)) = this.composer_drag {
+                        if event.pressed_button != Some(gpui::MouseButton::Left) {
+                            this.composer_drag = None;
+                            return;
+                        }
+                        this.composer_height = composer_height(
+                            start_height + start_y - f32::from(event.position.y),
+                            f32::from(window.viewport_size().height),
+                        );
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_mouse_up(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, _, _| this.composer_drag = None),
+            )
+            .on_mouse_up_out(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, _, _| this.composer_drag = None),
+            )
             .on_action(cx.listener(Self::dismiss_modal))
             .on_action(cx.listener(|this, _: &Quit, _, cx| this.begin_shutdown(cx)))
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                if event.keystroke.key == "escape" && this.composer_drag.take().is_some() {
+                    cx.stop_propagation();
+                    return;
+                }
                 if event.keystroke.key == "f8" && this.hotkey.is_none() {
                     if !event.is_held {
                         this.handle_ptt_key(true, cx);
@@ -5704,6 +5735,27 @@ impl Render for ResonaApp {
                     }),
             )
             .child(self.render_voicebar(&view))
+            .when(
+                self.resources_syncing && self.workspace.connected(),
+                |root| {
+                    root.child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .right_0()
+                            .bottom(px(72.))
+                            .bg(gpui::rgba(0x08090bdd))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation()
+                            })
+                            .child("正在同步当前资源"),
+                    )
+                },
+            )
             .when(!display_error.is_empty() && self.modal.is_none(), |root| {
                 let entity = view.clone();
                 root.child(
@@ -5920,6 +5972,79 @@ fn ptt_can_send(workspace: &Workspace, voice: &VoiceState, closing: bool) -> boo
         && voice.activation_mode == "ptt"
 }
 
+fn composer_height(requested: f32, viewport_height: f32) -> f32 {
+    requested.clamp(64., (viewport_height * 0.35).clamp(64., 280.))
+}
+
+fn resource_needs_full_list(
+    workspace: &Workspace,
+    viewed_server: &str,
+    collapsed: bool,
+    selection: Option<&DetailSelection>,
+) -> bool {
+    if !collapsed && viewed_server == workspace.session.server_id {
+        return true;
+    }
+    match selection {
+        Some(DetailSelection::Channel(id)) => *id != workspace.session.channel_id,
+        Some(DetailSelection::User(id)) => workspace
+            .users
+            .iter()
+            .find(|u| &u.id == id)
+            .is_none_or(|u| u.channel_id != workspace.session.channel_id),
+        None => false,
+    }
+}
+
+// Project incoming workspace notifications into the selected native detail cache.
+fn native_detail_value(workspace: &Workspace, selection: &DetailSelection) -> Option<Value> {
+    if !workspace.connected() {
+        return None;
+    }
+    match selection {
+        DetailSelection::Channel(id) => {
+            workspace.channels.iter().find(|ch| &ch.id == id).map(|ch| {
+                let bitrate = if ch.bitrate == 0 { 48000 } else { ch.bitrate };
+                json!({
+                    "id": ch.id, "name": ch.name, "description": ch.description,
+                    "codec": format!("Opus mono / 48 kHz / 20 ms / {} kbps", bitrate / 1000),
+                    "members": ch.members, "memberSyncState": if ch.id == workspace.session.channel_id && workspace.session.member_sync_state == "limited" { "ready" } else { &workspace.session.member_sync_state },
+                    "default": ch.is_default
+                })
+            })
+        }
+        DetailSelection::User(id) => {
+            workspace
+                .users
+                .iter()
+                .find(|user| &user.id == id)
+                .map(|user| {
+                    json!({
+                        "id": user.id, "nickname": user.nickname, "channelID": user.channel_id,
+                        "inputMuted": user.voice_state_known.then_some(user.input_muted),
+                        "outputMuted": user.voice_state_known.then_some(user.output_muted)
+                    })
+                })
+        }
+    }
+}
+
+fn detail_fields(selection: &DetailSelection) -> &'static [(&'static str, &'static str)] {
+    match selection {
+        DetailSelection::Channel(_) => &[
+            ("description", "描述"),
+            ("codec", "编码"),
+            ("members", "当前人数"),
+            ("default", "默认频道"),
+        ],
+        DetailSelection::User(_) => &[
+            ("channelID", "所在频道"),
+            ("inputMuted", "麦克风静音"),
+            ("outputMuted", "输出静音"),
+        ],
+    }
+}
+
 fn detail_text(value: Option<&Value>, key: &str, workspace: &Workspace) -> String {
     match value {
         None | Some(Value::Null) => "未提供".into(),
@@ -5932,15 +6057,6 @@ fn detail_text(value: Option<&Value>, key: &str, workspace: &Workspace) -> Strin
             .map(|c| c.name.clone())
             .unwrap_or_else(|| value.clone()),
         Some(Value::String(value)) => value.clone(),
-        Some(Value::Number(value)) if key == "codec" => match value.as_i64() {
-            Some(0) => "Speex Narrowband".into(),
-            Some(1) => "Speex Wideband".into(),
-            Some(2) => "Speex Ultra-Wideband".into(),
-            Some(3) => "CELT Mono".into(),
-            Some(4) => "Opus Voice".into(),
-            Some(5) => "Opus Music".into(),
-            _ => value.to_string(),
-        },
         Some(value) => value.to_string(),
     }
 }
@@ -6133,6 +6249,103 @@ fn ordered_channels(channels: &[crate::model::Channel]) -> Vec<(crate::model::Ch
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn collapsed_current_details_do_not_subscribe_unrelated_members() {
+        let mut workspace = Workspace::default();
+        workspace.session.server_id = "live".into();
+        workspace.session.channel_id = "1".into();
+        assert!(super::resource_needs_full_list(
+            &workspace, "live", false, None
+        ));
+        assert!(!super::resource_needs_full_list(
+            &workspace, "other", false, None
+        ));
+        assert!(!super::resource_needs_full_list(
+            &workspace,
+            "live",
+            true,
+            Some(&DetailSelection::Channel("1".into()))
+        ));
+        assert!(super::resource_needs_full_list(
+            &workspace,
+            "live",
+            true,
+            Some(&DetailSelection::Channel("2".into()))
+        ));
+    }
+    #[test]
+    fn composer_resize_preserves_space_for_chat_and_voicebar() {
+        assert_eq!(super::composer_height(20., 600.), 64.);
+        assert_eq!(super::composer_height(800., 600.), 210.);
+        assert_eq!(super::composer_height(800., 1200.), 280.);
+        assert_eq!(super::composer_height(96., 600.), 96.);
+    }
+    #[test]
+    fn native_detail_cache_projects_membership_and_metadata_notifications() {
+        let mut workspace = Workspace::default();
+        workspace.session.mode = "connected".into();
+        workspace.session.member_sync_state = "ready".into();
+        workspace.channels.push(crate::model::Channel {
+            id: "1".into(),
+            members: 1,
+            ..Default::default()
+        });
+        let selection = DetailSelection::Channel("1".into());
+        let cached = super::native_detail_value(&workspace, &selection).unwrap();
+        assert_eq!(cached["members"], 1);
+        workspace.channels[0].members = 4;
+        workspace.channels[0].description = "Updated".into();
+        workspace.channels[0].bitrate = 32000;
+        let updated = super::native_detail_value(&workspace, &selection).unwrap();
+        assert_eq!(cached["members"], 1);
+        assert_eq!(updated["members"], 4);
+        assert_eq!(updated["description"], "Updated");
+        assert_eq!(updated["codec"], "Opus mono / 48 kHz / 20 ms / 32 kbps");
+        workspace.session.member_sync_state = "pending".into();
+        assert_eq!(
+            super::native_detail_value(&workspace, &selection).unwrap()["memberSyncState"],
+            "pending"
+        );
+        workspace.session.mode = "offline".into();
+        assert!(super::native_detail_value(&workspace, &selection).is_none());
+    }
+
+    #[test]
+    fn native_user_detail_notifications_distinguish_unknown_and_unmuted() {
+        let mut workspace = Workspace::default();
+        workspace.session.mode = "connected".into();
+        workspace.users.push(crate::model::User {
+            id: "2".into(),
+            ..Default::default()
+        });
+        let selection = DetailSelection::User("2".into());
+        assert!(
+            super::native_detail_value(&workspace, &selection).unwrap()["inputMuted"].is_null()
+        );
+        workspace.users[0].voice_state_known = true;
+        assert_eq!(
+            super::native_detail_value(&workspace, &selection).unwrap()["inputMuted"],
+            false
+        );
+        workspace.users[0].input_muted = true;
+        workspace.users[0].output_muted = true;
+        let updated = super::native_detail_value(&workspace, &selection).unwrap();
+        assert_eq!(updated["inputMuted"], true);
+        assert_eq!(updated["outputMuted"], true);
+        workspace.users.clear();
+        assert!(super::native_detail_value(&workspace, &selection).is_none());
+    }
+    #[test]
+    fn details_show_supported_fields() {
+        let channel = DetailSelection::Channel("1".into());
+        let fields = super::detail_fields(&channel);
+        assert_eq!(
+            fields.iter().map(|f| f.0).collect::<Vec<_>>(),
+            vec!["description", "codec", "members", "default"]
+        );
+        let user = DetailSelection::User("2".into());
+        assert_eq!(super::detail_fields(&user).len(), 3);
+    }
     #[test]
     fn channel_audio_presets_and_custom_bounds() {
         for value in [20000, 32000, 48000] {
@@ -6442,16 +6655,16 @@ mod tests {
             "未设置"
         );
         assert_eq!(
-            detail_text(Some(&serde_json::json!(false)), "permanent", &workspace),
+            detail_text(Some(&serde_json::json!(false)), "default", &workspace),
             "否"
         );
         assert_eq!(
-            detail_text(Some(&serde_json::json!(0)), "maxClients", &workspace),
+            detail_text(Some(&serde_json::json!(0)), "members", &workspace),
             "0"
         );
         assert_eq!(
-            detail_text(Some(&serde_json::json!(4)), "codec", &workspace),
-            "Opus Voice"
+            detail_text(Some(&serde_json::json!("Opus mono")), "codec", &workspace),
+            "Opus mono"
         );
     }
 

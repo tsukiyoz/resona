@@ -17,9 +17,6 @@
 !internal/noiseudp/*.go
 !internal/server/
 !internal/server/*.go
-!third_party/
-!third_party/teamspeak-go/
-!third_party/teamspeak-go/go.mod
 !deploy/
 !deploy/server-entrypoint.sh
 !docs/

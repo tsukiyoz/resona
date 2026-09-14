@@ -12,6 +12,10 @@ import (
 // ordinary copyable values, without protobuf runtime state or mutable pointers.
 func marshalBody(kind uint8, value any) (proto.Message, error) {
 	switch v := value.(type) {
+	case WatchResources:
+		if kind == WatchResourcesKind {
+			return &pb.WatchResources{AllChannels: v.AllChannels, AllMembers: v.AllMembers}, nil
+		}
 	case CreateChannel:
 		if kind == CreateChannelKind {
 			return &pb.CreateChannel{Name: v.Name, Description: v.Description, Bitrate: v.Bitrate}, nil
@@ -39,6 +43,8 @@ func marshalBody(kind uint8, value any) (proto.Message, error) {
 		s := &pb.State{Name: v.Name, Self: uint32(v.Self), Epoch: v.Epoch, Channels: make([]*pb.Channel, len(v.Channels)), Members: make([]*pb.Member, len(v.Members)), IdentityUid: v.IdentityUID, ServerRole: v.ServerRole, CanClaimOwner: v.CanClaimOwner}
 		s.CanManageChannels = v.CanManageChannels
 		s.CanConfigureChannelAudio = v.CanConfigureChannelAudio
+		s.CanWatchResources, s.Revision = v.CanWatchResources, v.Revision
+		s.AllChannels, s.AllMembers, s.DefaultChannel = v.AllChannels, v.AllMembers, uint32(v.DefaultChannel)
 		// One backing allocation per collection instead of one per member. These
 		// fresh messages are initialized before publication and never copied later.
 		channels := make([]pb.Channel, len(v.Channels))
@@ -70,6 +76,15 @@ func marshalBody(kind uint8, value any) (proto.Message, error) {
 
 func decodeBody(f Frame, value any) error {
 	switch out := value.(type) {
+	case *WatchResources:
+		if out == nil || f.Kind != WatchResourcesKind {
+			return ErrPacket
+		}
+		var v pb.WatchResources
+		if err := unmarshal.Unmarshal(f.Body, &v); err != nil {
+			return err
+		}
+		*out = WatchResources{AllChannels: v.AllChannels, AllMembers: v.AllMembers}
 	case *CreateChannel:
 		if out == nil || f.Kind != CreateChannelKind {
 			return ErrPacket
@@ -168,12 +183,14 @@ func decodeBody(f Frame, value any) error {
 		if err := unmarshal.Unmarshal(f.Body, &v); err != nil {
 			return err
 		}
-		if v.Self > math.MaxUint16 {
+		if v.Self > math.MaxUint16 || v.DefaultChannel > math.MaxUint16 {
 			return ErrPacket
 		}
 		s := State{Name: v.Name, Self: uint16(v.Self), Epoch: v.Epoch, Channels: make([]Channel, len(v.Channels)), Members: make([]Member, len(v.Members)), IdentityUID: v.IdentityUid, ServerRole: v.ServerRole, CanClaimOwner: v.CanClaimOwner}
 		s.CanManageChannels = v.CanManageChannels
 		s.CanConfigureChannelAudio = v.CanConfigureChannelAudio
+		s.CanWatchResources, s.Revision = v.CanWatchResources, v.Revision
+		s.AllChannels, s.AllMembers, s.DefaultChannel = v.AllChannels, v.AllMembers, uint16(v.DefaultChannel)
 		for i, c := range v.Channels {
 			if c == nil || c.Id > math.MaxUint16 {
 				return ErrPacket

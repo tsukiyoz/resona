@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 
@@ -11,16 +12,15 @@ import (
 	"github.com/tsukiyoz/resona/internal/config"
 	"github.com/tsukiyoz/resona/internal/credentials"
 	"github.com/tsukiyoz/resona/internal/desktopipc"
-	"github.com/tsukiyoz/resona/internal/iconcache"
 	"github.com/tsukiyoz/resona/internal/protocol"
 	"github.com/tsukiyoz/resona/internal/protocol/native"
-	"github.com/tsukiyoz/resona/internal/protocol/ts3"
 	"github.com/tsukiyoz/resona/internal/version"
 )
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)).With("component", "resona-core"))
 	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		slog.Error("core stopped", "error", err)
 		os.Exit(1)
 	}
 }
@@ -39,19 +39,17 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("cannot open Resona profiles: %w", err)
 	}
-	connector, err := ts3.NewDefault(iconcache.NewDefault())
-	if err != nil {
-		return fmt.Errorf("cannot initialize Resona identity: %w", err)
-	}
-	nativeConnector, err := native.NewDefault()
-	if err != nil {
-		return err
-	}
-	service, err := client.NewWithPasswordStore(store, protocol.Router{TS3: connector, Native: nativeConnector}, credentials.New())
+	service, err := client.NewWithPasswordStore(store, defaultConnector(), credentials.New())
 	if err != nil {
 		return err
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 	return desktopipc.Run(ctx, service, os.Stdin, os.Stdout)
+}
+
+func defaultConnector() client.RemoteConnector {
+	return protocol.NewLazyConnector(func() (client.RemoteConnector, error) {
+		return native.NewDefault()
+	})
 }

@@ -36,7 +36,7 @@ func (c channelConnector) Connect(_ context.Context, _ client.ServerProfile, _ s
 
 func TestPendingChannelCommandDoesNotBlockIPCOrShutdown(t *testing.T) {
 	c := &blockingChannel{started: make(chan struct{})}
-	s, err := client.NewWithConnector(&memoryProfiles{profiles: []client.ServerProfile{{ID: "test", Name: "Test", Address: "example.invalid", Nickname: "Tester"}}}, channelConnector{c})
+	s, err := client.NewWithConnector(&memoryProfiles{profiles: []client.ServerProfile{{Protocol: "resona-noise", ServerPublicKey: "abababababababababababababababababababababababababababababababab", ID: "test", Name: "Test", Address: "example.invalid", Nickname: "Tester"}}}, channelConnector{c})
 	if err != nil {
 		t.Fatal(err)
 	}

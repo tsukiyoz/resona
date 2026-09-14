@@ -1,6 +1,6 @@
 # Resona Noise UDP experiment
 
-Version/prologue: `resona-noise-exp-4` (mandatory native identity; matching client/server required). Noise suite:
+Version/prologue: `resona-noise-exp-5` (native identity and scoped resource watch; matching client/server required). Noise suite:
 `Noise_NK_25519_ChaChaPoly_SHA256`. The server relays plaintext Opus between
 separately encrypted client/server sessions; this is hop encryption, not E2EE.
 All Resona multi-byte header integers are big-endian. Noise primitives use the
@@ -9,16 +9,16 @@ passed as uint64. The generation is reconstructed locally, not added to each pac
 
 ## Handshake
 
-1. Client sends `RN04 | type=1:u8 | cookie:20 | NK message1:48` (73 bytes).
+1. Client sends `RN05 | type=1:u8 | cookie:20 | NK message1:48` (73 bytes).
    Initially cookie is zero. NK payload is empty; no password or audio is sent.
-2. Server sends `RN04 | type=2:u8 | cookie:20` (25 bytes), without allocating
+2. Server sends `RN05 | type=2:u8 | cookie:20` (25 bytes), without allocating
    a session or performing DH. Cookie is `timeSlot:u32 | HMAC-SHA256[:16]`,
    bound to protocol, source IP/port, slot and exact NK message. Slots are
    30 seconds; current/previous slots are accepted. Cookie secret is generated
    per server start. It is distinct from the Noise private key.
 3. Client repeats message1 with that cookie. Server checks it, connection cap
    and global handshake budget (10/s, burst 20), then performs Noise NK.
-4. Server replies `RN04 | type=3:u8 | NK message2:48` (53 bytes). Identical
+4. Server replies `RN05 | type=3:u8 | NK message2:48` (53 bytes). Identical
    message1 retries on an existing endpoint receive the cached identical reply,
    never a reset or second session. An established session is not replaced by
    an unauthenticated new handshake.
@@ -26,7 +26,7 @@ passed as uint64. The generation is reconstructed locally, not added to each pac
    then both sides use directional transport keys. The normal framed Hello
    (nickname/password/Ed25519 public key/signature) and Welcome travel over
    encrypted reliable control. Signature binds to the completed NK handshake
-   hash; mandatory verification precedes membership admission. See ADR-0022.
+   hash; mandatory verification precedes membership admission. See native-protocol.md.
 
 Client handshake retry is 200 ms with a 5-second/context bound. Application
 authentication has a 5-second read deadline after server acceptance. The server
@@ -103,7 +103,7 @@ Unconfirmed updates fail closed after 30 seconds. The hard limit remains
 2^24-1 packets per key, and generation may not advance beyond 2^40-2, keeping the
 64-bit nonce below Noise's reserved values. Normal update success does not reset
 the control stream, user identity, channel, mute settings, or socket. This does
-not rotate the server's static public key or add fresh DH entropy. See ADR-0020.
+not rotate the server's static public key or add fresh DH entropy.
 
 Server voice egress uses a four-slot per-recipient mutex MPSC ring, plus at most
 one packet in the send worker. Overflow replaces the oldest queued voice. Packets

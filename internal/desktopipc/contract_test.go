@@ -18,7 +18,7 @@ func TestSharedNativeContractMatchesGoJSON(t *testing.T) {
 		Workspace client.Workspace  `json:"workspace"`
 		Voice     client.VoiceState `json:"voice"`
 	}{Workspace: client.Workspace{
-		Servers:       []client.ServerProfile{{ID: "server-1", Name: "Contract", Address: "localhost:9987", Nickname: "Tester", SkipPasswordStorage: true}},
+		Servers:       []client.ServerProfile{{Protocol: "resona-noise", ServerPublicKey: "abababababababababababababababababababababababababababababababab", ID: "server-1", Name: "Contract", Address: "localhost:9988", Nickname: "Tester", SkipPasswordStorage: true}},
 		Session:       client.Session{ID: "session-1", SendingMessageID: "message-1", Mode: "connected", ChannelID: "channel-1", Nickname: "Tester", ServerID: "server-1", ServerName: "Contract", IdentityUID: "identity-1", SelfID: "user-1", SwitchingChannelID: "channel-2", MemberSyncState: "ready"},
 		Channels:      []client.Channel{{Kind: "channel", Align: "left", IconID: "1001", IconRef: icon, ID: "channel-1", Name: "Voice", Description: "Contract channel", Members: 1, ParentID: "parent-1", Order: "0"}},
 		Users:         []client.User{{ID: "user-1", Instance: "member-1", PlaybackVolume: 130, PlaybackMuted: true, Nickname: "Tester", ChannelID: "channel-1", Self: true}},

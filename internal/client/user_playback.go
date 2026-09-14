@@ -11,6 +11,53 @@ type peerPlaybackEngine interface {
 	SetPeerPlayback(map[uint16]audio.PeerPlayback)
 }
 
+type userPlaybackPreference struct {
+	volume int
+	muted  bool
+}
+
+// A member omitted by a native resource scope has not necessarily left the
+// server. Retain only local playback preferences, never hidden member metadata.
+func (s *Service) reconcileScopedUserPlayback(next []User, limited bool) []User {
+	if s.playbackCacheSession != s.state.Session.ID {
+		s.playbackCache = nil
+		s.playbackCacheSession = s.state.Session.ID
+	}
+	if s.playbackCache == nil {
+		s.playbackCache = make(map[[2]string]userPlaybackPreference)
+	}
+	for _, user := range s.state.Users {
+		key := [2]string{user.ID, user.Instance}
+		if user.Self || user.Instance == "" || (user.PlaybackVolume == 100 && !user.PlaybackMuted) {
+			delete(s.playbackCache, key)
+		} else if _, exists := s.playbackCache[key]; exists || len(s.playbackCache) < 128 {
+			s.playbackCache[key] = userPlaybackPreference{user.PlaybackVolume, user.PlaybackMuted}
+		}
+	}
+	users := reconcileUserPlayback(s.state.Users, next)
+	var live map[[2]string]bool
+	if !limited && len(s.playbackCache) > 0 {
+		live = make(map[[2]string]bool, len(users))
+	}
+	for i := range users {
+		key := [2]string{users[i].ID, users[i].Instance}
+		if live != nil {
+			live[key] = true
+		}
+		if preference, ok := s.playbackCache[key]; ok && !users[i].Self {
+			users[i].PlaybackVolume, users[i].PlaybackMuted = preference.volume, preference.muted
+		}
+	}
+	if !limited {
+		for key := range s.playbackCache {
+			if !live[key] {
+				delete(s.playbackCache, key)
+			}
+		}
+	}
+	return users
+}
+
 // SetUserPlayback changes local output only. The complete target is validated
 // under the same lock as membership updates, before touching the audio engine.
 func (s *Service) SetUserPlayback(sessionID, userID, instance string, volume int, muted bool) (Workspace, error) {

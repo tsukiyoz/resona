@@ -43,6 +43,7 @@ func Run(ctx context.Context, service *client.Service, input io.ReadCloser, outp
 	defer unsubscribe()
 	var writerMu sync.Mutex
 	encoder := json.NewEncoder(output)
+	resourceSync := newResourceSync()
 	requests := make(chan request, 16)
 	failures := make(chan error, 1)
 	fail := func(err error) {
@@ -62,7 +63,37 @@ func Run(ctx context.Context, service *client.Service, input io.ReadCloser, outp
 			cancelDetails()
 		}
 	}()
-	workers.Add(3)
+	workers.Add(4)
+	go func() {
+		defer workers.Done()
+		resourceSync.run(ctx, service, func(interest resourceInterest, session string, syncErr error) {
+			if !interest.Active {
+				return
+			}
+			writerMu.Lock()
+			defer writerMu.Unlock()
+			if interest != resourceSync.current() || session != service.ResourceSessionID() {
+				return
+			}
+			workspace, err := service.GetWorkspace()
+			if err != nil {
+				return
+			}
+			message := ""
+			if syncErr != nil {
+				message = "资源同步未完成，稍后重试或重新切回窗口"
+			}
+			if encoder.Encode(envelope{Event: "resourceSync", Result: struct {
+				Generation     uint64            `json:"generation"`
+				Workspace      client.Workspace  `json:"workspace"`
+				Voice          client.VoiceState `json:"voice"`
+				MicrophoneTest client.VoiceState `json:"microphoneTest"`
+				Error          string            `json:"error"`
+			}{interest.Generation, workspace, service.GetVoiceState(), service.GetMicrophoneTest(), message}}) != nil {
+				fail(errors.New("desktop output unavailable"))
+			}
+		})
+	}()
 	go func() {
 		defer workers.Done()
 		<-ctx.Done()
@@ -96,6 +127,7 @@ func Run(ctx context.Context, service *client.Service, input io.ReadCloser, outp
 		var previous *client.Workspace
 		var previousVoice *client.VoiceState
 		var previousTest *client.VoiceState
+		var lastNotification string
 		for {
 			select {
 			case <-ctx.Done():
@@ -103,12 +135,31 @@ func Run(ctx context.Context, service *client.Service, input io.ReadCloser, outp
 			case <-changes:
 			}
 			writerMu.Lock()
-			workspace, err := service.GetWorkspace()
+			active := resourceSync.current().Active
+			var workspace client.Workspace
+			var err error
+			publish := publishWorkspace(active, previous, client.Workspace{Session: service.GetSessionState()})
+			if publish {
+				workspace, err = service.GetWorkspace()
+			}
 			voice := service.GetVoiceState()
 			microphoneTest := service.GetMicrophoneTest()
-			if err == nil && (previous == nil || !reflect.DeepEqual(*previous, workspace)) {
+			if !active {
+				voice = backgroundVoice(voice)
+				microphoneTest = backgroundVoice(microphoneTest)
+			}
+			if err == nil && publish && (previous == nil || !reflect.DeepEqual(*previous, workspace)) {
 				err = encoder.Encode(envelope{Event: "workspace", Result: workspace})
 				previous = &workspace
+				if len(workspace.Notifications) > 0 {
+					lastNotification = workspace.Notifications[len(workspace.Notifications)-1].ID
+				}
+			}
+			if !active && err == nil {
+				if notifications := service.GetNotificationUpdate(lastNotification); notifications != nil {
+					err = encoder.Encode(envelope{Event: "notifications", Result: notifications})
+					lastNotification = notifications.Notifications[len(notifications.Notifications)-1].ID
+				}
 			}
 			if err == nil && (previousVoice == nil || !reflect.DeepEqual(*previousVoice, voice)) {
 				err = encoder.Encode(envelope{Event: "voice", Result: voice})
@@ -247,6 +298,16 @@ func Run(ctx context.Context, service *client.Service, input io.ReadCloser, outp
 			var result any
 			var err error
 			switch req.Method {
+			case "SetResourceInterest":
+				var interest resourceInterest
+				err = decodeParams(req.Params, &interest)
+				if err == nil && interest.AllMembers && !interest.AllChannels {
+					err = errors.New("成员关注需要频道范围")
+				}
+				if err == nil {
+					resourceSync.set(interest)
+				}
+				result = true
 			case "PlayNotification":
 				var p struct {
 					Kind   string `json:"kind"`

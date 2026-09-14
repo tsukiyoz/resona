@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -10,6 +11,37 @@ import (
 	"github.com/tsukiyoz/resona/internal/client"
 )
 
+func TestObsoleteBookmarksRemainManageableWithoutChangingFileOnLoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "servers.json")
+	profiles := []map[string]any{
+		{"id": "old", "name": "Old", "address": "old.invalid", "nickname": "Tester", "protocol": "unsupported", "certificateFingerprint": "retired"},
+		{"id": "live", "name": "Native", "address": "localhost:9988", "nickname": "Tester", "protocol": "resona-noise", "serverPublicKey": "abababababababababababababababababababababababababababababababab"},
+	}
+	data, _ := json.Marshal(profiles)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	service, err := client.New(New(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace, _ := service.GetWorkspace()
+	if len(workspace.Servers) != 2 || client.ValidateServerTrust(workspace.Servers[0]) == nil || client.ValidateServerTrust(workspace.Servers[1]) != nil {
+		t.Fatal("lost or reinterpreted bookmarks")
+	}
+	after, _ := os.ReadFile(path)
+	if string(after) != string(data) {
+		t.Fatal("load rewrote user configuration")
+	}
+	if _, err := service.DeleteServer("old"); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := New(path).Load()
+	if err != nil || len(loaded) != 1 || loaded[0].ID != "live" {
+		t.Fatal("obsolete bookmark cannot be deleted")
+	}
+}
+
 func TestPersistenceRoundTripAndPermissions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "resona", "servers.json")
 	store := New(path)
@@ -17,7 +49,7 @@ func TestPersistenceRoundTripAndPermissions(t *testing.T) {
 	if err != nil || len(profiles) != 0 {
 		t.Fatalf("first load: %v, %v", profiles, err)
 	}
-	want := []client.ServerProfile{{ID: "one", Name: "Home", Address: "localhost:9987", Nickname: "Alice"}}
+	want := []client.ServerProfile{{Protocol: "resona-noise", ServerPublicKey: "abababababababababababababababababababababababababababababababab", ID: "one", Name: "Home", Address: "localhost:9988", Nickname: "Alice"}}
 	if err := store.Save(want); err != nil {
 		t.Fatal(err)
 	}

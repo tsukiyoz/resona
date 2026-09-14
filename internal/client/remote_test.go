@@ -35,7 +35,7 @@ func (c *fakeConnection) Close() error {
 
 func serviceWithProfile(t *testing.T, connector RemoteConnector) (*Service, ServerProfile) {
 	t.Helper()
-	profile := ServerProfile{ID: "home", Name: "Home", Address: "localhost:9987", Nickname: "Alice"}
+	profile := ServerProfile{Protocol: "resona-noise", ServerPublicKey: "abababababababababababababababababababababababababababababababab", ID: "home", Name: "Home", Address: "localhost:9988", Nickname: "Alice"}
 	service, err := NewWithConnector(&memoryStore{profiles: []ServerProfile{profile}}, connector)
 	if err != nil {
 		t.Fatal(err)
@@ -68,7 +68,7 @@ func TestRemoteConnectionPublishesSnapshot(t *testing.T) {
 			t.Fatalf("unexpected connect arguments: %+v %q", profile, password)
 		}
 		update(RemoteState{
-			ServerName: "Test TS3", ChannelID: "10", SelfID: "42", IdentityUID: "uid-1",
+			ServerName: "Test Resona", ChannelID: "10", SelfID: "42", IdentityUID: "uid-1",
 			Channels: []Channel{{ID: "10", Name: "Lobby", ParentID: "0", Order: "1", Members: 1}},
 			Users:    []User{{ID: "42", Nickname: "Alice", ChannelID: "10", Self: true}},
 		})
@@ -81,7 +81,7 @@ func TestRemoteConnectionPublishesSnapshot(t *testing.T) {
 		t.Fatalf("connect did not start asynchronously: %+v %v", initial.Session, err)
 	}
 	state := waitForMode(t, service, "connected")
-	if state.Session.ServerID != "home" || state.Session.ServerName != "Test TS3" || state.Session.ChannelID != "10" || state.Session.SelfID != "42" || state.Session.IdentityUID != "uid-1" {
+	if state.Session.ServerID != "home" || state.Session.ServerName != "Test Resona" || state.Session.ChannelID != "10" || state.Session.SelfID != "42" || state.Session.IdentityUID != "uid-1" {
 		t.Fatalf("unexpected connected session: %+v", state.Session)
 	}
 	if len(state.Channels) != 1 || state.Channels[0].ParentID != "0" || state.Channels[0].Order != "1" || len(state.Users) != 1 || !state.Users[0].Self {
@@ -97,6 +97,30 @@ func TestRemoteConnectionPublishesSnapshot(t *testing.T) {
 		if strings.Contains(profile.Name+profile.Address+profile.Nickname, "runtime-only") {
 			t.Fatal("password leaked into persisted workspace")
 		}
+	}
+}
+
+func TestSessionProtocolIsFixedAtConnectAdmission(t *testing.T) {
+	connector := connectorFunc(func(_ context.Context, _ ServerProfile, _ string, update func(RemoteState)) (RemoteConnection, error) {
+		update(RemoteState{ServerName: "Native", ChannelID: "1", SelfID: "1", Channels: []Channel{{ID: "1", Name: "Lobby"}}, Users: []User{{ID: "1", Self: true, ChannelID: "1"}}})
+		return &fakeConnection{}, nil
+	})
+	s, _ := serviceWithProfile(t, connector)
+	defer s.Shutdown()
+	s.mu.Lock()
+	s.state.Servers[0].Protocol = "resona-noise"
+	s.mu.Unlock()
+	initial, err := s.ConnectServer("home", "")
+	if err != nil || initial.Session.Protocol != "resona-noise" {
+		t.Fatal("connecting protocol missing")
+	}
+	waitForMode(t, s, "connected")
+	s.mu.Lock()
+	s.state.Servers[0].Protocol = "unsupported"
+	s.mu.Unlock()
+	state, _ := s.GetWorkspace()
+	if state.Session.Protocol != "resona-noise" {
+		t.Fatal("bookmark edit changed live protocol")
 	}
 }
 

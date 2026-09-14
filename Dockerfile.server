@@ -2,7 +2,6 @@
 FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
-COPY third_party/teamspeak-go/go.mod third_party/teamspeak-go/go.mod
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY cmd/resona-server/ cmd/resona-server/
 COPY internal/nativewire/ internal/nativewire/

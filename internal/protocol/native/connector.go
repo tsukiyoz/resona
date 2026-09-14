@@ -1,4 +1,4 @@
-// Package native adapts the Resona QUIC protocol to the existing client/audio contracts.
+// Package native adapts the Resona Noise protocol to the client/audio contracts.
 package native
 
 import (
@@ -15,7 +15,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/quic-go/quic-go"
 	"github.com/tsukiyoz/resona/internal/audio"
 	"github.com/tsukiyoz/resona/internal/client"
 	"github.com/tsukiyoz/resona/internal/nativeidentity"
@@ -53,6 +52,9 @@ type connection struct {
 }
 
 func (connector Connector) Connect(ctx context.Context, profile client.ServerProfile, password string, update func(client.RemoteState)) (client.RemoteConnection, error) {
+	if err := client.ValidateServerTrust(profile); err != nil {
+		return nil, &client.ConnectFailure{Message: err.Error()}
+	}
 	var identity ed25519.PrivateKey
 	var err error
 	if connector.IdentityPath == "" {
@@ -63,31 +65,16 @@ func (connector Connector) Connect(ctx context.Context, profile client.ServerPro
 	if err != nil {
 		return nil, &client.ConnectFailure{Message: "无法加载原生身份，原文件已保留"}
 	}
-	tlsConfig, err := w.ClientTLS(profile.CertificateFingerprint)
-	if err != nil {
-		return nil, err
-	}
 	address := profile.Address
 	if net.ParseIP(address) != nil {
 		address = net.JoinHostPort(address, w.DefaultPort)
 	} else if _, _, err := net.SplitHostPort(address); err != nil {
 		address = net.JoinHostPort(address, w.DefaultPort)
 	}
-	var q w.Connection
-	if profile.Protocol == "resona-noise" {
-		key, keyErr := hex.DecodeString(profile.ServerPublicKey)
-		if keyErr != nil || len(key) != 32 {
-			return nil, &client.ConnectFailure{Message: "Noise 服务器公钥无效"}
-		}
-		q, err = w.DialNoise(ctx, address, key)
-	} else {
-		q, err = w.DialQUIC(ctx, address, tlsConfig)
-	}
+	key, _ := hex.DecodeString(profile.ServerPublicKey)
+	q, err := w.DialNoise(ctx, address, key)
 	if err != nil {
-		if profile.Protocol == "resona-noise" {
-			return nil, &client.ConnectFailure{Message: "Noise 连接失败，请核对服务器公钥、地址及 UDP 网络"}
-		}
-		return nil, &client.ConnectFailure{Message: "原生 QUIC 连接失败，请检查地址、证书信任、协议版本和 UDP 网络"}
+		return nil, &client.ConnectFailure{Message: "连接失败，请核对服务器公钥、地址、版本及 UDP 网络"}
 	}
 	success := false
 	defer func() {
@@ -111,9 +98,8 @@ func (connector Connector) Connect(ctx context.Context, profile client.ServerPro
 	}
 	frame, err := w.Read(stream)
 	if err != nil {
-		var applicationError *quic.ApplicationError
 		var noiseError *noiseudp.RemoteError
-		if (errors.As(err, &applicationError) && applicationError.ErrorCode == w.AuthenticationFailed) || (errors.As(err, &noiseError) && noiseError.Code == w.AuthenticationFailed) {
+		if errors.As(err, &noiseError) && noiseError.Code == w.AuthenticationFailed {
 			return nil, &client.ConnectFailure{Message: "原生服务器拒绝连接，请检查服务器密码"}
 		}
 		return nil, err
@@ -167,11 +153,19 @@ func (c *connection) remote(s w.State, messages []client.RemoteMessage) client.R
 	r := client.RemoteState{ServerName: s.Name, SelfID: id(s.Self), MemberSyncState: "ready", Messages: messages, IdentityUID: s.IdentityUID, ServerRole: s.ServerRole, CanClaimOwner: s.CanClaimOwner}
 	r.CanManageChannels = s.CanManageChannels
 	r.CanConfigureChannelAudio = s.CanConfigureChannelAudio
+	if s.CanWatchResources && !s.AllMembers {
+		r.MemberSyncState = "limited"
+		r.MemberSyncError = "仅订阅当前频道成员"
+	}
 	for i, ch := range s.Channels {
-		r.Channels = append(r.Channels, client.Channel{ID: id(ch.ID), Name: ch.Name, Description: ch.Description, Kind: "channel", Order: strconv.Itoa(i), IsDefault: i == 0, Bitrate: w.ChannelBitrate(ch.Bitrate)})
+		isDefault := i == 0
+		if s.CanWatchResources {
+			isDefault = ch.ID == s.DefaultChannel
+		}
+		r.Channels = append(r.Channels, client.Channel{ID: id(ch.ID), Name: ch.Name, Description: ch.Description, Kind: "channel", Order: strconv.Itoa(i), IsDefault: isDefault, Bitrate: w.ChannelBitrate(ch.Bitrate)})
 	}
 	for _, u := range s.Members {
-		r.Users = append(r.Users, client.User{ID: id(u.ID), Nickname: u.Nickname, ChannelID: id(u.Channel), Self: u.ID == s.Self, Instance: u.Instance, PlaybackVolume: 100})
+		r.Users = append(r.Users, client.User{ID: id(u.ID), Nickname: u.Nickname, ChannelID: id(u.Channel), Self: u.ID == s.Self, Instance: u.Instance, PlaybackVolume: 100, VoiceStateKnown: true, InputMuted: u.Muted, OutputMuted: u.Deafened})
 		if u.ID == s.Self {
 			r.ChannelID = id(u.Channel)
 		}
@@ -206,14 +200,17 @@ func (c *connection) readLoop() {
 				return
 			}
 			c.mu.Lock()
-			if s.Self != c.state.Self || s.Epoch < c.state.Epoch || s.IdentityUID != c.state.IdentityUID {
+			if s.Self != c.state.Self || s.Epoch < c.state.Epoch || s.IdentityUID != c.state.IdentityUID || (s.CanWatchResources && s.Revision <= c.state.Revision) {
 				c.mu.Unlock()
 				return
 			}
+			events := memberEvents(c.state, s)
 			c.state = s
 			c.voiceBitrate.Store(stateVoiceBitrate(s))
 			c.mu.Unlock()
-			c.onState(c.remote(s, nil))
+			remote := c.remote(s, nil)
+			remote.Events = events
+			c.onState(remote)
 		case w.ReplyKind:
 			var r w.Reply
 			if w.Decode(f, &r) != nil {
@@ -241,6 +238,17 @@ func (c *connection) readLoop() {
 			return
 		}
 	}
+}
+
+// SetResourceInterest atomically lists the selected scope and starts its watch.
+func (c *connection) SetResourceInterest(ctx context.Context, allChannels, allMembers bool) error {
+	c.mu.Lock()
+	supported := c.state.CanWatchResources
+	c.mu.Unlock()
+	if !supported {
+		return errors.New("服务器不支持资源订阅，请更新匹配版本")
+	}
+	return c.command(ctx, w.WatchResourcesKind, w.WatchResources{AllChannels: allChannels, AllMembers: allMembers})
 }
 func (c *connection) ClaimOwner(ctx context.Context, token string) error {
 	if len(token) != 64 {
@@ -282,16 +290,23 @@ func (c *connection) command(ctx context.Context, kind uint8, cmd any) error {
 		deadline = d
 	}
 	_ = c.stream.SetWriteDeadline(deadline)
+	// A resource watch is idempotent. A missing reply must not disconnect an
+	// otherwise healthy voice session; a blocked write still has its deadline.
 	stop := context.AfterFunc(ctx, func() { _ = c.conn.CloseWithError(0, "operation cancelled") })
 	defer stop()
 	if err := w.Write(c.stream, kind, request, cmd); err != nil {
 		_ = c.conn.CloseWithError(1, "control write failed")
 		return err
 	}
+	if kind == w.WatchResourcesKind {
+		stop()
+	}
 	select {
 	case code := <-reply:
 		if ctx.Err() != nil {
-			_ = c.conn.CloseWithError(0, "operation cancelled")
+			if kind != w.WatchResourcesKind {
+				_ = c.conn.CloseWithError(0, "operation cancelled")
+			}
 			return ctx.Err()
 		}
 		if kind >= w.CreateChannelKind && kind <= w.DeleteChannelKind {
@@ -318,7 +333,9 @@ func (c *connection) command(ctx context.Context, kind uint8, cmd any) error {
 			return &client.MessageSendError{Message: "服务器拒绝此操作"}
 		}
 	case <-ctx.Done():
-		_ = c.conn.CloseWithError(0, "operation cancelled")
+		if kind != w.WatchResourcesKind {
+			_ = c.conn.CloseWithError(0, "operation cancelled")
+		}
 		return ctx.Err()
 	case <-c.conn.Context().Done():
 		return context.Canceled
@@ -444,7 +461,7 @@ func (c *connection) ReadChannelDetails(ctx context.Context, channel string) (cl
 	for _, ch := range r.Channels {
 		if ch.ID == channel {
 			codec := "Opus mono / 48 kHz / 20 ms / " + strconv.Itoa(int(ch.Bitrate)/1000) + " kbps"
-			return client.ChannelDetails{ID: ch.ID, Name: ch.Name, Description: &ch.Description, Codec: &codec, Members: ch.Members, MemberSyncState: "ready"}, nil
+			return client.ChannelDetails{ID: ch.ID, Name: ch.Name, Description: &ch.Description, Codec: &codec, Default: &ch.IsDefault, Members: ch.Members, MemberSyncState: "ready"}, nil
 		}
 	}
 	return client.ChannelDetails{}, errors.New("频道不存在")

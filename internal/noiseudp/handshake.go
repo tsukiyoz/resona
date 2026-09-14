@@ -16,10 +16,10 @@ import (
 	"github.com/flynn/noise"
 )
 
-const prologue = "resona-noise-exp-4"
+const prologue = "resona-noise-exp-5"
 
 var suite = noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashSHA256)
-var magic = []byte{'R', 'N', '0', '4'}
+var magic = []byte{'R', 'N', '0', '5'}
 
 func PublicKey(private []byte) ([]byte, error) {
 	k, err := ecdh.X25519().NewPrivateKey(private)

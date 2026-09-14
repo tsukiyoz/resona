@@ -1,4 +1,4 @@
-.PHONY: dev build core test test-protocol generate
+.PHONY: dev build core test test-native generate
 
 VERSION ?= dev
 BUILD_TIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -20,5 +20,6 @@ test:
 	go test ./internal/...
 	cargo test --manifest-path desktop/Cargo.toml
 
-test-protocol:
-	cd third_party/teamspeak-go && go test -race ./...
+test-native:
+	go test -race ./internal/protocol ./internal/protocol/native ./internal/nativewire ./internal/nativeidentity ./internal/noiseudp ./internal/server ./internal/audio ./internal/client ./internal/desktopipc ./cmd/resona-core
+	cargo test --locked --manifest-path desktop/Cargo.toml

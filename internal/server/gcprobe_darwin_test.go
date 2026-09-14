@@ -158,7 +158,7 @@ func TestGCProbeServer(t *testing.T) {
 		t.Fatal(e)
 	}
 	chs := []w.Channel{{ID: 1, Name: "one"}, {ID: 2, Name: "two"}, {ID: 3, Name: "three"}, {ID: 4, Name: "four"}}
-	s, e := Listen("127.0.0.1:0", Config{Name: "gc-probe", NoiseKey: key, Channels: chs, MaxClients: 64}, nil)
+	s, e := Listen("127.0.0.1:0", Config{Name: "gc-probe", NoiseKey: key, Channels: chs, MaxClients: 64})
 	if e != nil {
 		t.Fatal(e)
 	}

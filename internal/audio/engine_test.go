@@ -174,7 +174,7 @@ func TestConfigureWaitHonorsCancellation(t *testing.T) {
 	_ = engine.Close()
 }
 
-func TestEngineEncodesTS3OpusVoiceAndMusic(t *testing.T) {
+func TestEngineEncodesOpusVoiceAndMusic(t *testing.T) {
 	for _, codec := range []Codec{CodecOpusVoice, CodecOpusMusic} {
 		t.Run(codec.String(), func(t *testing.T) {
 			transport := &fakeTransport{codec: codec}

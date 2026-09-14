@@ -16,7 +16,7 @@ func compare(ctx context.Context, in io.Reader, out io.Writer) error {
 		return fmt.Errorf("interactive collection requires Windows; use analyze on this platform")
 	}
 	fmt.Fprintln(out, "Start both clients first. Matching process names are listed below. Choose the GUI root PID; existing children are included. Use 'list' for other app names.")
-	if err := listProcesses(out, "resona,teamspeak,ts3client"); err != nil {
+	if err := listProcesses(out, ""); err != nil {
 		return err
 	}
 	scanner := bufio.NewScanner(in)
@@ -31,7 +31,7 @@ func compare(ctx context.Context, in io.Reader, out io.Writer) error {
 		return strings.TrimSpace(scanner.Text()), nil
 	}
 	g := groups{}
-	for _, name := range []string{"teamspeak", "resona"} {
+	for _, name := range []string{"baseline", "resona"} {
 		value, err := read(name + " root PID (or comma-separated PIDs): ")
 		if err != nil {
 			return err
@@ -52,5 +52,5 @@ func compare(ctx context.Context, in io.Reader, out io.Writer) error {
 	if err = collect(ctx, o, out); err != nil {
 		return err
 	}
-	return run(ctx, []string{"analyze", "--input", filepath.Join(dir, "samples.csv"), "--baseline", "teamspeak", "--out", dir + "-report"}, out)
+	return run(ctx, []string{"analyze", "--input", filepath.Join(dir, "samples.csv"), "--baseline", "baseline", "--out", dir + "-report"}, out)
 }

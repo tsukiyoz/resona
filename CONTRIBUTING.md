@@ -22,18 +22,19 @@ needed; never force-push shared main.
 - Desktop: `cargo test --locked --manifest-path desktop/Cargo.toml`, native build
   and relevant GUI flows. Windows Actions validate Windows-specific code.
 - Protocol: regenerate protobuf via `go generate ./internal/nativewire/pb`, test
-  both transports and document compatibility/migration.
+  the Noise transport and document compatibility/migration.
 - Keep credentials, identities, local test data and build artifacts out of Git.
   Review staged changes and run `git diff --check` before committing.
 
 ## Releases
 
 Use annotated, immutable `vMAJOR.MINOR.PATCH` tags on main. Never delete or move a
-published tag to repair a release; make a new version. The current 0.0.x series is
+published tag to repair a release; make a new version. The current 0.x series is
 an experimental preview sequence, not a stable protocol/API compatibility promise.
 Document incompatible protocol changes and coordinated client/server upgrades in
-every affected release. Adopt a broader 0.x/1.x version policy as compatibility
-commitments become stable.
+every affected release. Use minor versions for substantial milestones or breaking
+protocol changes and patch versions for compatible fixes. Adopt 1.0 only after
+the supported workflows and protocol compatibility commitments are established.
 
 Before tagging, update Cargo.toml/Cargo.lock, macOS bundle version and
 `docs/releases/vX.Y.Z.md`. CI derives the core build version from the exact tag
