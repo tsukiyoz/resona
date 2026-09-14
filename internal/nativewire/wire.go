@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	ALPN                 = "resona-exp-2"
+	ALPN                 = "resona-exp-3"
 	DefaultPort          = "9988"
 	MaxFrame             = 65536
 	MaxVoicePayload      = 1024
@@ -30,6 +30,10 @@ const (
 	VoiceStateKind
 	ReplyKind
 	MessageKind
+	ClaimOwnerKind
+	CreateChannelKind
+	UpdateChannelKind
+	DeleteChannelKind
 )
 
 var ErrPacket = errors.New("invalid Resona packet")
@@ -40,13 +44,28 @@ type Frame struct {
 	Body    []byte
 }
 type Hello struct {
-	Nickname string
-	Password string
+	Nickname  string
+	Password  string
+	PublicKey []byte
+	Signature []byte
 }
+
+type ClaimOwner struct{ Token string }
+type CreateChannel struct {
+	Name, Description string
+	Bitrate           uint32
+}
+type UpdateChannel struct {
+	ID                uint16
+	Name, Description string
+	Bitrate           uint32
+}
+type DeleteChannel struct{ ID uint16 }
 type Channel struct {
 	ID          uint16
 	Name        string
 	Description string
+	Bitrate     uint32
 }
 type Member struct {
 	ID       uint16
@@ -58,12 +77,27 @@ type Member struct {
 	Epoch    uint32
 }
 type State struct {
-	Name     string
-	Self     uint16
-	Epoch    uint32
-	Channels []Channel
-	Members  []Member
+	Name                     string
+	Self                     uint16
+	Epoch                    uint32
+	Channels                 []Channel
+	Members                  []Member
+	IdentityUID              string
+	ServerRole               string
+	CanClaimOwner            bool
+	CanManageChannels        bool
+	CanConfigureChannelAudio bool
 }
+
+// Zero is the legacy/unspecified value, never an explicit encoder setting.
+func ValidChannelBitrate(b uint32) bool { return b == 0 || (b >= 16000 && b <= 64000 && b%1000 == 0) }
+func ChannelBitrate(b uint32) uint32 {
+	if b == 0 {
+		return 48000
+	}
+	return b
+}
+
 type Command struct {
 	Channel  uint16
 	Text     string
@@ -79,6 +113,11 @@ const (
 	Rejected
 	WrongChannel
 	RateLimited
+	PermissionDenied
+	ChannelNotEmpty
+	DefaultChannel
+	StorageFailed
+	ChannelLimit
 )
 
 type Message struct {

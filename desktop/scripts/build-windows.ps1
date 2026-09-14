@@ -1,5 +1,7 @@
 param(
     [string]$Msys2Root = "C:\msys64",
+    [ValidatePattern('^[A-Za-z0-9.+_-]+$')]
+    [string]$Version = "dev",
     [switch]$SkipTests
 )
 
@@ -49,7 +51,10 @@ try {
     Invoke-Checked go @("version")
     if (-not $SkipTests) { Invoke-Checked go @("test", "./internal/...") }
     New-Item -ItemType Directory -Force "build\bin" | Out-Null
-    Invoke-Checked go @("build", "-o", "build/bin/resona-core.exe", "./cmd/resona-core")
+    $BuildTime = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
+    $VersionFlags = "-X github.com/tsukiyoz/resona/internal/version.Version=$Version -X github.com/tsukiyoz/resona/internal/version.BuildTime=$BuildTime"
+    Invoke-Checked go @("build", "-ldflags", $VersionFlags, "-o", "build/bin/resona-core.exe", "./cmd/resona-core")
+    Invoke-Checked "./build/bin/resona-core.exe" @("--version")
 
     Remove-Item Env:CC, Env:CXX -ErrorAction SilentlyContinue
     if (-not $SkipTests) {

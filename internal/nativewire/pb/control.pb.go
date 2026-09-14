@@ -24,40 +24,52 @@ const (
 type Kind int32
 
 const (
-	Kind_KIND_UNSPECIFIED Kind = 0
-	Kind_KIND_HELLO       Kind = 1
-	Kind_KIND_WELCOME     Kind = 2
-	Kind_KIND_STATE       Kind = 3
-	Kind_KIND_MOVE        Kind = 4
-	Kind_KIND_CHAT        Kind = 5
-	Kind_KIND_VOICE_STATE Kind = 6
-	Kind_KIND_REPLY       Kind = 7
-	Kind_KIND_MESSAGE     Kind = 8
+	Kind_KIND_UNSPECIFIED    Kind = 0
+	Kind_KIND_HELLO          Kind = 1
+	Kind_KIND_WELCOME        Kind = 2
+	Kind_KIND_STATE          Kind = 3
+	Kind_KIND_MOVE           Kind = 4
+	Kind_KIND_CHAT           Kind = 5
+	Kind_KIND_VOICE_STATE    Kind = 6
+	Kind_KIND_REPLY          Kind = 7
+	Kind_KIND_MESSAGE        Kind = 8
+	Kind_KIND_CLAIM_OWNER    Kind = 9
+	Kind_KIND_CREATE_CHANNEL Kind = 10
+	Kind_KIND_UPDATE_CHANNEL Kind = 11
+	Kind_KIND_DELETE_CHANNEL Kind = 12
 )
 
 // Enum value maps for Kind.
 var (
 	Kind_name = map[int32]string{
-		0: "KIND_UNSPECIFIED",
-		1: "KIND_HELLO",
-		2: "KIND_WELCOME",
-		3: "KIND_STATE",
-		4: "KIND_MOVE",
-		5: "KIND_CHAT",
-		6: "KIND_VOICE_STATE",
-		7: "KIND_REPLY",
-		8: "KIND_MESSAGE",
+		0:  "KIND_UNSPECIFIED",
+		1:  "KIND_HELLO",
+		2:  "KIND_WELCOME",
+		3:  "KIND_STATE",
+		4:  "KIND_MOVE",
+		5:  "KIND_CHAT",
+		6:  "KIND_VOICE_STATE",
+		7:  "KIND_REPLY",
+		8:  "KIND_MESSAGE",
+		9:  "KIND_CLAIM_OWNER",
+		10: "KIND_CREATE_CHANNEL",
+		11: "KIND_UPDATE_CHANNEL",
+		12: "KIND_DELETE_CHANNEL",
 	}
 	Kind_value = map[string]int32{
-		"KIND_UNSPECIFIED": 0,
-		"KIND_HELLO":       1,
-		"KIND_WELCOME":     2,
-		"KIND_STATE":       3,
-		"KIND_MOVE":        4,
-		"KIND_CHAT":        5,
-		"KIND_VOICE_STATE": 6,
-		"KIND_REPLY":       7,
-		"KIND_MESSAGE":     8,
+		"KIND_UNSPECIFIED":    0,
+		"KIND_HELLO":          1,
+		"KIND_WELCOME":        2,
+		"KIND_STATE":          3,
+		"KIND_MOVE":           4,
+		"KIND_CHAT":           5,
+		"KIND_VOICE_STATE":    6,
+		"KIND_REPLY":          7,
+		"KIND_MESSAGE":        8,
+		"KIND_CLAIM_OWNER":    9,
+		"KIND_CREATE_CHANNEL": 10,
+		"KIND_UPDATE_CHANNEL": 11,
+		"KIND_DELETE_CHANNEL": 12,
 	}
 )
 
@@ -154,6 +166,8 @@ type Hello struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Nickname      string                 `protobuf:"bytes,1,opt,name=nickname,proto3" json:"nickname,omitempty"`
 	Password      string                 `protobuf:"bytes,2,opt,name=password,proto3" json:"password,omitempty"`
+	PublicKey     []byte                 `protobuf:"bytes,3,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
+	Signature     []byte                 `protobuf:"bytes,4,opt,name=signature,proto3" json:"signature,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -202,18 +216,249 @@ func (x *Hello) GetPassword() string {
 	return ""
 }
 
+func (x *Hello) GetPublicKey() []byte {
+	if x != nil {
+		return x.PublicKey
+	}
+	return nil
+}
+
+func (x *Hello) GetSignature() []byte {
+	if x != nil {
+		return x.Signature
+	}
+	return nil
+}
+
+type ClaimOwner struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Token         string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ClaimOwner) Reset() {
+	*x = ClaimOwner{}
+	mi := &file_control_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClaimOwner) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClaimOwner) ProtoMessage() {}
+
+func (x *ClaimOwner) ProtoReflect() protoreflect.Message {
+	mi := &file_control_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClaimOwner.ProtoReflect.Descriptor instead.
+func (*ClaimOwner) Descriptor() ([]byte, []int) {
+	return file_control_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *ClaimOwner) GetToken() string {
+	if x != nil {
+		return x.Token
+	}
+	return ""
+}
+
+type CreateChannel struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Description   string                 `protobuf:"bytes,2,opt,name=description,proto3" json:"description,omitempty"`
+	Bitrate       uint32                 `protobuf:"varint,3,opt,name=bitrate,proto3" json:"bitrate,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateChannel) Reset() {
+	*x = CreateChannel{}
+	mi := &file_control_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateChannel) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateChannel) ProtoMessage() {}
+
+func (x *CreateChannel) ProtoReflect() protoreflect.Message {
+	mi := &file_control_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateChannel.ProtoReflect.Descriptor instead.
+func (*CreateChannel) Descriptor() ([]byte, []int) {
+	return file_control_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *CreateChannel) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *CreateChannel) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *CreateChannel) GetBitrate() uint32 {
+	if x != nil {
+		return x.Bitrate
+	}
+	return 0
+}
+
+type UpdateChannel struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            uint32                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Description   string                 `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
+	Bitrate       uint32                 `protobuf:"varint,4,opt,name=bitrate,proto3" json:"bitrate,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateChannel) Reset() {
+	*x = UpdateChannel{}
+	mi := &file_control_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateChannel) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateChannel) ProtoMessage() {}
+
+func (x *UpdateChannel) ProtoReflect() protoreflect.Message {
+	mi := &file_control_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateChannel.ProtoReflect.Descriptor instead.
+func (*UpdateChannel) Descriptor() ([]byte, []int) {
+	return file_control_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *UpdateChannel) GetId() uint32 {
+	if x != nil {
+		return x.Id
+	}
+	return 0
+}
+
+func (x *UpdateChannel) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *UpdateChannel) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *UpdateChannel) GetBitrate() uint32 {
+	if x != nil {
+		return x.Bitrate
+	}
+	return 0
+}
+
+type DeleteChannel struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            uint32                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteChannel) Reset() {
+	*x = DeleteChannel{}
+	mi := &file_control_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteChannel) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteChannel) ProtoMessage() {}
+
+func (x *DeleteChannel) ProtoReflect() protoreflect.Message {
+	mi := &file_control_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteChannel.ProtoReflect.Descriptor instead.
+func (*DeleteChannel) Descriptor() ([]byte, []int) {
+	return file_control_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *DeleteChannel) GetId() uint32 {
+	if x != nil {
+		return x.Id
+	}
+	return 0
+}
+
 type Channel struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            uint32                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"` // Application range: 1..65535.
 	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
 	Description   string                 `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
+	Bitrate       uint32                 `protobuf:"varint,4,opt,name=bitrate,proto3" json:"bitrate,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Channel) Reset() {
 	*x = Channel{}
-	mi := &file_control_proto_msgTypes[2]
+	mi := &file_control_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -225,7 +470,7 @@ func (x *Channel) String() string {
 func (*Channel) ProtoMessage() {}
 
 func (x *Channel) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[2]
+	mi := &file_control_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -238,7 +483,7 @@ func (x *Channel) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Channel.ProtoReflect.Descriptor instead.
 func (*Channel) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{2}
+	return file_control_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *Channel) GetId() uint32 {
@@ -262,6 +507,13 @@ func (x *Channel) GetDescription() string {
 	return ""
 }
 
+func (x *Channel) GetBitrate() uint32 {
+	if x != nil {
+		return x.Bitrate
+	}
+	return 0
+}
+
 type Member struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            uint32                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -277,7 +529,7 @@ type Member struct {
 
 func (x *Member) Reset() {
 	*x = Member{}
-	mi := &file_control_proto_msgTypes[3]
+	mi := &file_control_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -289,7 +541,7 @@ func (x *Member) String() string {
 func (*Member) ProtoMessage() {}
 
 func (x *Member) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[3]
+	mi := &file_control_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -302,7 +554,7 @@ func (x *Member) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Member.ProtoReflect.Descriptor instead.
 func (*Member) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{3}
+	return file_control_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *Member) GetId() uint32 {
@@ -355,19 +607,24 @@ func (x *Member) GetEpoch() uint32 {
 }
 
 type State struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Self          uint32                 `protobuf:"varint,2,opt,name=self,proto3" json:"self,omitempty"`
-	Epoch         uint32                 `protobuf:"varint,3,opt,name=epoch,proto3" json:"epoch,omitempty"`
-	Channels      []*Channel             `protobuf:"bytes,4,rep,name=channels,proto3" json:"channels,omitempty"`
-	Members       []*Member              `protobuf:"bytes,5,rep,name=members,proto3" json:"members,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                    protoimpl.MessageState `protogen:"open.v1"`
+	Name                     string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Self                     uint32                 `protobuf:"varint,2,opt,name=self,proto3" json:"self,omitempty"`
+	Epoch                    uint32                 `protobuf:"varint,3,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	Channels                 []*Channel             `protobuf:"bytes,4,rep,name=channels,proto3" json:"channels,omitempty"`
+	Members                  []*Member              `protobuf:"bytes,5,rep,name=members,proto3" json:"members,omitempty"`
+	IdentityUid              string                 `protobuf:"bytes,6,opt,name=identity_uid,json=identityUid,proto3" json:"identity_uid,omitempty"`
+	ServerRole               string                 `protobuf:"bytes,7,opt,name=server_role,json=serverRole,proto3" json:"server_role,omitempty"`
+	CanClaimOwner            bool                   `protobuf:"varint,8,opt,name=can_claim_owner,json=canClaimOwner,proto3" json:"can_claim_owner,omitempty"`
+	CanManageChannels        bool                   `protobuf:"varint,9,opt,name=can_manage_channels,json=canManageChannels,proto3" json:"can_manage_channels,omitempty"`
+	CanConfigureChannelAudio bool                   `protobuf:"varint,10,opt,name=can_configure_channel_audio,json=canConfigureChannelAudio,proto3" json:"can_configure_channel_audio,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *State) Reset() {
 	*x = State{}
-	mi := &file_control_proto_msgTypes[4]
+	mi := &file_control_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -379,7 +636,7 @@ func (x *State) String() string {
 func (*State) ProtoMessage() {}
 
 func (x *State) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[4]
+	mi := &file_control_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -392,7 +649,7 @@ func (x *State) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use State.ProtoReflect.Descriptor instead.
 func (*State) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{4}
+	return file_control_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *State) GetName() string {
@@ -430,6 +687,41 @@ func (x *State) GetMembers() []*Member {
 	return nil
 }
 
+func (x *State) GetIdentityUid() string {
+	if x != nil {
+		return x.IdentityUid
+	}
+	return ""
+}
+
+func (x *State) GetServerRole() string {
+	if x != nil {
+		return x.ServerRole
+	}
+	return ""
+}
+
+func (x *State) GetCanClaimOwner() bool {
+	if x != nil {
+		return x.CanClaimOwner
+	}
+	return false
+}
+
+func (x *State) GetCanManageChannels() bool {
+	if x != nil {
+		return x.CanManageChannels
+	}
+	return false
+}
+
+func (x *State) GetCanConfigureChannelAudio() bool {
+	if x != nil {
+		return x.CanConfigureChannelAudio
+	}
+	return false
+}
+
 // VoiceState sets both flags; it is not a partial update. Missing flags mean false.
 type Command struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -443,7 +735,7 @@ type Command struct {
 
 func (x *Command) Reset() {
 	*x = Command{}
-	mi := &file_control_proto_msgTypes[5]
+	mi := &file_control_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -455,7 +747,7 @@ func (x *Command) String() string {
 func (*Command) ProtoMessage() {}
 
 func (x *Command) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[5]
+	mi := &file_control_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -468,7 +760,7 @@ func (x *Command) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Command.ProtoReflect.Descriptor instead.
 func (*Command) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{5}
+	return file_control_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *Command) GetChannel() uint32 {
@@ -508,7 +800,7 @@ type Reply struct {
 
 func (x *Reply) Reset() {
 	*x = Reply{}
-	mi := &file_control_proto_msgTypes[6]
+	mi := &file_control_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -520,7 +812,7 @@ func (x *Reply) String() string {
 func (*Reply) ProtoMessage() {}
 
 func (x *Reply) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[6]
+	mi := &file_control_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -533,7 +825,7 @@ func (x *Reply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Reply.ProtoReflect.Descriptor instead.
 func (*Reply) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{6}
+	return file_control_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *Reply) GetCode() uint32 {
@@ -555,7 +847,7 @@ type Message struct {
 
 func (x *Message) Reset() {
 	*x = Message{}
-	mi := &file_control_proto_msgTypes[7]
+	mi := &file_control_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -567,7 +859,7 @@ func (x *Message) String() string {
 func (*Message) ProtoMessage() {}
 
 func (x *Message) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[7]
+	mi := &file_control_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -580,7 +872,7 @@ func (x *Message) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Message.ProtoReflect.Descriptor instead.
 func (*Message) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{7}
+	return file_control_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *Message) GetChannel() uint32 {
@@ -619,14 +911,32 @@ const file_control_proto_rawDesc = "" +
 	"\x05Frame\x12+\n" +
 	"\x04kind\x18\x01 \x01(\x0e2\x17.resona.control.v1.KindR\x04kind\x12\x18\n" +
 	"\arequest\x18\x02 \x01(\rR\arequest\x12\x12\n" +
-	"\x04body\x18\x03 \x01(\fR\x04body\"?\n" +
+	"\x04body\x18\x03 \x01(\fR\x04body\"|\n" +
 	"\x05Hello\x12\x1a\n" +
 	"\bnickname\x18\x01 \x01(\tR\bnickname\x12\x1a\n" +
-	"\bpassword\x18\x02 \x01(\tR\bpassword\"O\n" +
+	"\bpassword\x18\x02 \x01(\tR\bpassword\x12\x1d\n" +
+	"\n" +
+	"public_key\x18\x03 \x01(\fR\tpublicKey\x12\x1c\n" +
+	"\tsignature\x18\x04 \x01(\fR\tsignature\"\"\n" +
+	"\n" +
+	"ClaimOwner\x12\x14\n" +
+	"\x05token\x18\x01 \x01(\tR\x05token\"_\n" +
+	"\rCreateChannel\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
+	"\vdescription\x18\x02 \x01(\tR\vdescription\x12\x18\n" +
+	"\abitrate\x18\x03 \x01(\rR\abitrate\"o\n" +
+	"\rUpdateChannel\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\rR\x02id\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12 \n" +
+	"\vdescription\x18\x03 \x01(\tR\vdescription\x12\x18\n" +
+	"\abitrate\x18\x04 \x01(\rR\abitrate\"\x1f\n" +
+	"\rDeleteChannel\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\rR\x02id\"i\n" +
 	"\aChannel\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\rR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12 \n" +
-	"\vdescription\x18\x03 \x01(\tR\vdescription\"\xb2\x01\n" +
+	"\vdescription\x18\x03 \x01(\tR\vdescription\x12\x18\n" +
+	"\abitrate\x18\x04 \x01(\rR\abitrate\"\xb2\x01\n" +
 	"\x06Member\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\rR\x02id\x12\x18\n" +
 	"\achannel\x18\x02 \x01(\rR\achannel\x12\x1a\n" +
@@ -634,13 +944,20 @@ const file_control_proto_rawDesc = "" +
 	"\binstance\x18\x04 \x01(\tR\binstance\x12\x14\n" +
 	"\x05muted\x18\x05 \x01(\bR\x05muted\x12\x1a\n" +
 	"\bdeafened\x18\x06 \x01(\bR\bdeafened\x12\x14\n" +
-	"\x05epoch\x18\a \x01(\rR\x05epoch\"\xb2\x01\n" +
+	"\x05epoch\x18\a \x01(\rR\x05epoch\"\x8d\x03\n" +
 	"\x05State\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04self\x18\x02 \x01(\rR\x04self\x12\x14\n" +
 	"\x05epoch\x18\x03 \x01(\rR\x05epoch\x126\n" +
 	"\bchannels\x18\x04 \x03(\v2\x1a.resona.control.v1.ChannelR\bchannels\x123\n" +
-	"\amembers\x18\x05 \x03(\v2\x19.resona.control.v1.MemberR\amembers\"i\n" +
+	"\amembers\x18\x05 \x03(\v2\x19.resona.control.v1.MemberR\amembers\x12!\n" +
+	"\fidentity_uid\x18\x06 \x01(\tR\videntityUid\x12\x1f\n" +
+	"\vserver_role\x18\a \x01(\tR\n" +
+	"serverRole\x12&\n" +
+	"\x0fcan_claim_owner\x18\b \x01(\bR\rcanClaimOwner\x12.\n" +
+	"\x13can_manage_channels\x18\t \x01(\bR\x11canManageChannels\x12=\n" +
+	"\x1bcan_configure_channel_audio\x18\n" +
+	" \x01(\bR\x18canConfigureChannelAudio\"i\n" +
 	"\aCommand\x12\x18\n" +
 	"\achannel\x18\x01 \x01(\rR\achannel\x12\x12\n" +
 	"\x04text\x18\x02 \x01(\tR\x04text\x12\x14\n" +
@@ -652,7 +969,7 @@ const file_control_proto_rawDesc = "" +
 	"\achannel\x18\x01 \x01(\rR\achannel\x12\x16\n" +
 	"\x06sender\x18\x02 \x01(\rR\x06sender\x12\x1a\n" +
 	"\bnickname\x18\x03 \x01(\tR\bnickname\x12\x12\n" +
-	"\x04text\x18\x04 \x01(\tR\x04text*\xa4\x01\n" +
+	"\x04text\x18\x04 \x01(\tR\x04text*\x85\x02\n" +
 	"\x04Kind\x12\x14\n" +
 	"\x10KIND_UNSPECIFIED\x10\x00\x12\x0e\n" +
 	"\n" +
@@ -665,7 +982,12 @@ const file_control_proto_rawDesc = "" +
 	"\x10KIND_VOICE_STATE\x10\x06\x12\x0e\n" +
 	"\n" +
 	"KIND_REPLY\x10\a\x12\x10\n" +
-	"\fKIND_MESSAGE\x10\bB3Z1github.com/tsukiyoz/resona/internal/nativewire/pbb\x06proto3"
+	"\fKIND_MESSAGE\x10\b\x12\x14\n" +
+	"\x10KIND_CLAIM_OWNER\x10\t\x12\x17\n" +
+	"\x13KIND_CREATE_CHANNEL\x10\n" +
+	"\x12\x17\n" +
+	"\x13KIND_UPDATE_CHANNEL\x10\v\x12\x17\n" +
+	"\x13KIND_DELETE_CHANNEL\x10\fB3Z1github.com/tsukiyoz/resona/internal/nativewire/pbb\x06proto3"
 
 var (
 	file_control_proto_rawDescOnce sync.Once
@@ -680,22 +1002,26 @@ func file_control_proto_rawDescGZIP() []byte {
 }
 
 var file_control_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_control_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_control_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_control_proto_goTypes = []any{
-	(Kind)(0),       // 0: resona.control.v1.Kind
-	(*Frame)(nil),   // 1: resona.control.v1.Frame
-	(*Hello)(nil),   // 2: resona.control.v1.Hello
-	(*Channel)(nil), // 3: resona.control.v1.Channel
-	(*Member)(nil),  // 4: resona.control.v1.Member
-	(*State)(nil),   // 5: resona.control.v1.State
-	(*Command)(nil), // 6: resona.control.v1.Command
-	(*Reply)(nil),   // 7: resona.control.v1.Reply
-	(*Message)(nil), // 8: resona.control.v1.Message
+	(Kind)(0),             // 0: resona.control.v1.Kind
+	(*Frame)(nil),         // 1: resona.control.v1.Frame
+	(*Hello)(nil),         // 2: resona.control.v1.Hello
+	(*ClaimOwner)(nil),    // 3: resona.control.v1.ClaimOwner
+	(*CreateChannel)(nil), // 4: resona.control.v1.CreateChannel
+	(*UpdateChannel)(nil), // 5: resona.control.v1.UpdateChannel
+	(*DeleteChannel)(nil), // 6: resona.control.v1.DeleteChannel
+	(*Channel)(nil),       // 7: resona.control.v1.Channel
+	(*Member)(nil),        // 8: resona.control.v1.Member
+	(*State)(nil),         // 9: resona.control.v1.State
+	(*Command)(nil),       // 10: resona.control.v1.Command
+	(*Reply)(nil),         // 11: resona.control.v1.Reply
+	(*Message)(nil),       // 12: resona.control.v1.Message
 }
 var file_control_proto_depIdxs = []int32{
 	0, // 0: resona.control.v1.Frame.kind:type_name -> resona.control.v1.Kind
-	3, // 1: resona.control.v1.State.channels:type_name -> resona.control.v1.Channel
-	4, // 2: resona.control.v1.State.members:type_name -> resona.control.v1.Member
+	7, // 1: resona.control.v1.State.channels:type_name -> resona.control.v1.Channel
+	8, // 2: resona.control.v1.State.members:type_name -> resona.control.v1.Member
 	3, // [3:3] is the sub-list for method output_type
 	3, // [3:3] is the sub-list for method input_type
 	3, // [3:3] is the sub-list for extension type_name
@@ -714,7 +1040,7 @@ func file_control_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_control_proto_rawDesc), len(file_control_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   8,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

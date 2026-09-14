@@ -54,6 +54,7 @@ func Run(ctx context.Context, service *client.Service, input io.ReadCloser, outp
 	}
 	var workers sync.WaitGroup
 	readSlots := make(chan struct{}, 4)
+	adminSlots := make(chan struct{}, 1)
 	var shutdownResult *shutdownStatus
 	var cancelDetails context.CancelFunc
 	defer func() {
@@ -135,6 +136,36 @@ func Run(ctx context.Context, service *client.Service, input io.ReadCloser, outp
 				return nil
 			}
 		case req := <-requests:
+			if req.Method == "CreateChannel" || req.Method == "UpdateChannel" || req.Method == "DeleteChannel" || req.Method == "ClaimServerOwner" {
+				select {
+				case adminSlots <- struct{}{}:
+					workers.Add(1)
+					go func(req request) {
+						defer workers.Done()
+						defer func() { <-adminSlots }()
+						result, err := dispatchWithContext(ctx, service, req)
+						response := envelope{ID: req.ID, Result: result}
+						if err != nil {
+							response.Result = nil
+							response.Error = err.Error()
+						}
+						writerMu.Lock()
+						writeErr := encoder.Encode(response)
+						writerMu.Unlock()
+						if writeErr != nil {
+							fail(errors.New("desktop response unavailable"))
+						}
+					}(req)
+				default:
+					writerMu.Lock()
+					writeErr := encoder.Encode(envelope{ID: req.ID, Error: "服务器管理操作正在进行"})
+					writerMu.Unlock()
+					if writeErr != nil {
+						return errors.New("desktop response unavailable")
+					}
+				}
+				continue
+			}
 			isDetails := req.Method == "GetChannelDetails" || req.Method == "GetUserDetails"
 			if isDetails || req.Method == "SelectChannel" || req.Method == "CancelDetails" {
 				if cancelDetails != nil {
@@ -271,6 +302,10 @@ func decodeParams(raw json.RawMessage, target any) error {
 }
 
 func dispatch(s *client.Service, req request) (any, error) {
+	return dispatchWithContext(context.Background(), s, req)
+}
+
+func dispatchWithContext(ctx context.Context, s *client.Service, req request) (any, error) {
 	if req.Method == "SetUserPlayback" {
 		var p struct {
 			SessionID string `json:"sessionID"`
@@ -295,6 +330,10 @@ func dispatch(s *client.Service, req request) (any, error) {
 		SessionID      string               `json:"sessionID"`
 		ChannelID      string               `json:"channelID"`
 		Text           string               `json:"text"`
+		Token          string               `json:"token"`
+		Name           string               `json:"name"`
+		Description    string               `json:"description"`
+		Bitrate        uint32               `json:"bitrate"`
 		AllowDuplicate bool                 `json:"allowDuplicate"`
 	}
 	if req.Method == "ConfigureVoice" || req.Method == "SetVoicePreferences" {
@@ -364,6 +403,14 @@ func dispatch(s *client.Service, req request) (any, error) {
 		return s.ConnectServerWithPassword(p.ID, p.Password, p.Remember)
 	case "ForgetServerPassword":
 		return s.ForgetServerPassword(p.ID)
+	case "ClaimServerOwner":
+		return s.ClaimServerOwnerContext(ctx, p.SessionID, p.Token)
+	case "CreateChannel":
+		return struct{}{}, s.ManageChannelContext(ctx, p.SessionID, "create", "", p.Name, p.Description, p.Bitrate)
+	case "UpdateChannel":
+		return struct{}{}, s.ManageChannelContext(ctx, p.SessionID, "update", p.ChannelID, p.Name, p.Description, p.Bitrate)
+	case "DeleteChannel":
+		return struct{}{}, s.ManageChannelContext(ctx, p.SessionID, "delete", p.ChannelID, "", "")
 	case "DisconnectServer":
 		return s.DisconnectServer()
 	case "SelectChannel":

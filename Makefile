@@ -1,5 +1,9 @@
 .PHONY: dev build core test test-protocol generate
 
+VERSION ?= dev
+BUILD_TIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+VERSION_LDFLAGS = -X github.com/tsukiyoz/resona/internal/version.Version=$(VERSION) -X github.com/tsukiyoz/resona/internal/version.BuildTime=$(BUILD_TIME)
+
 generate:
 	go generate ./internal/nativewire/pb
 
@@ -10,7 +14,7 @@ build: core
 	cargo build --release --manifest-path desktop/Cargo.toml
 
 core:
-	CGO_ENABLED=1 go build -o build/bin/resona-core ./cmd/resona-core
+	CGO_ENABLED=1 go build -ldflags '$(VERSION_LDFLAGS)' -o build/bin/resona-core ./cmd/resona-core
 
 test:
 	go test ./internal/...

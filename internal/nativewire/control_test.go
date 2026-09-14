@@ -33,7 +33,7 @@ func TestControlProtobufGoldenAndUnknownFields(t *testing.T) {
 	binary.BigEndian.PutUint32(wire, uint32(len(data)))
 	f, err := Read(bytes.NewReader(append(wire, data...)))
 	var got Hello
-	if err != nil || Decode(f, &got) != nil || got != (Hello{Nickname: "tester", Password: "secret"}) {
+	if err != nil || Decode(f, &got) != nil || !reflect.DeepEqual(got, Hello{Nickname: "tester", Password: "secret"}) {
 		t.Fatalf("unknown field compatibility: %+v %v", got, err)
 	}
 }
@@ -44,6 +44,8 @@ func TestControlBoundsAndTypeSafety(t *testing.T) {
 		message proto.Message
 		dest    any
 	}{
+		{UpdateChannelKind, &pb.UpdateChannel{Id: 65536}, &UpdateChannel{}},
+		{DeleteChannelKind, &pb.DeleteChannel{Id: 65536}, &DeleteChannel{}},
 		{MoveKind, &pb.Command{Channel: 65536}, &Command{}},
 		{ReplyKind, &pb.Reply{Code: 256}, &Reply{}},
 		{MessageKind, &pb.Message{Sender: 65536}, &Message{}},

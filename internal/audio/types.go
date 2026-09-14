@@ -54,6 +54,10 @@ type Transport interface {
 	SetVoiceMuted(context.Context, bool, bool) error
 }
 
+// ChannelBitrateSource returns the authoritative target bitrate without blocking.
+// Implementations must support reads concurrent with control-state updates.
+type ChannelBitrateSource interface{ VoiceBitrate() int }
+
 type DeviceKind string
 
 const (

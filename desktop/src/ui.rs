@@ -70,6 +70,14 @@ impl IconNamed for VoiceIcon {
 
 #[derive(Clone)]
 enum Pending {
+    ChannelMutation {
+        session: String,
+        revision: u64,
+    },
+    ClaimOwner {
+        session: String,
+        revision: u64,
+    },
     InputGain,
     UserPlayback(UserPlaybackTarget),
     Workspace(&'static str),
@@ -149,10 +157,26 @@ struct SubmittedDraft {
 
 #[derive(Clone)]
 enum Modal {
-    Server { editing_id: String },
-    Password { server_id: String },
-    Delete { server_id: String },
-    Duplicate { message_id: String },
+    Channel {
+        session: String,
+        id: String,
+        delete: bool,
+    },
+    Ownership {
+        session: String,
+    },
+    Server {
+        editing_id: String,
+    },
+    Password {
+        server_id: String,
+    },
+    Delete {
+        server_id: String,
+    },
+    Duplicate {
+        message_id: String,
+    },
     Settings,
     Audio,
 }
@@ -206,6 +230,15 @@ pub struct ResonaApp {
     submitted_drafts: HashMap<String, (String, String)>,
     selected_server: String,
     modal: Option<Modal>,
+    ownership_revision: u64,
+    channel_revision: u64,
+    channel_error: String,
+    channel_name_input: Entity<InputState>,
+    channel_description_input: Entity<InputState>,
+    channel_bitrate_input: Entity<InputState>,
+    channel_audio_preset: u32,
+    ownership_error: String,
+    claim_input: Entity<InputState>,
     device_menu: Option<DeviceMenu>,
     device_trigger_bounds: [Option<gpui::Bounds<gpui::Pixels>>; 2],
     remember_password: bool,
@@ -233,6 +266,13 @@ pub struct ResonaApp {
 impl ResonaApp {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let name_input = cx.new(|cx| InputState::new(window, cx).placeholder("服务器名称"));
+        let channel_name_input = cx.new(|cx| InputState::new(window, cx).placeholder("频道名称"));
+        let channel_bitrate_input = cx.new(|cx| InputState::new(window, cx).placeholder("16–64"));
+        let channel_description_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .multi_line(true)
+                .placeholder("频道描述")
+        });
         let address_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("voice.example.com"));
         let nickname_input = cx.new(|cx| InputState::new(window, cx).placeholder("昵称"));
@@ -243,6 +283,11 @@ impl ResonaApp {
         let password_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("服务器密码，可留空")
+                .masked(true)
+        });
+        let claim_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("一次性所有者认领码")
                 .masked(true)
         });
         let chat_input = cx.new(|cx| {
@@ -329,6 +374,9 @@ impl ResonaApp {
             certificate_input.clone(),
             public_key_input.clone(),
             password_input.clone(),
+            claim_input.clone(),
+            channel_name_input.clone(),
+            channel_bitrate_input.clone(),
         ]
         .into_iter()
         .map(|input| {
@@ -344,6 +392,15 @@ impl ResonaApp {
                         return;
                     }
                     match this.modal.clone() {
+                        Some(Modal::Channel { delete: false, .. })
+                            if *input == this.channel_name_input
+                                || *input == this.channel_bitrate_input =>
+                        {
+                            this.submit_channel(cx)
+                        }
+                        Some(Modal::Ownership { .. }) if *input == this.claim_input => {
+                            this.claim_owner(window, cx)
+                        }
                         Some(Modal::Password { server_id }) if *input == this.password_input => {
                             this.connect_with_password(server_id, cx)
                         }
@@ -429,6 +486,15 @@ impl ResonaApp {
             submitted_drafts: HashMap::new(),
             selected_server: String::new(),
             modal: None,
+            ownership_revision: 0,
+            channel_revision: 0,
+            channel_error: String::new(),
+            channel_name_input,
+            channel_description_input,
+            channel_bitrate_input,
+            channel_audio_preset: 32000,
+            ownership_error: String::new(),
+            claim_input,
             device_menu: None,
             device_trigger_bounds: [None, None],
             remember_password: false,
@@ -556,6 +622,20 @@ impl ResonaApp {
 
     fn request_failed(&mut self, pending: Pending, error: String) {
         match pending {
+            Pending::ChannelMutation { session, revision } => {
+                if self.channel_matches(&session, revision) {
+                    self.channel_error = error;
+                } else if !self.closing && self.workspace.session.id == session {
+                    self.error = format!("频道操作：{error}");
+                }
+            }
+            Pending::ClaimOwner { session, revision } => {
+                if self.ownership_matches(&session, revision)
+                    && self.workspace.session.server_role != "owner"
+                {
+                    self.ownership_error = error;
+                }
+            }
             Pending::InputGain => self.input_gain_error = format!("输入增益未应用：{error}"),
             Pending::UserPlayback(target) => self.user_playback_failed(target, error),
             Pending::Details {
@@ -633,10 +713,51 @@ impl ResonaApp {
                 self.microphone_test = VoiceState::default();
                 self.ptt_pressed = false;
                 self.device_menu = None;
+                if matches!(
+                    self.modal,
+                    Some(Modal::Ownership { .. } | Modal::Channel { .. })
+                ) {
+                    self.close_modal(window, cx);
+                }
             }
             Incoming::Response { id, result } => {
                 let pending = self.pending.remove(&id);
                 match (pending, result) {
+                    (Some(Pending::ChannelMutation { session, revision }), result) => {
+                        if self.channel_matches(&session, revision) {
+                            match result {
+                                Ok(_) => self.close_modal(window, cx),
+                                Err(error) => self.channel_error = error,
+                            }
+                        } else if !self.closing && self.workspace.session.id == session {
+                            if let Err(error) = result {
+                                self.error = format!("频道操作：{error}");
+                            }
+                        }
+                    }
+                    (Some(Pending::ClaimOwner { session, revision }), result) => {
+                        if self.ownership_matches(&session, revision) {
+                            match result.and_then(|value| {
+                                serde_json::from_value::<Workspace>(value)
+                                    .map_err(|error| error.to_string())
+                            }) {
+                                Ok(workspace) if workspace.session.id == session => {
+                                    // Events can be newer than this reply; merge only ownership metadata.
+                                    if workspace.session.server_role == "owner" {
+                                        self.workspace.session.server_role =
+                                            workspace.session.server_role;
+                                        self.workspace.session.can_claim_owner = false;
+                                        self.ownership_error.clear();
+                                    }
+                                }
+                                Ok(_) => {}
+                                Err(error) if self.workspace.session.server_role != "owner" => {
+                                    self.ownership_error = error
+                                }
+                                Err(_) => {}
+                            }
+                        }
+                    }
                     (Some(Pending::InputGain), result) => {
                         match result.and_then(|value| {
                             serde_json::from_value::<u16>(value).map_err(|e| e.to_string())
@@ -917,6 +1038,25 @@ impl ResonaApp {
     fn apply_workspace(&mut self, value: Value, window: &mut Window, cx: &mut Context<Self>) {
         match serde_json::from_value::<Workspace>(value) {
             Ok(workspace) => {
+                if let Some(Modal::Channel { session, .. }) = &self.modal {
+                    if !workspace.connected()
+                        || workspace.session.id != *session
+                        || !workspace.session.can_manage_channels
+                    {
+                        self.close_modal(window, cx);
+                    }
+                }
+                if let Some(Modal::Ownership { session }) = &self.modal {
+                    if !workspace.connected() || workspace.session.id != *session {
+                        self.close_modal(window, cx);
+                    } else if workspace.session.server_role == "owner"
+                        || !workspace.session.can_claim_owner
+                    {
+                        self.claim_input
+                            .update(cx, |input, cx| input.set_value("", window, cx));
+                        self.ownership_error.clear();
+                    }
+                }
                 let detail_update = self
                     .detail_selection
                     .as_ref()
@@ -1502,7 +1642,223 @@ impl ResonaApp {
             .update(cx, |input, cx| input.focus(window, cx));
     }
 
+    fn ownership_matches(&self, session: &str, revision: u64) -> bool {
+        ownership_response_current(
+            &self.workspace,
+            self.modal.as_ref(),
+            self.closing,
+            self.ownership_revision,
+            session,
+            revision,
+        )
+    }
+
+    fn channel_matches(&self, session: &str, revision: u64) -> bool {
+        channel_response_current(
+            &self.workspace,
+            self.modal.as_ref(),
+            self.closing,
+            self.channel_revision,
+            session,
+            revision,
+        )
+    }
+
+    fn channel_pending(&self) -> bool {
+        self.pending.values().any(|p| matches!(p, Pending::ChannelMutation { session, .. } if *session == self.workspace.session.id))
+    }
+
+    fn open_channel_form(
+        &mut self,
+        session: String,
+        id: String,
+        delete: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.closing
+            || !self.workspace.connected()
+            || !self.workspace.session.can_manage_channels
+            || session != self.workspace.session.id
+        {
+            return;
+        }
+        let channel = self
+            .workspace
+            .channels
+            .iter()
+            .find(|ch| ch.id == id)
+            .cloned();
+        if !id.is_empty() && channel.is_none() {
+            self.error = "频道已不存在".into();
+            cx.notify();
+            return;
+        }
+        if delete
+            && channel
+                .as_ref()
+                .is_none_or(|ch| ch.is_default || ch.members != 0)
+        {
+            self.error = "默认频道或有成员的频道不能删除".into();
+            cx.notify();
+            return;
+        }
+        self.close_modal(window, cx);
+        if let Some(channel) = channel {
+            let bitrate = if channel.bitrate == 0 {
+                48000
+            } else {
+                channel.bitrate
+            };
+            self.channel_audio_preset = if [20000, 32000, 48000].contains(&bitrate) {
+                bitrate
+            } else {
+                0
+            };
+            self.channel_bitrate_input.update(cx, |input, cx| {
+                input.set_value((bitrate / 1000).to_string(), window, cx)
+            });
+            self.channel_name_input
+                .update(cx, |input, cx| input.set_value(channel.name, window, cx));
+            self.channel_description_input.update(cx, |input, cx| {
+                input.set_value(channel.description, window, cx)
+            });
+        }
+        self.modal = Some(Modal::Channel {
+            session,
+            id,
+            delete,
+        });
+        if !delete {
+            self.channel_name_input
+                .update(cx, |input, cx| input.focus(window, cx));
+        }
+        cx.notify();
+    }
+
+    fn submit_channel(&mut self, cx: &mut Context<Self>) {
+        let Some(Modal::Channel {
+            session,
+            id,
+            delete,
+        }) = self.modal.clone()
+        else {
+            return;
+        };
+        if !self.channel_matches(&session, self.channel_revision) || self.channel_pending() {
+            return;
+        }
+        if !id.is_empty() {
+            let target = self.workspace.channels.iter().find(|ch| ch.id == id);
+            if target.is_none()
+                || (delete && target.is_some_and(|ch| ch.is_default || ch.members != 0))
+            {
+                self.channel_error = "频道已不存在，或当前不允许删除".into();
+                cx.notify();
+                return;
+            }
+        }
+        let name = self.channel_name_input.read(cx).value().trim().to_owned();
+        let description = self.channel_description_input.read(cx).value().to_string();
+        if !delete
+            && (name.is_empty()
+                || name.chars().count() > 100
+                || name.chars().any(char::is_control)
+                || description.len() > 1024
+                || description.contains('\0'))
+        {
+            self.channel_error = "名称须为 1–100 个字符，描述最多 1024 字节".into();
+            cx.notify();
+            return;
+        }
+        self.channel_error.clear();
+        let bitrate = if !delete && self.workspace.session.can_configure_channel_audio {
+            match channel_bitrate(
+                self.channel_audio_preset,
+                self.channel_bitrate_input.read(cx).value().as_ref(),
+            ) {
+                Some(value) => value,
+                None => {
+                    self.channel_error = "目标码率须为 16–64 kbps 的整数".into();
+                    cx.notify();
+                    return;
+                }
+            }
+        } else {
+            0
+        };
+        self.request(if delete { "DeleteChannel" } else if id.is_empty() { "CreateChannel" } else { "UpdateChannel" },
+            json!({"sessionID": session, "channelID": id, "name": name, "description": description, "bitrate": bitrate}),
+            Pending::ChannelMutation { session, revision: self.channel_revision });
+        cx.notify();
+    }
+
+    fn claim_owner_pending(&self) -> bool {
+        ownership_pending(self.pending.values(), &self.workspace.session.id)
+    }
+
+    fn open_ownership(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.workspace.connected()
+            || (self.workspace.session.server_role.is_empty()
+                && !self.workspace.session.can_claim_owner)
+        {
+            return;
+        }
+        self.close_modal(window, cx);
+        self.modal = Some(Modal::Ownership {
+            session: self.workspace.session.id.clone(),
+        });
+        if self.workspace.session.can_claim_owner {
+            self.claim_input
+                .update(cx, |input, cx| input.focus(window, cx));
+        }
+        cx.notify();
+    }
+
+    fn claim_owner(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(Modal::Ownership { session }) = self.modal.clone() else {
+            return;
+        };
+        if !self.ownership_matches(&session, self.ownership_revision)
+            || !self.workspace.session.can_claim_owner
+            || self.claim_owner_pending()
+        {
+            return;
+        }
+        let token = self.claim_input.read(cx).unmask_value().to_string();
+        if token.trim().is_empty() {
+            self.ownership_error = "请输入所有者认领码".into();
+            cx.notify();
+            return;
+        }
+        self.claim_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.ownership_error.clear();
+        self.request(
+            "ClaimServerOwner",
+            json!({"sessionID": session, "token": token}),
+            Pending::ClaimOwner {
+                session,
+                revision: self.ownership_revision,
+            },
+        );
+        cx.notify();
+    }
+
     fn close_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.channel_audio_preset = 32000;
+        self.channel_bitrate_input
+            .update(cx, |input, cx| input.set_value("32", window, cx));
+        self.channel_revision = self.channel_revision.wrapping_add(1);
+        self.channel_error.clear();
+        self.channel_name_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.channel_description_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.claim_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.ownership_error.clear();
+        self.ownership_revision = self.ownership_revision.wrapping_add(1);
         if matches!(self.modal, Some(Modal::Audio))
             && (self.microphone_test.enabled || self.microphone_test.busy)
         {
@@ -2218,6 +2574,32 @@ impl ResonaApp {
             .flex()
             .items_center()
             .gap_1()
+            .when(
+                !collapsed
+                    && showing_session
+                    && self.workspace.connected()
+                    && self.workspace.session.can_manage_channels,
+                |header| {
+                    let view = view.clone();
+                    header.child(
+                        Button::new("create-channel")
+                            .icon(IconName::Plus)
+                            .ghost()
+                            .tooltip("新建频道")
+                            .on_click(move |_, window, cx| {
+                                view.update(cx, |this, cx| {
+                                    this.open_channel_form(
+                                        this.workspace.session.id.clone(),
+                                        String::new(),
+                                        false,
+                                        window,
+                                        cx,
+                                    );
+                                });
+                            }),
+                    )
+                },
+            )
             .when(!collapsed, |header| {
                 header.child(
                     div()
@@ -2247,6 +2629,25 @@ impl ResonaApp {
                         ),
                 )
             })
+            .when(
+                !collapsed
+                    && showing_session
+                    && self.workspace.connected()
+                    && (!self.workspace.session.server_role.is_empty()
+                        || self.workspace.session.can_claim_owner),
+                |header| {
+                    let view = view.clone();
+                    header.child(
+                        Button::new("server-ownership")
+                            .icon(IconName::Settings2)
+                            .ghost()
+                            .tooltip("服务器身份与权限")
+                            .on_click(move |_, window, cx| {
+                                view.update(cx, |this, cx| this.open_ownership(window, cx));
+                            }),
+                    )
+                },
+            )
             .child(
                 Button::new("toggle-channel-sidebar")
                     .icon(if collapsed {
@@ -2338,6 +2739,11 @@ impl ResonaApp {
     }
 
     fn render_channels(&self, view: &Entity<Self>) -> AnyElement {
+        let native_session = self.workspace.connected()
+            && self.workspace.servers.iter().any(|server| {
+                server.id == self.workspace.session.server_id
+                    && matches!(server.protocol.as_str(), "resona" | "resona-noise")
+            });
         let current = self.workspace.session.channel_id.clone();
         let switching = self.workspace.session.switching_channel_id.clone();
         let users = self.workspace.users.clone();
@@ -2406,6 +2812,9 @@ impl ResonaApp {
                 let is_switching = id == switching;
                 let locked = channel.password_required;
                 let channel_image = self.icon_cache.get(&channel.icon_ref).cloned();
+                let menu_entity = view.clone();
+                let menu_session = self.workspace.session.id.clone();
+                let menu_id = channel.id.clone();
                 let entity = view.clone();
                 let member_rows = users
                     .iter()
@@ -2638,7 +3047,92 @@ impl ResonaApp {
                                     } else {
                                         channel.members.to_string()
                                     }),
-                            ),
+                            )
+                            .map(|row| {
+                                if !native_session {
+                                    return row.into_any_element();
+                                }
+                                row.context_menu(move |mut menu, _, cx| {
+                                    let current = menu_entity.read(cx);
+                                    let enabled = current.workspace.connected()
+                                        && current.workspace.session.id == menu_session
+                                        && current.workspace.session.can_manage_channels
+                                        && !current.channel_pending();
+                                    let channel = current
+                                        .workspace
+                                        .channels
+                                        .iter()
+                                        .find(|ch| ch.id == menu_id);
+                                    let deletable =
+                                        channel.is_some_and(|ch| !ch.is_default && ch.members == 0);
+                                    let delete_label = if channel.is_some_and(|ch| ch.is_default) {
+                                        "删除频道（默认频道不可删除）"
+                                    } else if channel.is_some_and(|ch| ch.members != 0) {
+                                        "删除频道（频道内有成员）"
+                                    } else {
+                                        "删除频道"
+                                    };
+                                    let edit = menu_entity.clone();
+                                    let create = menu_entity.clone();
+                                    let create_session = menu_session.clone();
+                                    let edit_session = menu_session.clone();
+                                    let edit_id = menu_id.clone();
+                                    let delete = menu_entity.clone();
+                                    let delete_session = menu_session.clone();
+                                    let delete_id = menu_id.clone();
+                                    if !current.workspace.session.can_manage_channels {
+                                        menu = menu.label("服务器未授权频道管理");
+                                    } else if current.channel_pending() {
+                                        menu = menu.label("频道操作正在进行");
+                                    }
+                                    menu.item(
+                                        PopupMenuItem::new("新建频道").disabled(!enabled).on_click(
+                                            move |_, window, cx| {
+                                                create.update(cx, |this, cx| {
+                                                    this.open_channel_form(
+                                                        create_session.clone(),
+                                                        String::new(),
+                                                        false,
+                                                        window,
+                                                        cx,
+                                                    )
+                                                });
+                                            },
+                                        ),
+                                    )
+                                    .item(
+                                        PopupMenuItem::new("编辑频道")
+                                            .disabled(!enabled || channel.is_none())
+                                            .on_click(move |_, window, cx| {
+                                                edit.update(cx, |this, cx| {
+                                                    this.open_channel_form(
+                                                        edit_session.clone(),
+                                                        edit_id.clone(),
+                                                        false,
+                                                        window,
+                                                        cx,
+                                                    )
+                                                });
+                                            }),
+                                    )
+                                    .item(
+                                        PopupMenuItem::new(delete_label)
+                                            .disabled(!enabled || !deletable)
+                                            .on_click(move |_, window, cx| {
+                                                delete.update(cx, |this, cx| {
+                                                    this.open_channel_form(
+                                                        delete_session.clone(),
+                                                        delete_id.clone(),
+                                                        true,
+                                                        window,
+                                                        cx,
+                                                    )
+                                                });
+                                            }),
+                                    )
+                                })
+                                .into_any_element()
+                            }),
                     )
                     .children(member_rows)
                     .into_any_element()
@@ -4249,6 +4743,286 @@ impl ResonaApp {
         let audio_page = matches!(modal, Modal::Audio);
         let entity = view.clone();
         let card = match modal {
+            Modal::Channel { id, delete, .. } => {
+                let pending = self.channel_pending();
+                let audio_entity = entity.clone();
+                let audio_session = self.workspace.session.id.clone();
+                let audio_channel = id.clone();
+                let audio_revision = self.channel_revision;
+                let close = entity.clone();
+                let target = self.workspace.channels.iter().find(|ch| ch.id == id);
+                let unavailable = !id.is_empty()
+                    && (target.is_none()
+                        || (delete && target.is_some_and(|ch| ch.is_default || ch.members != 0)));
+                div().child(
+                    div()
+                        .id("channel-management-panel")
+                        .w(px(440.))
+                        .max_h(px(480.))
+                        .overflow_y_scrollbar()
+                        .p_5()
+                        .rounded(px(7.))
+                        .border_1()
+                        .border_color(rgb(LINE))
+                        .bg(rgb(PANEL_2))
+                        .shadow_lg()
+                        .flex()
+                        .flex_col()
+                        .gap_4()
+                        .child(modal_title(if delete {
+                            "删除频道"
+                        } else if id.is_empty() {
+                            "新建频道"
+                        } else {
+                            "编辑频道"
+                        }))
+                        .when(delete, |card| {
+                            card.child(div().text_sm().child(format!(
+                                "确认删除频道「{}」？",
+                                target.map(|ch| ch.name.as_str()).unwrap_or("已删除")
+                            )))
+                        })
+                        .when(!delete, |card| {
+                            card.child(div().text_xs().text_color(rgb(MUTED)).child("名称"))
+                                .child(
+                                    Input::new(&self.channel_name_input)
+                                        .disabled(pending || unavailable),
+                                )
+                                .child(div().text_xs().text_color(rgb(MUTED)).child("描述"))
+                                .child(
+                                    Input::new(&self.channel_description_input)
+                                        .h(px(110.))
+                                        .disabled(pending || unavailable),
+                                )
+                        })
+                        .when(
+                            !delete && self.workspace.session.can_configure_channel_audio,
+                            |card| {
+                                card.child(field(
+                                    "音质",
+                                    Button::new("channel-audio-preset")
+                                        .label(match self.channel_audio_preset {
+                                            20000 => "省流 · 20 kbps",
+                                            32000 => "游戏语音 · 32 kbps",
+                                            48000 => "高清语音 · 48 kbps",
+                                            _ => "自定义",
+                                        })
+                                        .icon(IconName::ChevronDown)
+                                        .disabled(pending || unavailable)
+                                        .dropdown_menu(move |mut menu, _, _| {
+                                            for (label, value) in [
+                                                ("省流 · 20 kbps", 20000),
+                                                ("游戏语音 · 32 kbps", 32000),
+                                                ("高清语音 · 48 kbps", 48000),
+                                                ("自定义", 0),
+                                            ] {
+                                                let entity = audio_entity.clone();
+                                                let session = audio_session.clone();
+                                                let channel = audio_channel.clone();
+                                                menu =
+                                                    menu.item(PopupMenuItem::new(label).on_click(
+                                                        move |_, _, cx| {
+                                                            entity.update(cx, |this, cx| {
+                                                                if this.channel_pending()
+                                                                    || !this.channel_matches(&session, audio_revision)
+                                                                    || !this.workspace.session.can_configure_channel_audio
+                                                                    || !matches!(&this.modal, Some(Modal::Channel { id, delete: false, .. }) if *id == channel)
+                                                                    || (!channel.is_empty() && !this.workspace.channels.iter().any(|ch| ch.id == channel))
+                                                                {
+                                                                    return;
+                                                                }
+                                                                this.channel_audio_preset = value;
+                                                                this.channel_error.clear();
+                                                                cx.notify();
+                                                            });
+                                                        },
+                                                    ));
+                                            }
+                                            menu
+                                        }),
+                                ))
+                                .when(
+                                    self.channel_audio_preset == 0,
+                                    |card| {
+                                        card.child(field(
+                                            "目标码率 (kbps)",
+                                            Input::new(&self.channel_bitrate_input)
+                                                .disabled(pending || unavailable),
+                                        ))
+                                    },
+                                )
+                            },
+                        )
+                        .when(
+                            !delete && !self.workspace.session.can_configure_channel_audio,
+                            |card| {
+                                card.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(rgb(MUTED))
+                                        .child("服务器不支持音质设置"),
+                                )
+                            },
+                        )
+                        .when(unavailable, |card| {
+                            card.child(
+                                div()
+                                    .text_sm()
+                                    .text_color(rgb(RED))
+                                    .child("频道已不存在，或当前不允许删除"),
+                            )
+                        })
+                        .when(!self.channel_error.is_empty(), |card| {
+                            card.child(
+                                div()
+                                    .text_sm()
+                                    .text_color(rgb(RED))
+                                    .child(self.channel_error.clone()),
+                            )
+                        })
+                        .child(
+                            div()
+                                .flex()
+                                .justify_end()
+                                .gap_2()
+                                .child(
+                                    Button::new("close-channel-form")
+                                        .label(if pending { "关闭" } else { "取消" })
+                                        .ghost()
+                                        .on_click(move |_, window, cx| {
+                                            close.update(cx, |this, cx| {
+                                                this.close_modal(window, cx)
+                                            });
+                                        }),
+                                )
+                                .child(
+                                    Button::new("submit-channel-form")
+                                        .label(if pending {
+                                            "处理中…"
+                                        } else if delete {
+                                            "删除"
+                                        } else {
+                                            "保存"
+                                        })
+                                        .primary()
+                                        .disabled(pending || unavailable)
+                                        .on_click(move |_, _, cx| {
+                                            entity.update(cx, |this, cx| this.submit_channel(cx));
+                                        }),
+                                ),
+                        ),
+                )
+            }
+            Modal::Ownership { .. } => {
+                let pending =
+                    self.claim_owner_pending() && self.workspace.session.server_role != "owner";
+                let role = match self.workspace.session.server_role.as_str() {
+                    "owner" => "所有者",
+                    "admin" => "管理员",
+                    "member" => "成员",
+                    _ => "未知角色",
+                };
+                div().child(
+                    div()
+                        .id("server-ownership-panel")
+                        .w(px(440.))
+                        .max_h(px(500.))
+                        .overflow_y_scrollbar()
+                        .p_5()
+                        .rounded(px(7.))
+                        .border_1()
+                        .border_color(rgb(LINE))
+                        .bg(rgb(PANEL_2))
+                        .shadow_lg()
+                        .flex()
+                        .flex_col()
+                        .gap_4()
+                        .child(modal_title("服务器身份与权限"))
+                        .child(
+                            div()
+                                .text_sm()
+                                .truncate()
+                                .child(self.workspace.session.server_name.clone()),
+                        )
+                        .child(div().text_sm().child(format!("当前角色：{role}")))
+                        .child(div().text_xs().text_color(rgb(MUTED)).child("身份 ID"))
+                        .child(
+                            div()
+                                .text_size(px(10.))
+                                .child(
+                                    div().child(
+                                        self.workspace
+                                            .session
+                                            .identity_uid
+                                            .chars()
+                                            .take(32)
+                                            .collect::<String>(),
+                                    ),
+                                )
+                                .child(
+                                    div().child(
+                                        self.workspace
+                                            .session
+                                            .identity_uid
+                                            .chars()
+                                            .skip(32)
+                                            .collect::<String>(),
+                                    ),
+                                ),
+                        )
+                        .when(self.workspace.session.can_claim_owner, |card| {
+                            card.child(Input::new(&self.claim_input).disabled(pending))
+                        })
+                        .when(pending, |card| {
+                            card.child(
+                                div()
+                                    .text_sm()
+                                    .text_color(rgb(MUTED))
+                                    .child("正在确认所有权…"),
+                            )
+                        })
+                        .when(!self.ownership_error.is_empty(), |card| {
+                            card.child(
+                                div()
+                                    .text_sm()
+                                    .text_color(rgb(RED))
+                                    .child(self.ownership_error.clone()),
+                            )
+                        })
+                        .child(
+                            div()
+                                .flex()
+                                .justify_end()
+                                .gap_2()
+                                .child(
+                                    Button::new("close-ownership")
+                                        .label("关闭")
+                                        .ghost()
+                                        .on_click({
+                                            let entity = entity.clone();
+                                            move |_, window, cx| {
+                                                entity.update(cx, |this, cx| {
+                                                    this.close_modal(window, cx)
+                                                });
+                                            }
+                                        }),
+                                )
+                                .when(self.workspace.session.can_claim_owner, |row| {
+                                    row.child(
+                                        Button::new("claim-owner")
+                                            .label("认领所有者")
+                                            .primary()
+                                            .disabled(pending)
+                                            .on_click(move |_, window, cx| {
+                                                entity.update(cx, |this, cx| {
+                                                    this.claim_owner(window, cx)
+                                                });
+                                            }),
+                                    )
+                                }),
+                        ),
+                )
+            }
             Modal::Audio => self.render_audio_settings(view),
             Modal::Server { editing_id } => {
                 let editing = !editing_id.is_empty();
@@ -4985,6 +5759,21 @@ impl Render for ResonaApp {
     }
 }
 
+fn channel_bitrate(preset: u32, custom: &str) -> Option<u32> {
+    if [20000, 32000, 48000].contains(&preset) {
+        return Some(preset);
+    }
+    if preset != 0 {
+        return None;
+    }
+    let value = custom.trim();
+    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let kbps = value.parse::<u32>().ok()?;
+    (16..=64).contains(&kbps).then(|| kbps * 1000)
+}
+
 fn parse_playback_volume(value: &str) -> Result<u16, &'static str> {
     let value = value.trim();
     let (negative, digits) = if let Some(rest) = value.strip_prefix('-') {
@@ -5028,6 +5817,43 @@ fn can_prepare_voice_preferences(mode: &str) -> bool {
     matches!(mode, "" | "offline" | "failed" | "preview")
 }
 
+fn ownership_response_current(
+    workspace: &Workspace,
+    modal: Option<&Modal>,
+    closing: bool,
+    current_revision: u64,
+    session: &str,
+    revision: u64,
+) -> bool {
+    !closing
+        && workspace.connected()
+        && workspace.session.id == session
+        && current_revision == revision
+        && matches!(modal, Some(Modal::Ownership { session: open }) if open == session)
+}
+
+fn channel_response_current(
+    workspace: &Workspace,
+    modal: Option<&Modal>,
+    closing: bool,
+    current_revision: u64,
+    session: &str,
+    revision: u64,
+) -> bool {
+    !closing
+        && workspace.connected()
+        && workspace.session.can_manage_channels
+        && workspace.session.id == session
+        && current_revision == revision
+        && matches!(modal, Some(Modal::Channel { session: open, .. }) if open == session)
+}
+
+fn ownership_pending<'a>(pending: impl Iterator<Item = &'a Pending>, session_id: &str) -> bool {
+    pending.into_iter().any(
+        |pending| matches!(pending, Pending::ClaimOwner { session, .. } if session == session_id),
+    )
+}
+
 fn detail_selection_change(
     selection: &DetailSelection,
     previous: &Workspace,
@@ -5069,6 +5895,7 @@ fn detail_selection_change(
             };
             if old.name != channel.name
                 || old.description != channel.description
+                || old.bitrate != channel.bitrate
                 || old.parent_id != channel.parent_id
                 || old.password_required != channel.password_required
                 || old.kind != channel.kind
@@ -5306,12 +6133,94 @@ fn ordered_channels(channels: &[crate::model::Channel]) -> Vec<(crate::model::Ch
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn channel_audio_presets_and_custom_bounds() {
+        for value in [20000, 32000, 48000] {
+            assert_eq!(super::channel_bitrate(value, "invalid"), Some(value));
+        }
+        for (input, want) in [("16", 16000), (" 37 ", 37000), ("64", 64000)] {
+            assert_eq!(super::channel_bitrate(0, input), Some(want));
+        }
+        for input in [
+            "",
+            "15",
+            "65",
+            "-1",
+            "16.5",
+            "+32",
+            "abc",
+            "999999999999999999999999",
+        ] {
+            assert_eq!(super::channel_bitrate(0, input), None);
+        }
+        assert_eq!(super::channel_bitrate(1, "32"), None);
+    }
+    #[test]
+    fn channel_management_replies_require_current_modal_session_and_permission() {
+        let mut workspace = crate::model::Workspace::default();
+        workspace.session.id = "a".into();
+        workspace.session.mode = "connected".into();
+        workspace.session.can_manage_channels = true;
+        let modal = super::Modal::Channel {
+            session: "a".into(),
+            id: "2".into(),
+            delete: false,
+        };
+        let check = |w: &crate::model::Workspace, m, closing, revision| {
+            super::channel_response_current(w, m, closing, revision, "a", 4)
+        };
+        assert!(check(&workspace, Some(&modal), false, 4));
+        assert!(!check(&workspace, None, false, 4));
+        assert!(!check(&workspace, Some(&modal), false, 5));
+        assert!(!check(&workspace, Some(&modal), true, 4));
+        workspace.session.can_manage_channels = false;
+        assert!(!check(&workspace, Some(&modal), false, 4));
+        workspace.session.can_manage_channels = true;
+        workspace.session.id = "b".into();
+        assert!(!check(&workspace, Some(&modal), false, 4));
+        workspace.session.id = "a".into();
+        workspace.session.mode = "failed".into();
+        assert!(!check(&workspace, Some(&modal), false, 4));
+    }
     use super::{
         DetailChange, DetailSelection, can_prepare_voice_preferences, can_show_session_channels,
         detail_selection_change, detail_text, ptt_can_send, remove_inserted_newline,
         user_is_speaking, voice_params,
     };
     use crate::model::{User, VoiceState, Workspace};
+
+    #[test]
+    fn ownership_replies_cannot_cross_session_or_modal_lifetimes() {
+        let mut workspace = Workspace::default();
+        workspace.session.mode = "connected".into();
+        workspace.session.id = "session-a".into();
+        let modal = super::Modal::Ownership {
+            session: "session-a".into(),
+        };
+        let accepts = |workspace: &Workspace, modal: Option<&super::Modal>, closing, revision| {
+            super::ownership_response_current(workspace, modal, closing, revision, "session-a", 7)
+        };
+        assert!(accepts(&workspace, Some(&modal), false, 7));
+        assert!(!accepts(&workspace, None, false, 7));
+        assert!(!accepts(&workspace, Some(&modal), false, 8));
+        assert!(!accepts(&workspace, Some(&modal), true, 7));
+        workspace.session.id = "session-b".into();
+        assert!(!accepts(&workspace, Some(&modal), false, 7));
+        workspace.session.id = "session-a".into();
+        workspace.session.mode = "offline".into();
+        assert!(!accepts(&workspace, Some(&modal), false, 7));
+    }
+
+    #[test]
+    fn pending_claim_blocks_repeat_even_after_panel_reopens() {
+        let pending = [super::Pending::ClaimOwner {
+            session: "session-a".into(),
+            revision: 1,
+        }];
+        assert!(super::ownership_pending(pending.iter(), "session-a"));
+        assert!(!super::ownership_pending(pending.iter(), "session-b"));
+        assert!(!super::ownership_pending([].iter(), "session-a"));
+    }
 
     #[test]
     fn manual_playback_volume_validates_before_clamping() {

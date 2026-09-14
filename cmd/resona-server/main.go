@@ -25,6 +25,7 @@ import (
 	w "github.com/tsukiyoz/resona/internal/nativewire"
 	"github.com/tsukiyoz/resona/internal/noiseudp"
 	"github.com/tsukiyoz/resona/internal/server"
+	"github.com/tsukiyoz/resona/internal/version"
 )
 
 func main() {
@@ -34,6 +35,10 @@ func main() {
 	}
 }
 func run() error {
+	if version.Requested(os.Args[1:]) {
+		fmt.Println("resona-server", version.Current())
+		return nil
+	}
 	configDir, err := os.UserConfigDir()
 	if err != nil {
 		return err
@@ -48,15 +53,42 @@ func run() error {
 	initCert := flag.Bool("init-cert", false, "create a self-signed certificate and exit; never overwrite")
 	channelsPath := flag.String("channels", "", "JSON channel array file (ID, Name, Description)")
 	maxClients := flag.Int("max-clients", 64, "maximum simultaneous connections (1-64)")
+	accessDir := flag.String("access-dir", filepath.Join(configDir, "resona-server", "access"), "persistent server ownership directory")
+	initOwner := flag.Bool("init-owner", false, "offline: create a one-time owner claim (24h), print once, never overwrite")
+	resetOwner := flag.Bool("reset-owner-claim", false, "offline: replace unused owner claim with a new 24h code; refuses an existing owner")
+	showVersion := flag.Bool("version", false, "print build version and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println("resona-server", version.Current())
+		return nil
+	}
 	if flag.NArg() != 0 {
 		return errors.New("unexpected positional arguments")
 	}
 	if *transport != "noise" && *transport != "quic" {
 		return errors.New("unknown transport")
 	}
-	if *initKey && *initCert {
+	if (*initKey && *initCert) || ((*initOwner || *resetOwner) && (*initKey || *initCert)) || (*initOwner && *resetOwner) {
 		return errors.New("choose one identity initialization mode")
+	}
+	if !*initKey && !*initCert {
+		lock, err := server.LockAccess(*accessDir)
+		if err != nil {
+			return err
+		}
+		defer lock.Close()
+	}
+	if *initOwner || *resetOwner {
+		provision := server.InitOwnerClaim
+		if *resetOwner {
+			provision = server.ResetOwnerClaim
+		}
+		token, err := provision(*accessDir)
+		if err != nil {
+			return err
+		}
+		fmt.Println(token)
+		return nil
 	}
 	if *initKey {
 		key, e := noiseudp.GenerateKey()
@@ -107,11 +139,20 @@ func run() error {
 			return errors.New("invalid trailing channel configuration")
 		}
 	}
-	s, err := server.Listen(*address, server.Config{NoiseKey: noiseKey, Name: *name, Password: os.Getenv("RESONA_SERVER_PASSWORD"), Channels: channels, MaxClients: *maxClients}, tlsConfig)
+	ownership, err := server.OpenOwnership(*accessDir)
+	if err != nil {
+		return err
+	}
+	channelStore, err := server.OpenChannelStore(filepath.Join(*accessDir, "channels.json"), channels)
+	if err != nil {
+		return err
+	}
+	s, err := server.Listen(*address, server.Config{ChannelStore: channelStore, Ownership: ownership, NoiseKey: noiseKey, Name: *name, Password: os.Getenv("RESONA_SERVER_PASSWORD"), Channels: channels, MaxClients: *maxClients}, tlsConfig)
 	if err != nil {
 		return err
 	}
 	fmt.Printf("Resona native experimental server (%s): %s\n", *transport, s.Addr())
+	fmt.Println("resona-server", version.Current())
 	if *transport == "noise" {
 		pub, _ := noiseudp.PublicKey(noiseKey)
 		fmt.Printf("Noise server public key (X25519): %s\n", hex.EncodeToString(pub))

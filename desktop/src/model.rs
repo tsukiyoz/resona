@@ -31,6 +31,10 @@ pub struct Session {
     pub server_name: String,
     #[serde(rename = "identityUID")]
     pub identity_uid: String,
+    pub server_role: String,
+    pub can_claim_owner: bool,
+    pub can_manage_channels: bool,
+    pub can_configure_channel_audio: bool,
     #[serde(rename = "selfID")]
     pub self_id: String,
     pub error: String,
@@ -42,6 +46,8 @@ pub struct Session {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Channel {
+    pub bitrate: u32,
+    pub is_default: bool,
     pub id: String,
     pub name: String,
     pub description: String,

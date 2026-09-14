@@ -16,10 +16,10 @@ import (
 	"github.com/flynn/noise"
 )
 
-const prologue = "resona-noise-exp-3"
+const prologue = "resona-noise-exp-4"
 
 var suite = noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashSHA256)
-var magic = []byte{'R', 'N', '0', '3'}
+var magic = []byte{'R', 'N', '0', '4'}
 
 func PublicKey(private []byte) ([]byte, error) {
 	k, err := ecdh.X25519().NewPrivateKey(private)
@@ -116,6 +116,7 @@ func Dial(ctx context.Context, address string, public []byte) (*Conn, error) {
 			_, e := u.Write(b)
 			return e
 		}, func() { _ = u.Close() })
+		copy(c.binding[:], hs.ChannelBinding())
 		go func() {
 			defer c.fail(net.ErrClosed)
 			for {
@@ -320,6 +321,7 @@ func (l *Listener) loop() {
 			}
 			response = append(append(append([]byte{}, magic...), 3), response...)
 			c := newConn(tx, rx, l.Addr(), addr, func(packet []byte) error { return l.write(packet, addr) }, func() { l.mu.Lock(); delete(l.peers, name); l.mu.Unlock() })
+			copy(c.binding[:], hs.ChannelBinding())
 			l.workers.Add(1)
 			go func() { defer l.workers.Done(); <-c.done }()
 			l.mu.Lock()

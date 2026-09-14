@@ -23,6 +23,14 @@ import (
 )
 
 func startServer(t *testing.T, useNoise ...bool) (client.ServerProfile, context.CancelFunc, <-chan error) {
+	return startServerOwned(t, nil, useNoise...)
+}
+
+func startServerOwned(t *testing.T, ownership *server.Ownership, useNoise ...bool) (client.ServerProfile, context.CancelFunc, <-chan error) {
+	return startServerConfigured(t, server.Config{Name: "test", Password: "test-password", Channels: []w.Channel{{ID: 1, Name: "one"}, {ID: 2, Name: "two"}}, Ownership: ownership}, useNoise...)
+}
+
+func startServerConfigured(t *testing.T, cfg server.Config, useNoise ...bool) (client.ServerProfile, context.CancelFunc, <-chan error) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -33,7 +41,6 @@ func startServer(t *testing.T, useNoise ...bool) (client.ServerProfile, context.
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := server.Config{Name: "test", Password: "test-password", Channels: []w.Channel{{ID: 1, Name: "one"}, {ID: 2, Name: "two"}}}
 	if len(useNoise) > 0 && useNoise[0] {
 		cfg.NoiseKey, err = noiseudp.GenerateKey()
 		if err != nil {

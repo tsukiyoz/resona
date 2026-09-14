@@ -30,14 +30,18 @@ var (
 )
 
 type RemoteState struct {
-	ServerName      string
-	ChannelID       string
-	SelfID          string
-	IdentityUID     string
-	Channels        []Channel
-	Users           []User
-	MemberSyncState string
-	MemberSyncError string
+	ServerName               string
+	ChannelID                string
+	SelfID                   string
+	IdentityUID              string
+	ServerRole               string
+	CanClaimOwner            bool
+	CanManageChannels        bool
+	CanConfigureChannelAudio bool
+	Channels                 []Channel
+	Users                    []User
+	MemberSyncState          string
+	MemberSyncError          string
 	// Messages contains only text received in this update, not a history snapshot.
 	Messages []RemoteMessage
 	// Events contains only changes from this update, never a cumulative history.
@@ -175,6 +179,10 @@ func (s *Service) applyRemoteState(generation uint64, remote RemoteState) {
 	s.state.Session.ChannelID = remote.ChannelID
 	s.state.Session.SelfID = remote.SelfID
 	s.state.Session.IdentityUID = remote.IdentityUID
+	s.state.Session.ServerRole = remote.ServerRole
+	s.state.Session.CanClaimOwner = remote.CanClaimOwner
+	s.state.Session.CanManageChannels = remote.CanManageChannels
+	s.state.Session.CanConfigureChannelAudio = remote.CanConfigureChannelAudio
 	s.state.Session.MemberSyncState = remote.MemberSyncState
 	s.state.Session.MemberSyncError = remote.MemberSyncError
 	if remote.Error != "" {

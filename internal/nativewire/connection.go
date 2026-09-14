@@ -3,6 +3,7 @@ package nativewire
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"io"
 	"net"
 	"time"
@@ -32,6 +33,18 @@ type Listener interface {
 	Close() error
 }
 type quicConnection struct{ *quic.Conn }
+
+func ChannelBinding(c Connection) ([]byte, error) {
+	switch v := c.(type) {
+	case noiseConnection:
+		return v.ChannelBinding(), nil
+	case quicConnection:
+		tlsState := v.ConnectionState().TLS
+		return tlsState.ExportKeyingMaterial("EXPORTER-Resona-Identity-v1", nil, 32)
+	default:
+		return nil, errors.New("transport has no identity binding")
+	}
+}
 
 func (c quicConnection) OpenStreamSync(ctx context.Context) (Stream, error) {
 	return c.Conn.OpenStreamSync(ctx)

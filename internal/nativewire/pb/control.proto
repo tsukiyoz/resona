@@ -20,15 +20,26 @@ enum Kind {
   KIND_VOICE_STATE = 6;
   KIND_REPLY = 7;
   KIND_MESSAGE = 8;
+  KIND_CLAIM_OWNER = 9;
+  KIND_CREATE_CHANNEL = 10;
+  KIND_UPDATE_CHANNEL = 11;
+  KIND_DELETE_CHANNEL = 12;
 }
 message Hello {
   string nickname = 1;
   string password = 2;
+  bytes public_key = 3;
+  bytes signature = 4;
 }
+message ClaimOwner { string token = 1; }
+message CreateChannel { string name = 1; string description = 2; uint32 bitrate = 3; }
+message UpdateChannel { uint32 id = 1; string name = 2; string description = 3; uint32 bitrate = 4; }
+message DeleteChannel { uint32 id = 1; }
 message Channel {
   uint32 id = 1; // Application range: 1..65535.
   string name = 2;
   string description = 3;
+  uint32 bitrate = 4;
 }
 message Member {
   uint32 id = 1;
@@ -45,6 +56,11 @@ message State {
   uint32 epoch = 3;
   repeated Channel channels = 4;
   repeated Member members = 5;
+  string identity_uid = 6;
+  string server_role = 7;
+  bool can_claim_owner = 8;
+  bool can_manage_channels = 9;
+  bool can_configure_channel_audio = 10;
 }
 // VoiceState sets both flags; it is not a partial update. Missing flags mean false.
 message Command {
