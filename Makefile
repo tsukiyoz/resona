@@ -1,4 +1,7 @@
-.PHONY: dev build core test test-protocol
+.PHONY: dev build core test test-protocol generate
+
+generate:
+	go generate ./internal/nativewire/pb
 
 dev: core
 	RESONA_CORE="$(CURDIR)/build/bin/resona-core" cargo run --manifest-path desktop/Cargo.toml

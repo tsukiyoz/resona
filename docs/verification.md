@@ -1,5 +1,25 @@
 # 验证记录
 
+## 2026-09-14 Protobuf 控制消息
+
+- `go test ./internal/... ./cmd/resona-server ./cmd/resona-core` 通过，相关 nativewire、原生适配器、Noise 和 server race 测试通过。沙箱缓存/UDP 限制导致的首次失败已在允许环境下重跑通过。
+- 黄金字节向量、未知字段、空成功回复、VoiceState 默认值、类型错配、uint16/uint8 越界、快照条目上限、失败解码不改业务对象、UTF-8 和帧大小检查通过。
+- `FuzzDecodeControl` 5 秒预算执行 313805 次、无失败；缓存写入限制解除后完整执行。此为有限模糊测试，不是穷尽证明。
+- `go generate ./internal/nativewire/pb` 重复生成 SHA-256 一致；protoc 29.3、protoc-gen-go/运行库 v1.36.12 固定。生成文件需随 schema 一起提交，普通产品构建无需 protoc。
+- 独立模块 `test/controlcodec` 保存旧 CBOR 实现与七组对照；完整消息大小、编码、解码（含 wire 到业务对象转换）和分配计数见其 README。基准不衡量加密、网络、音频或完整 server。
+- macOS core 与 Windows amd64 无 CGO server 编译通过，产物在被忽略的 `build/bin/protobuf/`。未重新打包 desktop、未部署公网、未进行 Windows 实机测试。
+
+## 2026-09-14 MPSC 与后台换钥
+
+- `go test ./internal/... ./cmd/resona-server ./cmd/resona-core` 通过。首次普通沙箱运行禁止绑定回环 UDP 端口；允许本机监听后完整回归通过。
+- `go test -race ./internal/noiseudp ./internal/nativewire ./internal/server ./internal/protocol/native -count=3` 通过，包含已有 QUIC/Noise 原生聊天、频道隔离、语音和退出检查。
+- MPSC 环验证覆盖覆盖旧包后的顺序、消费/关闭释放引用、多生产者并发与关闭竞争、100 ms 过期丢弃、阻塞发送的 250 ms 看门狗。客户端原有 channel 发送路径的取消与超时测试继续通过。
+- 换钥覆盖时间/包数触发、首次公告/确认丢失与重试、双方同时更新并丢控制数据/ACK、旧包乱序和过期、重放与伪造阶段位、延迟旧代确认、nonce/代次耗尽、更新期间关闭和迟到确认不得复活会话。
+- 真实回环 UDP 上同一 socket/服务端 Conn 连续 32 次逻辑老化触发换钥，双向数据报及可靠控制流均继续传输；没有重建服务端会话。此为加速状态转换验证，并非实际运行 16 天，也未进行 Windows 音频或公网换钥验收。
+- macOS core、本机无 CGO server、Windows amd64 无 CGO server 构建检查，产物位于被忽略的 `build/bin/rekey-mpsc/`。不是新的 desktop 安装包，未替换现有 app、未部署或推送。
+- 旧 HTML 原型源码、npm 包文件、生成 HTML 和 node_modules 已清理，目录仅保留退休说明及忽略规则；GPUI 未改动，因此无需执行已退休的 npm 构建。
+- 生产性能前后对照、长时间 WAN 故障测试、Windows 设备体验和独立协议安全审查仍待完成；不能用抽象队列实验代替实际 server 性能结论。
+
 ## 2026-09-12 Noise UDP 实验
 
 - Go 全核心回归通过：`go test ./internal/... ./cmd/resona-server`。Noise、原生适配器、凭据边界的竞态测试通过；原生多客户端场景同时覆盖 QUIC 与 Noise。
@@ -361,3 +381,17 @@ passed (19 tests), and the native macOS release bundle built successfully with
 version 0.0.2, its current Go core and icon/license resources. The existing
 `block 0.1.6` future-compatibility warning remains. Windows CI build and subsequent
 Windows native-protocol user acceptance are separate from these local checks.
+# macOS credential prompt follow-up (2026-09-14)
+
+- `go test -race ./internal/credentials ./internal/client`: passed; concurrent
+  reads issue one backend read, destination/Store cache isolation, empty values,
+  denial retry and mutation invalidation covered.
+- `go test ./internal/...`: passed.
+- `RESONA_KEYCHAIN_INTEGRATION=1 go test -tags=integration ./internal/credentials
+  -run '^TestNativeKeychainRoundTrip$' -count=1`: passed using a new temporary
+  item, fresh Store readers after writes, and cleanup; existing user passwords
+  were not inspected. This validates native API compatibility, not the user's
+  protected-item prompt count or cross-process persistent authorization.
+- Current packaged core uses linker ad-hoc signing (`a.out`, no TeamIdentifier).
+  Repeated switch behavior and same-build restart with system Always Allow still
+  require user acceptance. No stable signing identity has been configured.

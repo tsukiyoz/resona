@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package resona.control.v1;
+option go_package = "github.com/tsukiyoz/resona/internal/nativewire/pb";
+
+// Field numbers are permanent. Reserve removed fields instead of reusing them.
+// Body is the message selected by Kind, not an additional framed stream.
+message Frame {
+  Kind kind = 1;
+  uint32 request = 2;
+  bytes body = 3;
+}
+enum Kind {
+  KIND_UNSPECIFIED = 0;
+  KIND_HELLO = 1;
+  KIND_WELCOME = 2;
+  KIND_STATE = 3;
+  KIND_MOVE = 4;
+  KIND_CHAT = 5;
+  KIND_VOICE_STATE = 6;
+  KIND_REPLY = 7;
+  KIND_MESSAGE = 8;
+}
+message Hello {
+  string nickname = 1;
+  string password = 2;
+}
+message Channel {
+  uint32 id = 1; // Application range: 1..65535.
+  string name = 2;
+  string description = 3;
+}
+message Member {
+  uint32 id = 1;
+  uint32 channel = 2;
+  string nickname = 3;
+  string instance = 4;
+  bool muted = 5;
+  bool deafened = 6;
+  uint32 epoch = 7;
+}
+message State {
+  string name = 1;
+  uint32 self = 2;
+  uint32 epoch = 3;
+  repeated Channel channels = 4;
+  repeated Member members = 5;
+}
+// VoiceState sets both flags; it is not a partial update. Missing flags mean false.
+message Command {
+  uint32 channel = 1;
+  string text = 2;
+  bool muted = 3;
+  bool deafened = 4;
+}
+message Reply {
+  uint32 code = 1; // Application range: 0..255; unknown codes mean failure.
+}
+message Message {
+  uint32 channel = 1;
+  uint32 sender = 2;
+  string nickname = 3;
+  string text = 4;
+}

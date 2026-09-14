@@ -40,7 +40,7 @@ type peer struct {
 	member        w.Member
 	epoch         uint32
 	out           chan []byte
-	voiceOut      chan w.QueuedVoice
+	voiceOut      *w.VoiceRing
 	done          chan struct{}
 	commandBucket bucket
 	voiceBucket   bucket
@@ -155,7 +155,7 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 		return
 	}
 	_ = stream.SetDeadline(time.Time{})
-	p := &peer{conn: c, stream: stream, epoch: 1, out: make(chan []byte, 16), voiceOut: make(chan w.QueuedVoice, 4), done: make(chan struct{})}
+	p := &peer{conn: c, stream: stream, epoch: 1, out: make(chan []byte, 16), voiceOut: w.NewVoiceRing(4), done: make(chan struct{})}
 	s.mu.Lock()
 	// IDs are never reused during this server lifetime, including after disconnect.
 	if s.next >= 65535 {
@@ -172,8 +172,9 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 	workers.Add(3)
 	go func() { defer workers.Done(); s.writeLoop(p) }()
 	go func() { defer workers.Done(); s.voiceLoop(p) }()
-	go func() { defer workers.Done(); w.SendVoiceQueue(p.conn, p.voiceOut) }()
+	go func() { defer workers.Done(); w.SendVoiceRing(p.conn, p.voiceOut) }()
 	defer func() {
+		p.voiceOut.Close()
 		_ = c.CloseWithError(0, "session ended")
 		close(p.done)
 		workers.Wait()
@@ -296,11 +297,16 @@ func (s *Server) writeLoop(p *peer) {
 	}
 }
 func (s *Server) voiceLoop(p *peer) {
+	type target struct {
+		queue *w.VoiceRing
+		epoch uint32
+	}
 	for {
 		data, err := p.conn.ReceiveDatagram(p.conn.Context())
 		if err != nil {
 			return
 		}
+		at := time.Now()
 		v, err := w.DecodeVoice(data, false)
 		if err != nil {
 			continue
@@ -310,17 +316,23 @@ func (s *Server) voiceLoop(p *peer) {
 			s.mu.Unlock()
 			continue
 		}
+		// Snapshot membership under the state lock; encoding and enqueueing belong
+		// to the source loop, outside the shared server critical section.
+		var targets [w.MaxMembers]target
+		count := 0
+		sender, epoch := p.member.ID, p.epoch
 		for _, other := range s.peers {
 			if other == p || other.member.Channel != p.member.Channel || other.member.Deafened {
 				continue
 			}
-			packet, _ := w.EncodeVoice(w.Voice{Epoch: other.epoch, SenderEpoch: p.epoch, Sender: p.member.ID, Sequence: v.Sequence, End: v.End, Data: v.Data}, true)
-			select {
-			case other.voiceOut <- w.QueuedVoice{Data: packet, At: time.Now()}:
-			default:
-			}
+			targets[count] = target{other.voiceOut, other.epoch}
+			count++
 		}
 		s.mu.Unlock()
+		for _, other := range targets[:count] {
+			packet, _ := w.EncodeVoice(w.Voice{Epoch: other.epoch, SenderEpoch: epoch, Sender: sender, Sequence: v.Sequence, End: v.End, Data: v.Data}, true)
+			other.queue.Push(w.QueuedVoice{Data: packet, At: at})
+		}
 	}
 }
 func validName(s string, maxRunes int) bool {

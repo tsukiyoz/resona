@@ -6,10 +6,100 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"sync"
 	"testing"
 
 	keychain "github.com/keybase/go-keychain"
 )
+
+func TestConcurrentReadsReuseAuthorizedPassword(t *testing.T) {
+	store := fakeStore(t)
+	reads := 0
+	store.api.query = func(keychain.Item) ([]keychain.QueryResult, error) {
+		reads++
+		return []keychain.QueryResult{{Data: []byte(`{"version":1,"password":"cached-only"}`)}}, nil
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if value, err := store.Get("destination"); err != nil || value != "cached-only" {
+				t.Error("read failed")
+			}
+		}()
+	}
+	wg.Wait()
+	if found, err := store.Has("destination"); err != nil || !found {
+		t.Fatal("cached status missing")
+	}
+	if err := store.Set("destination", "cached-only"); err != nil {
+		t.Fatal(err)
+	}
+	if reads != 1 {
+		t.Fatalf("expected one authorized read, got %d", reads)
+	}
+}
+
+func TestCacheInvalidatesOnMutationAndDoesNotCacheDenial(t *testing.T) {
+	store := fakeStore(t)
+	reads := 0
+	store.api.query = func(keychain.Item) ([]keychain.QueryResult, error) {
+		reads++
+		if reads == 1 {
+			return nil, keychain.ErrorAuthFailed
+		}
+		return []keychain.QueryResult{{Data: []byte(`{"version":1,"password":"old"}`)}}, nil
+	}
+	if _, err := store.Get("destination"); err == nil {
+		t.Fatal("denial accepted")
+	}
+	if _, err := store.Get("destination"); err != nil {
+		t.Fatal(err)
+	}
+	store.api.update = func(keychain.Item, keychain.Item) error { return keychain.ErrorAuthFailed }
+	if err := store.Set("destination", "new"); err == nil {
+		t.Fatal("failed write accepted")
+	}
+	if _, ok := store.cache["destination"]; ok {
+		t.Fatal("failed write retained cache")
+	}
+	store.api.update = func(keychain.Item, keychain.Item) error { return nil }
+	if err := store.Set("destination", ""); err != nil {
+		t.Fatal(err)
+	}
+	if value, err := store.Get("destination"); err != nil || value != "" {
+		t.Fatal("empty replacement lost")
+	}
+	store.api.delete = func(keychain.Item) error { return keychain.ErrorAuthFailed }
+	if err := store.Delete("destination"); err == nil {
+		t.Fatal("failed delete accepted")
+	}
+	if _, ok := store.cache["destination"]; ok {
+		t.Fatal("delete attempt retained cache")
+	}
+}
+
+func TestCacheIsDestinationAndInstanceScoped(t *testing.T) {
+	store := fakeStore(t)
+	reads := 0
+	store.api.query = func(keychain.Item) ([]keychain.QueryResult, error) {
+		reads++
+		return []keychain.QueryResult{{Data: []byte(`{"version":1,"password":""}`)}}, nil
+	}
+	other := &Store{api: store.api}
+	for _, key := range []string{"a", "b", "a"} {
+		if _, err := store.Get(key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := other.Get("a"); err != nil {
+		t.Fatal(err)
+	}
+	if reads != 3 {
+		t.Fatalf("incorrect cache scope: %d reads", reads)
+	}
+}
 
 func fakeStore(t *testing.T) *Store {
 	t.Helper()

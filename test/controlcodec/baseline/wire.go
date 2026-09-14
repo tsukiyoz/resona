@@ -1,0 +1,165 @@
+// Frozen pre-migration CBOR control codec, for comparison only.
+// Package nativewire defines the versioned Resona protocol, independent of GUI and audio devices.
+package baseline
+
+import (
+	"encoding/binary"
+	"errors"
+	"io"
+
+	"github.com/fxamacker/cbor/v2"
+)
+
+const (
+	ALPN                 = "resona-exp-1"
+	DefaultPort          = "9988"
+	MaxFrame             = 65536
+	MaxVoicePayload      = 1024
+	MaxMembers           = 64
+	MaxChannels          = 64
+	ClientVoiceHeader    = 7
+	ServerVoiceHeader    = 13
+	AuthenticationFailed = 2
+)
+const (
+	HelloKind uint8 = iota + 1
+	WelcomeKind
+	StateKind
+	MoveKind
+	ChatKind
+	VoiceStateKind
+	ReplyKind
+	MessageKind
+)
+
+var ErrPacket = errors.New("invalid Resona packet")
+
+type Frame struct {
+	_       struct{} `cbor:",toarray"`
+	Kind    uint8
+	Request uint32
+	Body    cbor.RawMessage
+}
+type Hello struct {
+	_        struct{} `cbor:",toarray"`
+	Nickname string
+	Password string
+}
+type Channel struct {
+	_           struct{} `cbor:",toarray"`
+	ID          uint16
+	Name        string
+	Description string
+}
+type Member struct {
+	_        struct{} `cbor:",toarray"`
+	ID       uint16
+	Channel  uint16
+	Nickname string
+	Instance string
+	Muted    bool
+	Deafened bool
+	Epoch    uint32
+}
+type State struct {
+	_        struct{} `cbor:",toarray"`
+	Name     string
+	Self     uint16
+	Epoch    uint32
+	Channels []Channel
+	Members  []Member
+}
+type Command struct {
+	_        struct{} `cbor:",toarray"`
+	Channel  uint16
+	Text     string
+	Muted    bool
+	Deafened bool
+}
+type Reply struct {
+	_    struct{} `cbor:",toarray"`
+	Code uint8
+}
+
+const (
+	OK uint8 = iota
+	Rejected
+	WrongChannel
+	RateLimited
+)
+
+type Message struct {
+	_        struct{} `cbor:",toarray"`
+	Channel  uint16
+	Sender   uint16
+	Nickname string
+	Text     string
+}
+
+var enc = func() cbor.EncMode {
+	m, err := cbor.CanonicalEncOptions().EncMode()
+	if err != nil {
+		panic(err)
+	}
+	return m
+}()
+var dec = func() cbor.DecMode {
+	m, err := (cbor.DecOptions{MaxNestedLevels: 8, MaxArrayElements: 256, MaxMapPairs: 16, IndefLength: cbor.IndefLengthForbidden, TagsMd: cbor.TagsForbidden, DupMapKey: cbor.DupMapKeyEnforcedAPF}).DecMode()
+	if err != nil {
+		panic(err)
+	}
+	return m
+}()
+
+func Pack(kind uint8, request uint32, body any) ([]byte, error) {
+	payload, err := enc.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	data, err := enc.Marshal(Frame{Kind: kind, Request: request, Body: payload})
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > MaxFrame {
+		return nil, ErrPacket
+	}
+	result := make([]byte, 4+len(data))
+	binary.BigEndian.PutUint32(result, uint32(len(data)))
+	copy(result[4:], data)
+	return result, nil
+}
+func Write(w io.Writer, kind uint8, request uint32, body any) error {
+	data, err := Pack(kind, request, body)
+	if err != nil {
+		return err
+	}
+	for len(data) > 0 {
+		n, e := w.Write(data)
+		if e != nil {
+			return e
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+		data = data[n:]
+	}
+	return nil
+}
+func Read(r io.Reader) (Frame, error) {
+	var header [4]byte
+	if _, err := io.ReadFull(r, header[:]); err != nil {
+		return Frame{}, err
+	}
+	size := binary.BigEndian.Uint32(header[:])
+	if size == 0 || size > MaxFrame {
+		return Frame{}, ErrPacket
+	}
+	data := make([]byte, size)
+	if _, err := io.ReadFull(r, data); err != nil {
+		return Frame{}, err
+	}
+	var f Frame
+	err := dec.Unmarshal(data, &f)
+	return f, err
+}
+func Decode(f Frame, value any) error { return dec.Unmarshal(f.Body, value) }

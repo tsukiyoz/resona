@@ -1,36 +1,42 @@
 # Experimental native wire protocol
 
-2026-09-12: this document describes the QUIC candidate and shared application
+2026-09-14: this document describes the QUIC candidate and shared application
 messages. The default server now uses [Noise UDP](noise-protocol.md); voice and
-CBOR application bodies are shared, but transport framing and trust differ.
+Protobuf application bodies are shared, but transport framing and trust differ.
 
-QUIC v1, TLS 1.3, ALPN `resona-exp-1`, default UDP port 9988. One client-opened
+QUIC v1, TLS 1.3, ALPN `resona-exp-2`, default UDP port 9988. One client-opened
 bidirectional stream carries reliable control; QUIC DATAGRAM carries voice.
 This is not HTTP/3. Datagram negotiation is mandatory; 0-RTT commands are disabled.
 
 ## Control
 
-Frame: 4-byte big-endian length followed by 1-65536 bytes of CBOR. Envelope:
-`[kind, requestID, body]`; body is an embedded value, not a byte string. All structs
-are positional arrays in declaration order in `internal/nativewire/wire.go`.
-Encoding is canonical; decoding is bounded and rejects tags/indefinite lengths.
-Schema changes require a protocol version change. No rolling-upgrade compatibility
-is promised for this experimental format.
+Frame: 4-byte big-endian length followed by 1-65536 bytes of Protobuf Frame.
+Schema: `internal/nativewire/pb/control.proto`. Frame fields are kind (enum, 1),
+request (uint32, 2), body (bytes, 3). Body contains the selected protobuf message;
+it has no additional frame prefix. Empty bodies are valid for default-valued
+messages such as a successful Reply. Application Go structs are mapped explicitly
+at the wire boundary and are not the schema.
+
+Decoding bounds recursion, validates numeric ranges before narrowing, and limits
+snapshot members/channels before allocating repeated message objects. Unknown
+fields in known messages are discarded; deprecated group fields in State are
+rejected. New fields require safe defaults; field numbers cannot be reused.
+Schema compatibility does not imply compatibility of new commands/semantics.
+The CBOR-to-Protobuf change requires matching client/server versions; no fallback.
 
 | Kind | Value | Body |
 | --- | --- | --- |
-| Hello | 1 | `[nickname, password]`, request 0 |
+| Hello | 1 | Hello, request 0 |
 | Welcome | 2 | initial State, request 0 |
-| State | 3 | `[serverName, selfID, ownEpoch, channels, members]` |
+| State | 3 | State |
 | Move | 4 | Command |
 | Chat | 5 | Command |
 | VoiceState | 6 | Command |
-| Reply | 7 | `[code]`, matching request ID |
-| Message | 8 | `[channelID, senderID, nickname, text]` |
+| Reply | 7 | Reply, matching request ID |
+| Message | 8 | Message |
 
-Channel: `[id, name, description]`. Member:
-`[id, channelID, nickname, instance, muted, deafened, epoch]`.
-Command: `[channelID, text, muted, deafened]`; unused fields are zero values.
+Channel, Member and Command fields are defined in the schema. Unused command
+fields use proto3 defaults. VoiceState sets both flags, not a partial patch.
 Reply codes: 0 success, 1 rejected, 2 wrong channel, 3 rate limited.
 QUIC application close code 2 means authentication failure.
 
@@ -65,7 +71,8 @@ Control and datagrams can arrive in different orders; unmatched voice is dropped
 
 Per connection: 16 control messages and four voice packets queued. Control writes
 have a 5-second deadline; overflow disconnects slow consumers. Voice overflow
-drops new arrivals; locally queued packets older than 100 ms are discarded.
+replaces the oldest queued server voice; the client capture queue drops arrivals.
+Locally queued packets older than 100 ms are discarded.
 SendDatagram may block internally in quic-go, so dedicated workers call it, with
 a 250 ms watchdog that closes stalled connections. These bounds do not guarantee
 end-to-end latency or remove already-sent packets.

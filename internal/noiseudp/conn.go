@@ -25,6 +25,9 @@ const (
 	ping       = byte(7)
 	pong       = byte(8)
 	closing    = byte(9)
+	keyUpdate  = byte(10)
+	keyACK     = byte(11)
+	keyPhase   = byte(0x80)
 )
 
 type RemoteError struct{ Code uint64 }
@@ -55,6 +58,13 @@ type Conn struct {
 	onClose               func()
 	local, remote         net.Addr
 	tx, rx                noise.Cipher
+	txState, rxState      *noise.CipherState
+	txEpoch, rxEpoch      uint64
+	txConfirmed           bool
+	keySince, updateSent  time.Time
+	rxNext, rxPrevious    noise.Cipher
+	previousReplay        replayWindow
+	previousUntil         time.Time
 	sendMu                sync.Mutex
 	counter               uint32
 	replay                replayWindow // owned by the UDP read loop
@@ -71,15 +81,17 @@ type Conn struct {
 	changed               chan struct{}
 	err                   error
 	lastReceive, lastSend atomic.Int64
-	born                  time.Time
 	done                  chan struct{}
 }
 
 func newConn(tx, rx *noise.CipherState, local, remote net.Addr, send func([]byte) error, closed func()) *Conn {
 	ctx, cancel := context.WithCancel(context.Background())
-	c := &Conn{ctx: ctx, cancel: cancel, tx: tx.Cipher(), rx: rx.Cipher(), local: local, remote: remote,
+	c := &Conn{ctx: ctx, cancel: cancel, tx: tx.Cipher(), rx: rx.Cipher(), txState: tx, rxState: rx,
+		txConfirmed: true, keySince: time.Now(), local: local, remote: remote,
 		sendRaw: send, onClose: closed, recv: make(chan []byte, 32), voices: make(chan []byte, 4), acks: make(chan uint32, 8),
-		writeGate: make(chan struct{}, 1), changed: make(chan struct{}), born: time.Now(), done: make(chan struct{}), expected: 1}
+		writeGate: make(chan struct{}, 1), changed: make(chan struct{}), done: make(chan struct{}), expected: 1}
+	rx.Rekey()
+	c.rxNext = rx.Cipher()
 	c.lastReceive.Store(time.Now().UnixNano())
 	c.lastSend.Store(time.Now().UnixNano())
 	go c.maintain()
@@ -127,8 +139,11 @@ func (c *Conn) maintain() {
 		case <-c.ctx.Done():
 			return
 		case now := <-t.C:
-			if now.Sub(time.Unix(0, c.lastReceive.Load())) >= 30*time.Second || now.Sub(c.born) >= 24*time.Hour {
+			if now.Sub(time.Unix(0, c.lastReceive.Load())) >= 30*time.Second {
 				c.fail(errors.New("Noise session expired"))
+				return
+			}
+			if err := c.refreshKeys(now); err != nil {
 				return
 			}
 			if now.Sub(time.Unix(0, c.lastSend.Load())) >= 10*time.Second {
@@ -143,6 +158,16 @@ func (c *Conn) maintain() {
 func (c *Conn) send(kind byte, body []byte) error {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
+	if len(body)+21 > maxPacket {
+		return errors.New("Noise datagram too large")
+	}
+	if err := c.prepareKeysLocked(time.Now()); err != nil {
+		return err
+	}
+	return c.sendLocked(kind, body)
+}
+
+func (c *Conn) sendLocked(kind byte, body []byte) error {
 	if c.ctx.Err() != nil {
 		return c.failure()
 	}
@@ -155,9 +180,9 @@ func (c *Conn) send(kind byte, body []byte) error {
 	}
 	c.counter++
 	header := make([]byte, 5, 5+len(body)+16)
-	header[0] = kind
+	header[0] = kind | byte(c.txEpoch&1)*keyPhase
 	binary.BigEndian.PutUint32(header[1:], c.counter)
-	packet := c.tx.Encrypt(header, uint64(c.counter), header, body)
+	packet := c.tx.Encrypt(header, packetNonce(c.txEpoch, c.counter), header, body)
 	if err := c.sendRaw(packet); err != nil {
 		c.fail(err)
 		return err
@@ -172,17 +197,33 @@ func (c *Conn) receive(packet []byte) {
 	if len(packet) < 21 || len(packet) > maxPacket || c.ctx.Err() != nil {
 		return
 	}
-	n := binary.BigEndian.Uint32(packet[1:5])
-	if c.replay.seen(n) {
+	body, epoch, advanced, ok := c.decryptPacket(packet, time.Now())
+	if !ok {
 		return
 	}
-	body, err := c.rx.Decrypt(nil, uint64(n), packet[:5], packet[5:])
-	if err != nil {
-		return
-	}
-	c.replay.add(n)
 	c.lastReceive.Store(time.Now().UnixNano())
-	switch packet[0] {
+	if advanced {
+		c.confirmKey(epoch)
+	}
+	switch packet[0] &^ keyPhase {
+	case keyUpdate:
+		if len(body) != 8 || binary.BigEndian.Uint64(body) != epoch {
+			c.fail(errors.New("invalid Noise key update"))
+			return
+		}
+		if !advanced {
+			c.confirmKey(epoch)
+		}
+	case keyACK:
+		if len(body) != 8 {
+			c.fail(errors.New("invalid Noise key confirmation"))
+			return
+		}
+		c.sendMu.Lock()
+		if binary.BigEndian.Uint64(body) == c.txEpoch {
+			c.txConfirmed = true
+		}
+		c.sendMu.Unlock()
 	case voice:
 		select {
 		case c.voices <- body:

@@ -213,3 +213,149 @@ latency. Long-run results and remaining limits should guide the next decision.
 
 References: [Go GC latency guide](https://go.dev/doc/gc-guide#Latency),
 [sync.Pool contract](https://pkg.go.dev/sync#Pool).
+
+## Reusable send watchdog, 2026-09-12
+
+The first implementation follow-up replaces the per-packet deadline context and
+AfterFunc registration in `nativewire.SendVoiceQueue` with one reusable timer and
+one lifetime cancellation registration per worker. A mutex serializes arming,
+completion and the callback's close decision. A late callback checks the current
+write deadline; a tripped watchdog prevents all subsequent writes. The guard
+retains no payload buffers. Idle workers stop their timer rather than polling.
+
+The 100 ms stale-packet cutoff and 250 ms stalled-write close trigger remain.
+This trigger is not a hard real-time bound on OS scheduling or transport close
+completion. Parent cancellation still interrupts a blocked send by closing the
+connection. Closed input queues now terminate instead of spinning on zero values.
+Both native transports and both client/server workers use this implementation;
+wire formats, crypto, membership locking and queue capacity are unchanged.
+
+Tests cover blocked-write timeout/cancellation, already-cancelled connections,
+late callbacks across successive writes, terminal timeout, completed-worker
+disarming, stale packets, closed queues and send failures. The guard benchmark
+reports 111.5 ns/op, 0 B/op and 0 allocs/op on this host; initialization is excluded
+and this does not mean the entire packet path has zero allocations.
+
+### Before/after experiment
+
+Same host and harness as above, baseline `0d7ea9a`, default GOGC=100 in both
+versions. Three paired runs alternate before/after, after/before, before/after.
+Each is 64 members, four rooms, 16 total speakers and ten sending seconds, with
+the same 80-byte synthetic payload. Independent server child metrics exclude the
+load-generator process. No remote TS3 or deployed Resona server is involved.
+
+Raw data and both test binaries: ignored `build/bin/voice-watchdog/`, with
+`before-{1,2,3}` and `after-{1,2,3}` result directories. The local `compare.sh`
+records the invocation; the existing GC probe environment variables above also
+reproduce each run. No profiling, race instrumentation or concurrent builds were
+used during these six scoring runs.
+
+| Median across three runs | Before | After |
+| --- | ---: | ---: |
+| Server allocation MiB/s | 14.55 | 5.65 |
+| Server CPU, one-core % | 26.29 | 23.07 |
+| GC cycles per interval | 67 | 25 |
+| Cumulative GC pause ms | 8.35 | 3.08 |
+| Forwarding p99 upper bound ms | 5.11 | 4.83 |
+| Client end-to-end p99 upper bound ms | 5.96 | 5.70 |
+
+Allocation fell approximately 61.2% and CPU approximately 12.3% in this workload.
+The small latency difference is less conclusive than the allocation reduction.
+All after runs delivered 120,000/120,000 packets. Before runs delivered 120,000,
+119,656 and 120,000; the second had a forwarding maximum of 88.36 ms and an
+end-to-end maximum of 99.42 ms. It is retained, not excluded as an outlier.
+Its p99.9 exceeded the histogram range and is null; do not silently treat it as
+zero or omit it when comparing tails. This run alone cannot attribute the spike
+or loss to GC or prove that the optimization eliminates long-tail events.
+
+Remaining work includes the Noise listener's per-write gate timer, separate
+queue/expiry/receive-drop accounting, lock-delay profiling, longer stability
+checks and equivalent-workload WAN comparisons. No pool, GC tuning, deployment
+or server-language change is part of this optimization.
+
+### Reconnect validation
+
+A separate unprofiled 60-second run used the same 64-member workload and 29
+listener reconnects (`churn-after`). All connection workflows completed. Stable
+members received 707,956/708,000 expected deliveries: 44 missing, approximately
+0.0062%. This excludes the intentionally absent listener. It must not be reported
+as zero loss, and its shorter duration does not establish an improvement over
+the earlier 30-minute run. Drop locations remain uninstrumented.
+
+Forwarding p99/p99.9 were 5.10/7.94 ms with a 20.00 ms maximum; client end-to-end
+p99/p99.9 were 5.85/11.52 ms with a 33.25 ms maximum. Server CPU was 24.78% of one
+core, allocation 7.70 MiB/s, and end-of-window heap 3.01 MiB. Reconnect snapshots
+add work beyond the no-churn paired runs. All core race tests and the server CLI
+tests passed; no Windows audio/GUI or remote-deployment performance claim follows.
+
+## Deployment loop and UDP gate, 2026-09-12
+
+The user subsequently authorized deploying candidates and measuring each change.
+The first candidate deploys the reusable watchdog above. The second changes
+`noiseudp.Listener.write`: try the socket gate without waiting first, and create
+the existing 250 ms wait timer only on contention. The actual UDP write deadline
+and serialized socket writes remain. Cancellation is checked before acquisition
+and again after it. Tests cover timeout, cancellation, successful socket writes
+and releasing the gate after socket failure; core race tests passed.
+
+One local 4-member/1-speaker pair showed allocation 0.0911 -> 0.0769 MiB/s and
+CPU 1.52% -> 1.05%, with 1,500/1,500 deliveries each. These are single short runs,
+not confidence intervals. With 64 members and 16 speakers, the gate candidate
+allocated 5.613 MiB/s versus the earlier watchdog median 5.649 MiB/s: little benefit
+under heavy contention, where a waiting timer is still needed. It delivered
+120,000/120,000 packets; forwarding p99 was 4.97 ms. Results live in ignored
+`build/bin/voice-watchdog/{watchdog-small,gate-small,gate-local}`.
+
+### Remote method and results
+
+The same 2-vCPU Linux host sequentially ran the existing v0.0.2 container,
+`exp-20260912-watchdog`, then `exp-20260912-gate`. Each version ran two 15-second
+public-network workloads: four members/one sender and eight members/two senders,
+50 packets/s/sender, 80-byte synthetic payloads. All clients run on the same Mac;
+no codec, microphone or playback is instantiated. A single fixed client binary
+is reused across all server versions (SHA-256
+`0c300713aad0a49555ee120c335e41a7447d16ab4fa79b929e5b6b7f3005f4e9`).
+
+Latency is sender callback through public-network forwarding to receiving client
+callback, not server-only processing. `pidstat` samples the actual server PID
+every two seconds in all three cases, CPU relative to one core and memory as RSS.
+Runs are sequential, not randomized; the old server is warm and candidates start
+fresh. A candidate upload briefly overlapped first-candidate setup/early traffic.
+Network jitter, startup and host activity prevent attributing small differences
+to the optimization. In particular, different RSS samples are not evidence of a
+steady-state memory reduction.
+
+| First remote pass | v0.0.2 | Watchdog | Watchdog + gate |
+| --- | ---: | ---: | ---: |
+| 4-member p99 ms | 20.65 | 25.08 | 18.50 |
+| 4-member maximum ms | 71.10 | 33.96 | 38.73 |
+| 8-member p99 ms | 19.55 | 20.76 | 25.36 |
+| 8-member maximum ms | 43.46 | 25.68 | 61.55 |
+| CPU maximum sampled %, both workloads | 4.0 | 4.5 | 3.5 |
+| Unique deliveries, both workloads | 12,750/12,750 | 12,750/12,750 | 12,750/12,750 |
+
+No duplicates were observed. Allocation reduction is supported by local tests;
+these remote results do not establish a consistent WAN latency or CPU improvement.
+Retain the bounded allocation optimizations, while treating latency reduction as
+unresolved rather than selecting a winner from the lowest observed maximum.
+
+A second pass of the gate candidate also delivered 12,750/12,750 without
+duplicates. Four-member p99/max were 18.49/29.38 ms; eight-member p99/max were
+23.26/77.48 ms. The tail still varies and is not established as improved. No
+additional pidstat pass was collected for this repeat.
+
+Before each replacement, the client confirmed no other connected members.
+Candidates first passed loopback connection/chat/channel-move checks on a separate
+port, then repeated them after replacing the live container. Existing identity,
+public port and protocol are preserved. Rollback containers retain v0.0.2 and the
+watchdog-only version; official TS3 was not modified or load-tested in this round.
+Candidate binary SHA-256 values:
+
+- Watchdog: `433d993c11e25023dfa5a5ffb9cccb4bf2f7726cc13e8378bd615fefad2330bd`.
+- Gate: `c49ee94cfab03fb0b936d505944c74573115450f1b0927375cf4f33fe447a341`.
+
+Raw workload logs, pidstat samples and the rollback-protected deployment script
+remain local in ignored `build/bin/deploy-tsukiyo/round2-*` and `upgrade.sh`.
+The candidates are experiments built from the uncommitted feature branch, not
+new release tags. Next measurements should distinguish server queue drops,
+expiry and receive drops, then correlate segmented server timing with WAN tails.

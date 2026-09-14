@@ -16,10 +16,10 @@ import (
 	"github.com/flynn/noise"
 )
 
-const prologue = "resona-noise-exp-1"
+const prologue = "resona-noise-exp-3"
 
 var suite = noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashSHA256)
-var magic = []byte{'R', 'N', '0', '1'}
+var magic = []byte{'R', 'N', '0', '3'}
 
 func PublicKey(private []byte) ([]byte, error) {
 	k, err := ecdh.X25519().NewPrivateKey(private)
@@ -211,16 +211,28 @@ func (l *Listener) Close() error {
 	return nil
 }
 func (l *Listener) write(b []byte, addr *net.UDPAddr) error {
-	t := time.NewTimer(250 * time.Millisecond)
-	defer t.Stop()
+	if l.ctx.Err() != nil {
+		return net.ErrClosed
+	}
+	// Most writes acquire the gate immediately; allocate a timer only when
+	// another sender owns the socket. The contended wait remains bounded.
 	select {
 	case l.writeGate <- struct{}{}:
-	case <-l.ctx.Done():
-		return net.ErrClosed
-	case <-t.C:
-		return errors.New("UDP writer busy")
+	default:
+		t := time.NewTimer(250 * time.Millisecond)
+		defer t.Stop()
+		select {
+		case l.writeGate <- struct{}{}:
+		case <-l.ctx.Done():
+			return net.ErrClosed
+		case <-t.C:
+			return errors.New("UDP writer busy")
+		}
 	}
 	defer func() { <-l.writeGate }()
+	if l.ctx.Err() != nil {
+		return net.ErrClosed
+	}
 	_ = l.u.SetWriteDeadline(time.Now().Add(250 * time.Millisecond))
 	_, err := l.u.WriteToUDP(b, addr)
 	return err
