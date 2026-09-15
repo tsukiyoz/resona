@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -218,6 +219,7 @@ func (e *Engine) configureLocked(ctx context.Context, config VoiceConfig, update
 	e.setState(VoiceState{Config: config, Active: true, ChannelCodec: codec, InputLevelDB: -60})
 	run.start()
 	run.allowSend.Store(needCapture)
+	slog.Info("voice devices ready", "capture", needCapture, "deafened", config.Deafened, "activation", config.ActivationMode, "local_monitor", config.LocalMonitor)
 	return nil
 }
 
@@ -229,6 +231,7 @@ func (e *Engine) updateServerMute(ctx context.Context, input, output, needed boo
 }
 
 func (e *Engine) configurationFailed(ctx context.Context, config VoiceConfig, codec Codec, err error) error {
+	slog.Warn("voice configuration failed", "cancelled", errors.Is(err, context.Canceled), "timeout", errors.Is(err, context.DeadlineExceeded))
 	_ = e.transport.SetVoiceMuted(ctx, true, true)
 	e.setState(VoiceState{Config: config, ChannelCodec: codec, Error: voiceErrorMessage(err)})
 	return err
@@ -450,6 +453,7 @@ func (e *Engine) cleanupFailedRun(failed *engineRun) {
 }
 
 type engineRun struct {
+	diagnostics            voiceCounters
 	engine                 *Engine
 	ctx                    context.Context
 	cancel                 context.CancelFunc
@@ -596,7 +600,9 @@ func (r *engineRun) enqueue(packet Packet) {
 	}
 	select {
 	case r.incoming <- packet:
+		r.diagnostics.received.Add(1)
 	default:
+		r.diagnostics.queueDrops.Add(1)
 	}
 }
 
@@ -614,7 +620,10 @@ func (r *engineRun) capture(samples []float32) {
 		r.captureMu.Unlock()
 		return
 	}
-	r.capturePCM.Push(samples)
+	n := r.capturePCM.Push(samples)
+	if n < len(samples) {
+		r.diagnostics.captureDrops.Add(uint64(len(samples) - n))
+	}
 	r.captureMu.Unlock()
 	select {
 	case r.captureWake <- struct{}{}:
@@ -745,9 +754,11 @@ func (r *engineRun) encodeLoop() {
 			sendErr := r.engine.transport.SendVoice(encoded[:n], r.codec)
 			r.sendMu.Unlock()
 			if sendErr != nil {
+				r.diagnostics.sendErrors.Add(1)
 				r.fail(fmt.Errorf("语音发送失败: %w", sendErr), true)
 				return
 			}
+			r.diagnostics.sent.Add(1)
 			if active {
 				r.markLocalActivity(time.Now())
 			}
@@ -756,6 +767,8 @@ func (r *engineRun) encodeLoop() {
 }
 
 func (r *engineRun) mixLoop() {
+	diagnostics := voiceDiagnostics{last: time.Now(), peers: make(map[uint16]*peerCounters, maxSpeakers)}
+	defer func() { diagnostics.report(&r.diagnostics, time.Now(), true) }()
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 	speakers := make(map[uint16]*speaker)
@@ -765,7 +778,14 @@ func (r *engineRun) mixLoop() {
 		case <-r.ctx.Done():
 			return
 		case packet := <-r.incoming:
+			stats := diagnostics.peer(packet.SenderID)
+			if stats != nil {
+				stats.received++
+			}
 			if _, current := peerGain(r.engine.peers.Load(), packet.SenderID, packet.Instance); !current {
+				if stats != nil {
+					stats.unknownPeer++
+				}
 				continue
 			}
 			if previous := speakers[packet.SenderID]; previous != nil && previous.instance != packet.Instance {
@@ -783,6 +803,9 @@ func (r *engineRun) mixLoop() {
 				continue
 			}
 			if _, err := gopus.ParsePacket(packet.Data); err != nil {
+				if stats != nil {
+					stats.decodeErrors++
+				}
 				r.recordDecodeFailure(packet.ReceivedAt, packet.SenderID, packet.Codec, len(packet.Data), err)
 				if s := speakers[packet.SenderID]; s != nil && s.codec == packet.Codec {
 					packet.invalid = true
@@ -807,8 +830,11 @@ func (r *engineRun) mixLoop() {
 			}
 			if s.jitter.Push(packet) {
 				s.lastReceived = packet.ReceivedAt
+			} else if stats != nil {
+				stats.jitterDrops++
 			}
 		case now := <-ticker.C:
+			diagnostics.report(&r.diagnostics, now, false)
 			r.expireActivity(now)
 			clear(mix)
 			mixed := false
@@ -826,12 +852,22 @@ func (r *engineRun) mixLoop() {
 					continue
 				}
 				ok, decoded, active, finished, err := speaker.render(mix, volume*gain, now)
+				stats := diagnostics.peer(id)
 				if err != nil {
+					if stats != nil {
+						stats.decodeErrors++
+					}
 					delete(speakers, id)
 					r.recordDecodeFailure(now, id, speaker.codec, speaker.lastPacketBytes, err)
 					continue
 				}
 				if decoded {
+					if stats != nil {
+						stats.decoded++
+						if gain == 0 || volume == 0 {
+							stats.mutedFrames++
+						}
+					}
 					r.recordDecodeSuccess(id)
 				}
 				if active {

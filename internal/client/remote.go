@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"log/slog"
 )
 
 type RemoteConnector interface {
@@ -13,7 +14,10 @@ type RemoteConnector interface {
 }
 
 // ConnectFailure contains an adapter-authored, credential-free user message.
-type ConnectFailure struct{ Message string }
+type ConnectFailure struct {
+	Message   string
+	Retryable bool
+}
 
 func (e *ConnectFailure) Error() string { return e.Message }
 
@@ -48,8 +52,9 @@ type RemoteState struct {
 	Events []RemoteEvent
 	// Error must be safe for direct display; adapters remove technical details
 	// and credentials before publishing it.
-	Error  string
-	Closed bool
+	Error     string
+	Closed    bool
+	Retryable bool
 }
 
 func (s *Service) ConnectServer(id, password string) (Workspace, error) {
@@ -91,6 +96,7 @@ func (s *Service) connectServerLocked(id, password string, remember bool, expect
 	}
 
 	s.stopMicrophoneTestLocked()
+	s.reconnect = nil
 	s.generation++
 	generation := s.generation
 	ctx, cancel := context.WithTimeout(context.Background(), s.connectTimeout)
@@ -110,6 +116,7 @@ func (s *Service) connectServerLocked(id, password string, remember bool, expect
 	s.notifyChangedLocked()
 	state := s.snapshot()
 	connector := s.connector
+	slog.Info("connection requested")
 	s.mu.Unlock()
 
 	go func() {
@@ -142,6 +149,7 @@ func (s *Service) connect(ctx context.Context, connector RemoteConnector, profil
 		return
 	}
 	if err != nil || ctx.Err() != nil || connection == nil {
+		slog.Warn("connection failed", "timeout", errors.Is(ctx.Err(), context.DeadlineExceeded))
 		s.state.Session.Mode = "failed"
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			s.state.Session.Error = "连接服务器超时，请稍后重试"
@@ -161,6 +169,8 @@ func (s *Service) connect(ctx context.Context, connector RemoteConnector, profil
 		return
 	}
 	s.connection = connection
+	s.reconnect = &reconnectPlan{profile: profile, password: password}
+	slog.Info("connection established")
 	s.state.Session.Mode = "connected"
 	s.state.Session.Error = ""
 	s.addNotificationLocked("connected", s.state.Session.ChannelID)
@@ -174,12 +184,24 @@ func (s *Service) connect(ctx context.Context, connector RemoteConnector, profil
 
 func (s *Service) applyRemoteState(generation uint64, remote RemoteState) {
 	s.mu.Lock()
-	if generation != s.generation || (s.state.Session.Mode != "connecting" && s.state.Session.Mode != "connected") {
+	if generation != s.generation || (s.state.Session.Mode != "connecting" && s.state.Session.Mode != "connected" && s.state.Session.Mode != "reconnecting") {
 		s.mu.Unlock()
 		return
 	}
 	wasConnected := s.state.Session.Mode == "connected"
 	previousChannel := s.state.Session.ChannelID
+	var recovery *reconnectPlan
+	if remote.Closed && wasConnected && remote.Retryable && s.reconnect != nil {
+		copy := *s.reconnect
+		copy.channel = previousChannel
+		copy.voice = s.voiceState.VoiceConfig
+		if s.onlineTestRestore != nil {
+			copy.voice = *s.onlineTestRestore
+		}
+		copy.voice.LocalMonitor = false
+		copy.voice.Muted = true
+		recovery = &copy
+	}
 	s.state.Session.ServerName = remote.ServerName
 	s.state.Session.ChannelID = remote.ChannelID
 	s.state.Session.SelfID = remote.SelfID
@@ -199,6 +221,8 @@ func (s *Service) applyRemoteState(generation uint64, remote RemoteState) {
 	var connection RemoteConnection
 	var voice voiceEngine
 	if remote.Closed {
+		s.reconnect = nil
+		slog.Warn("connection lost", "retryable", remote.Retryable)
 		voice = s.detachVoiceLocked()
 		if wasConnected {
 			s.addNotificationLocked("disconnected", previousChannel)
@@ -227,6 +251,10 @@ func (s *Service) applyRemoteState(generation uint64, remote RemoteState) {
 		s.cleanupWG.Add(1)
 	}
 	s.notifyChangedLocked()
+	if recovery != nil {
+		s.startReconnectLocked(*recovery, connection, voice != nil)
+		connection, voice = nil, nil
+	}
 	s.mu.Unlock()
 	if connection != nil || voice != nil {
 		go func() {
@@ -251,6 +279,8 @@ func (s *Service) DisconnectServer() (Workspace, error) {
 
 func (s *Service) disconnectRemote() (Workspace, error) {
 	s.mu.Lock()
+	s.reconnect = nil
+	slog.Info("connection cancelled by user")
 	if s.state.Session.Mode == "preview" {
 		s.mu.Unlock()
 		return Workspace{}, errors.New("本地预览没有远程连接")
@@ -332,7 +362,7 @@ func (s *Service) profileLocked(id string) (ServerProfile, bool) {
 
 func (s *Service) remoteActiveLocked() bool {
 	switch s.state.Session.Mode {
-	case "connecting", "connected", "disconnecting":
+	case "connecting", "reconnecting", "connected", "disconnecting":
 		return true
 	default:
 		return false

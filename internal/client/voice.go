@@ -55,6 +55,15 @@ func (s *Service) GetVoiceState() VoiceState {
 
 func (s *Service) GetAudioDevices() ([]audio.Device, error) { return audio.Devices() }
 
+func (s *Service) RecordVoiceDiagnostics() {
+	s.mu.Lock()
+	engine := s.voice
+	s.mu.Unlock()
+	if source, ok := engine.(interface{ RecordDiagnostics() }); ok {
+		source.RecordDiagnostics()
+	}
+}
+
 // ConfigureVoice returns a pending state; opening devices never blocks the GUI
 // command reader. Session/engine epochs suppress late hardware completions.
 func (s *Service) ConfigureVoice(config audio.VoiceConfig) (VoiceState, error) {
@@ -66,7 +75,7 @@ func (s *Service) ConfigureDefaultVoice(generation uint64) (VoiceState, error) {
 	return s.configureVoice(audio.VoiceConfig{}, &generation, 0)
 }
 
-// monitorAction: 0 normal voice controls, 1 begin local test, 2 restore voice.
+// monitorAction: 0 normal, 1 begin test, 2 end test, 3 reconnect (muted).
 func (s *Service) configureVoice(config audio.VoiceConfig, expectedGeneration *uint64, monitorAction int) (VoiceState, error) {
 	if err := audio.ValidateConfig(config); err != nil {
 		return VoiceState{}, err
@@ -79,8 +88,10 @@ func (s *Service) configureVoice(config audio.VoiceConfig, expectedGeneration *u
 			s.mu.Unlock()
 			return state, nil
 		}
-		config = s.voiceState.VoiceConfig
-		config.Enabled, config.Muted, config.Deafened = true, true, false
+		if monitorAction != 3 {
+			config = s.voiceState.VoiceConfig
+			config.Enabled, config.Muted, config.Deafened = true, true, false
+		}
 	}
 	if s.shutdown {
 		s.mu.Unlock()
@@ -115,7 +126,7 @@ func (s *Service) configureVoice(config audio.VoiceConfig, expectedGeneration *u
 	}
 	if !config.Enabled {
 		engine := s.detachVoiceLocked()
-		if monitorAction == 2 {
+		if monitorAction == 2 || monitorAction == 3 {
 			s.voiceState.VoiceConfig = config
 		}
 		state := s.voiceState
@@ -159,11 +170,11 @@ func (s *Service) configureVoice(config audio.VoiceConfig, expectedGeneration *u
 	s.notifyChangedLocked()
 	state := s.voiceState
 	s.cleanupWG.Add(1)
-	if monitorAction != 0 {
+	if monitorAction == 1 || monitorAction == 2 {
 		s.cleanupWG.Add(1)
 	}
 	s.mu.Unlock()
-	if monitorAction != 0 {
+	if monitorAction == 1 || monitorAction == 2 {
 		go func() {
 			defer s.cleanupWG.Done()
 			<-ctx.Done()

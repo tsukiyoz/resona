@@ -32,6 +32,8 @@ const (
 
 type RemoteError struct{ Code uint64 }
 
+var ErrIdleTimeout = errors.New("Noise session expired")
+
 func (e *RemoteError) Error() string { return "Noise peer closed the session" }
 
 // replayWindow is updated only after successful authentication.
@@ -144,7 +146,7 @@ func (c *Conn) maintain() {
 			return
 		case now := <-t.C:
 			if now.Sub(time.Unix(0, c.lastReceive.Load())) >= 30*time.Second {
-				c.fail(errors.New("Noise session expired"))
+				c.fail(ErrIdleTimeout)
 				return
 			}
 			if err := c.refreshKeys(now); err != nil {

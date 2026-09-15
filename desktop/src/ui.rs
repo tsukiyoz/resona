@@ -70,6 +70,7 @@ impl IconNamed for VoiceIcon {
 
 #[derive(Clone)]
 enum Pending {
+    ExportDiagnostics,
     ResourceInterest(u64),
     ChannelMutation {
         session: String,
@@ -941,6 +942,15 @@ impl ResonaApp {
                         self.microphone_test.busy = false;
                         self.microphone_test.error = error;
                     }
+                    (Some(Pending::ExportDiagnostics), Ok(value)) => {
+                        if !self.closing {
+                            if let Some(path) = value.as_str() {
+                                cx.reveal_path(std::path::Path::new(path));
+                            } else {
+                                self.error = "诊断导出结果无效".into();
+                            }
+                        }
+                    }
                     (Some(Pending::Devices), Ok(value)) => match serde_json::from_value(value) {
                         Ok(devices) => self.devices = devices,
                         Err(error) => self.error = format!("无法读取音频设备：{error}"),
@@ -1431,6 +1441,7 @@ impl ResonaApp {
             !matches!(
                 pending,
                 Pending::Notification
+                    | Pending::ExportDiagnostics
                     | Pending::ResourceInterest(_)
                     | Pending::Icon { .. }
                     | Pending::PushToTalk
@@ -2214,7 +2225,7 @@ impl ResonaApp {
                         if this.voice.busy
                             || matches!(
                                 this.workspace.session.mode.as_str(),
-                                "connecting" | "disconnecting"
+                                "connecting" | "reconnecting" | "disconnecting"
                             )
                             || !this.workspace.session.switching_channel_id.is_empty()
                             || this.pending.values().any(|p| {
@@ -3688,13 +3699,15 @@ impl ResonaApp {
             .when(
                 matches!(
                     mode,
-                    "connecting" | "connected" | "disconnecting" | "preview"
+                    "connecting" | "reconnecting" | "connected" | "disconnecting" | "preview"
                 ),
                 |bar| {
                     bar.child(
                         Button::new("disconnect")
                             .label(if mode == "connecting" {
                                 "取消连接"
+                            } else if mode == "reconnecting" {
+                                "取消重连"
                             } else if mode == "preview" {
                                 "退出预览"
                             } else {
@@ -3774,7 +3787,7 @@ impl ResonaApp {
                         || self.voice.busy
                         || matches!(
                             self.workspace.session.mode.as_str(),
-                            "connecting" | "disconnecting"
+                            "connecting" | "reconnecting" | "disconnecting"
                         )
                         || self.microphone_test.enabled
                         || self.microphone_test.busy,
@@ -4192,7 +4205,7 @@ impl ResonaApp {
         let busy = self.voice.busy
             || matches!(
                 self.workspace.session.mode.as_str(),
-                "connecting" | "disconnecting"
+                "connecting" | "reconnecting" | "disconnecting"
             )
             || self.microphone_test.enabled
             || self.microphone_test.busy
@@ -4210,7 +4223,7 @@ impl ResonaApp {
             || !self.capabilities.voice
             || matches!(
                 self.workspace.session.mode.as_str(),
-                "connecting" | "disconnecting"
+                "connecting" | "reconnecting" | "disconnecting"
             )
             || self.microphone_test.enabled
             || self.microphone_test.busy;
@@ -4232,6 +4245,49 @@ impl ResonaApp {
                             ""
                         },
                     ))
+                    .child(
+                        Button::new("export-diagnostics")
+                            .icon(IconName::ArrowDown)
+                            .ghost()
+                            .disabled(
+                                self.closing
+                                    || self.core.is_none()
+                                    || self
+                                        .pending
+                                        .values()
+                                        .any(|p| matches!(p, Pending::ExportDiagnostics)),
+                            )
+                            .tooltip(
+                                if self
+                                    .pending
+                                    .values()
+                                    .any(|p| matches!(p, Pending::ExportDiagnostics))
+                                {
+                                    "正在导出诊断"
+                                } else {
+                                    "导出诊断"
+                                },
+                            )
+                            .on_click({
+                                let entity = entity.clone();
+                                move |_, _, cx| {
+                                    entity.update(cx, |this, cx| {
+                                        if !this
+                                            .pending
+                                            .values()
+                                            .any(|p| matches!(p, Pending::ExportDiagnostics))
+                                        {
+                                            this.request(
+                                                "ExportDiagnostics",
+                                                json!({}),
+                                                Pending::ExportDiagnostics,
+                                            );
+                                            cx.notify();
+                                        }
+                                    });
+                                }
+                            }),
+                    )
                     .child(
                         Button::new("open-notification-settings")
                             .label("提示音")
@@ -4351,7 +4407,7 @@ impl ResonaApp {
             || !self.workspace.session.switching_channel_id.is_empty()
             || matches!(
                 self.workspace.session.mode.as_str(),
-                "connecting" | "disconnecting"
+                "connecting" | "reconnecting" | "disconnecting"
             )
             || self.pending.values().any(|p| {
                 matches!(
@@ -4722,7 +4778,7 @@ impl ResonaApp {
                             "本地回放中".into()
                         } else if matches!(
                             self.workspace.session.mode.as_str(),
-                            "connecting" | "disconnecting"
+                            "connecting" | "reconnecting" | "disconnecting"
                         ) {
                             "连接正在切换".into()
                         } else {
@@ -5574,6 +5630,7 @@ impl ResonaApp {
         match self.workspace.session.mode.as_str() {
             "preview" => "本地预览",
             "connecting" => "正在连接",
+            "reconnecting" => "正在重连",
             "connected" => "在线",
             "disconnecting" => "正在断开",
             "failed" => "连接失败",
@@ -5585,7 +5642,7 @@ impl ResonaApp {
     fn status_color(&self) -> u32 {
         match self.workspace.session.mode.as_str() {
             "connected" => MINT,
-            "preview" | "connecting" | "disconnecting" => AMBER,
+            "preview" | "connecting" | "reconnecting" | "disconnecting" => AMBER,
             "failed" => RED,
             _ => MUTED,
         }

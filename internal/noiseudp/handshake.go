@@ -18,6 +18,8 @@ import (
 
 const prologue = "resona-noise-exp-5"
 
+var ErrServerAuthentication = errors.New("Noise server authentication failed")
+
 var suite = noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashSHA256)
 var magic = []byte{'R', 'N', '0', '5'}
 
@@ -105,7 +107,7 @@ func Dial(ctx context.Context, address string, public []byte) (*Conn, error) {
 		}
 		_, tx, rx, err := hs.ReadMessage(nil, buf[5:n])
 		if err != nil {
-			return nil, errors.New("Noise server authentication failed")
+			return nil, ErrServerAuthentication
 		}
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
