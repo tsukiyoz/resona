@@ -14,8 +14,9 @@ make build           # 核心 + 桌面 + 服务端
 make build-core      # Go 音频核心（需要 C 编译器）
 make build-desktop   # 核心 + 桌面；macOS 生成 Resona.app
 make build-server    # 纯 Go 服务端（不需要 C 编译器）
+make deploy          # 生成 Linux 部署包，不上传、不重启服务器
 make dev
-make clean           # 删除 build/bin/、desktop/dist/，保留编译缓存
+make clean           # 删除 build/bin/、build/deploy/、desktop/dist/
 make clean-all       # 额外删除 desktop/target/，下次 Rust 构建会更慢
 make help
 ```
@@ -26,7 +27,9 @@ Makefile 面向 macOS/Linux。macOS 桌面产物为 `desktop/dist/Resona.app`；
 
 直接执行 `./desktop/scripts/package-macos.sh` 也会通过 `make build-core` 构建当前核心。`make build-desktop` 复用其刚构建的核心，避免重复编译。只有显式设置 `RESONA_CORE_BINARY` 才会复用指定外部核心，需自行确保版本配套。先退出旧进程，再清理/打包并打开新应用。
 
-`clean` 不删除 `build/appicon.png`、`build/deploy-*`、`build/` 下其他目录中的性能报告、用户配置或全局 Go/Cargo 下载缓存。不要把需要保留的数据放在 `build/bin/` 或 `desktop/dist/`。不要在同一次调用中混用 `clean` 和构建目标；按顺序分别执行。
+`make deploy VERSION=v0.1.1 DEPLOY_ARCH=amd64` 在 `build/deploy/` 生成静态 Linux 服务端、Dockerfile、升级脚本及压缩包。通用源码在 [deploy/](deploy/README.md)，支持 amd64/arm64，默认 amd64；不依赖本机 Docker，不执行远端操作。
+
+`clean` 不删除 `build/appicon.png`、旧的 `build/deploy-*`、`build/` 下其他目录中的性能报告、用户配置或全局 Go/Cargo 下载缓存。不要把需要保留的数据放在 `build/bin/`、新的 `build/deploy/` 或 `desktop/dist/`。不要在同一次调用中混用 `clean` 和构建目标；按顺序分别执行。
 
 ## 测试
 

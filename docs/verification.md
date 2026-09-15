@@ -1,5 +1,14 @@
 # 当前验证记录
 
+## 2026-09-15 可复用部署包
+
+- `make deploy` 默认生成 linux/amd64 静态二进制及独立 Docker 构建包；`DEPLOY_ARCH=arm64` 生成另一架构，ELF 类型已核对。两种架构的生成目录和 tar.gz 均在新的 `build/deploy/` 下，旧部署目录保持不变。
+- 归档清单只包含二进制、Dockerfile、受限 dockerignore、升级脚本、README、许可证、构建信息及生成标记；未复制私有配置或历史部署数据。
+- 本机 OrbStack 成功构建 amd64 scratch 镜像，并在 `--network none --read-only --cap-drop ALL` 的临时容器运行 `--version`；未进行远端部署或真实容器切换。
+- `go test ./deploy` 使用模拟 Docker 验证正常切换、停止/备份/运行/健康检查失败恢复、无换行 CID 清理、环境文件权限、升级锁释放、非法参数及生成目录保护。`make test-build` 验证新部署产物被清理、旧 deploy-* 与数据保留。Shell 语法及 diff 检查通过。
+
+升级脚本只适用于文档中的已有 data/access 布局。两秒运行检查不代表完整连接/语音健康；回退容器不自动撤销数据格式变更。通用源码在 deploy/，构建包不自动上传或重启服务器。
+
 ## 2026-09-15 构建入口与清理
 
 - `make` 默认目标为完整构建；增加独立 core/desktop/server 目标，保留 `core` 别名。macOS 打包脚本直调也通过统一 core 目标构建，避免新界面混入旧核心。

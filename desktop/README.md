@@ -26,7 +26,7 @@ isolated test harness; the caller is responsible for matching its IPC/protocol.
 Quit any running Resona before replacing and reopening its bundle.
 
 From the repository root, `make build` builds desktop, core and server;
-`make clean` removes `build/bin/` and `desktop/dist/` while keeping compiler
+`make clean` removes `build/bin/`, generated `build/deploy/` and `desktop/dist/` while keeping compiler
 caches. `make clean-all` additionally removes `desktop/target/`. Keep cleanup
 and build in separate invocations. On Linux, `make build-desktop` places both
 executables in `build/bin/`; Windows keeps the dedicated build entry below.

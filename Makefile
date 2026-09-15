@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := build
-.PHONY: help dev build build-core build-desktop build-server core clean clean-all test test-native test-build generate
+.PHONY: help dev build build-core build-desktop build-server deploy core clean clean-all test test-native test-build test-deploy generate
 
 HOST_OS := $(shell uname -s)
 GOEXE = $(shell go env GOEXE)
@@ -13,6 +13,7 @@ endif
 endif
 
 VERSION ?= dev
+DEPLOY_ARCH ?= amd64
 BUILD_TIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 VERSION_LDFLAGS = -X github.com/tsukiyoz/resona/internal/version.Version=$(VERSION) -X github.com/tsukiyoz/resona/internal/version.BuildTime=$(BUILD_TIME)
 
@@ -21,11 +22,13 @@ help:
 	@echo 'make build-core     Build the CGO audio core into build/bin/'
 	@echo 'make build-desktop  Build core and desktop (macOS: desktop/dist/Resona.app)'
 	@echo 'make build-server   Build the pure-Go server into build/bin/'
+	@echo 'make deploy         Generate a Linux server package in build/deploy/ (no upload)'
 	@echo 'make dev            Build core and run the debug desktop'
-	@echo 'make clean          Remove build/bin/ and desktop/dist/, keep compiler caches'
+	@echo 'make clean          Remove build/bin/, build/deploy/ and desktop/dist/'
 	@echo 'make clean-all      Also remove desktop/target/ (Rust cache)'
 	@echo 'make test           Run Go and locked Rust tests'
 	@echo 'make test-build     Check cleanup boundaries in a temporary directory'
+	@echo 'make test-deploy    Check deployment scripts without a real server'
 	@echo 'VERSION=vX.Y.Z      Set Go binary version metadata (default: dev)'
 	@echo 'Windows desktop: use build-windows.cmd (MSVC + UCRT64 setup)'
 
@@ -47,6 +50,9 @@ build-server:
 	mkdir -p build/bin
 	CGO_ENABLED=0 go build -trimpath -ldflags '$(VERSION_LDFLAGS)' -o "build/bin/resona-server$(GOEXE)" ./cmd/resona-server
 
+deploy:
+	VERSION="$(VERSION)" BUILD_TIME="$(BUILD_TIME)" DEPLOY_ARCH="$(DEPLOY_ARCH)" sh deploy/package.sh
+
 build-desktop: build-core
 ifeq ($(HOST_OS),Darwin)
 	RESONA_CORE_BINARY="$(CORE_BINARY)" ./desktop/scripts/package-macos.sh
@@ -60,7 +66,7 @@ else
 endif
 
 clean:
-	rm -rf -- "$(CURDIR)/build/bin" "$(CURDIR)/desktop/dist"
+	rm -rf -- "$(CURDIR)/build/bin" "$(CURDIR)/build/deploy" "$(CURDIR)/desktop/dist"
 
 clean-all: clean
 	rm -rf -- "$(CURDIR)/desktop/target"
@@ -68,7 +74,10 @@ clean-all: clean
 test-build:
 	sh tools/test-build-toolchain.sh
 
-test: test-build
+test-deploy:
+	go test ./deploy
+
+test: test-build test-deploy
 	go test ./internal/...
 	cargo test --locked --manifest-path desktop/Cargo.toml
 

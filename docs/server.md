@@ -48,6 +48,8 @@ docker compose up -d server
 
 ## 运维边界
 
+需要从本机构建再上传时，运行 `make deploy VERSION=dev DEPLOY_ARCH=amd64`，产物在 `build/deploy/`；支持 arm64。通用模板、已有 data/access 布局升级流程和回退限制见 [部署包说明](../deploy/README.md)。该目标只生成包，不自动 SSH 或替换服务。旧 `build/deploy-*` 下的私有备份不迁入源码。
+
 `resona-server --version` 输出版本、提交、dirty 状态和构建信息。开发树构建不是正式发布。更新时先备份数据，保留可回退镜像，客户端与服务端同时升级；部署到用户公网服务需单独授权。
 
 命令和语音有速率上限、连接数上限 64、握手 cookie 与预算。慢控制消费者会断开，语音队列只保留新帧。没有完整拥塞控制、集群或 HTTP 管理服务。日志用 slog 写 stderr，不输出密码、认领码、私钥和聊天正文。
