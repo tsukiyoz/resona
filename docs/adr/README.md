@@ -11,3 +11,4 @@
 | [0016 GPUI 产品界面](0016-gpui-desktop-ui-and-wails-retirement.md) | Accepted |
 | [0026 资源观察](0026-scoped-resource-watch.md) | Accepted，实验协议 |
 | [0027 单一原生协议](0027-native-only.md) | Accepted，实验协议 |
+| [0028 重连与诊断](0028-reconnect-and-client-diagnostics.md) | Accepted |

@@ -233,7 +233,7 @@ func Run(ctx context.Context, service *client.Service, input io.ReadCloser, outp
 				}
 				continue
 			}
-			if req.Method == "GetIconResource" || req.Method == "GetChannelDetails" || req.Method == "GetUserDetails" {
+			if req.Method == "ExportDiagnostics" || req.Method == "GetIconResource" || req.Method == "GetChannelDetails" || req.Method == "GetUserDetails" {
 				readContext := ctx
 				if isDetails {
 					readContext, cancelDetails = context.WithCancel(ctx)

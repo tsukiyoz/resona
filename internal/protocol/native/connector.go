@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -74,7 +75,7 @@ func (connector Connector) Connect(ctx context.Context, profile client.ServerPro
 	key, _ := hex.DecodeString(profile.ServerPublicKey)
 	q, err := w.DialNoise(ctx, address, key)
 	if err != nil {
-		return nil, &client.ConnectFailure{Message: "连接失败，请核对服务器公钥、地址、版本及 UDP 网络"}
+		return nil, &client.ConnectFailure{Message: "连接失败，请核对服务器公钥、地址、版本及 UDP 网络", Retryable: !errors.Is(err, noiseudp.ErrServerAuthentication)}
 	}
 	success := false
 	defer func() {
@@ -102,6 +103,9 @@ func (connector Connector) Connect(ctx context.Context, profile client.ServerPro
 		if errors.As(err, &noiseError) && noiseError.Code == w.AuthenticationFailed {
 			return nil, &client.ConnectFailure{Message: "原生服务器拒绝连接，请检查服务器密码"}
 		}
+		if noiseError != nil && noiseError.Code != 0 {
+			return nil, &client.ConnectFailure{Message: "服务器拒绝连接，请检查权限或服务器容量"}
+		}
 		return nil, err
 	}
 	if frame.Kind == w.ReplyKind {
@@ -109,10 +113,10 @@ func (connector Connector) Connect(ctx context.Context, profile client.ServerPro
 	}
 	var state w.State
 	if frame.Kind != w.WelcomeKind || frame.Request != 0 || w.Decode(frame, &state) != nil || !validState(state) || !q.SupportsDatagrams() {
-		return nil, errors.New("invalid native welcome")
+		return nil, &client.ConnectFailure{Message: "服务器协议响应无效，请确认客户端和服务端版本一致"}
 	}
 	if state.IdentityUID != nativeidentity.UID(hello.PublicKey) {
-		return nil, errors.New("server returned wrong identity")
+		return nil, &client.ConnectFailure{Message: "服务器身份响应无效，已停止连接"}
 	}
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
@@ -178,6 +182,8 @@ func (c *connection) remote(s w.State, messages []client.RemoteMessage) client.R
 	return r
 }
 func (c *connection) readLoop() {
+	retryable := false
+	closeReason := "invalid_control"
 	defer func() {
 		_ = c.conn.CloseWithError(0, "control ended")
 		c.mu.Lock()
@@ -185,12 +191,29 @@ func (c *connection) readLoop() {
 		c.mu.Unlock()
 		r := c.remote(state, nil)
 		r.Closed = true
+		r.Retryable = retryable
+		slog.Info("native transport closed", "retryable", retryable, "reason", closeReason)
 		r.Error = "原生服务器连接已关闭"
 		c.onState(r)
 	}()
 	for {
 		f, err := w.Read(c.stream)
 		if err != nil {
+			closeReason = "transport_io"
+			if errors.Is(err, noiseudp.ErrIdleTimeout) {
+				closeReason = "idle_timeout"
+			}
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				closeReason = "control_timeout"
+			}
+			var remote *noiseudp.RemoteError
+			retryable = !errors.As(err, &remote) || remote.Code == 0
+			if remote != nil {
+				closeReason = "peer_closed"
+				if remote.Code != 0 {
+					closeReason = "peer_rejected"
+				}
+			}
 			return
 		}
 		switch f.Kind {
@@ -414,13 +437,29 @@ func (c *connection) SendVoice(data []byte, codec audio.Codec) error {
 	return nil
 }
 func (c *connection) voiceLoop() {
+	var received, malformed, stale, noHandler, delivered uint64
+	lastReport := time.Now()
+	report := func() {
+		if received == 0 {
+			return
+		}
+		slog.Info("voice routing interval", "received", received, "malformed", malformed, "stale_member_or_epoch", stale, "no_audio_handler", noHandler, "delivered", delivered)
+		received, malformed, stale, noHandler, delivered = 0, 0, 0, 0, 0
+		lastReport = time.Now()
+	}
+	defer report()
 	for {
 		b, err := c.conn.ReceiveDatagram(c.conn.Context())
 		if err != nil {
 			return
 		}
+		if received != 0 && received%128 == 0 && time.Since(lastReport) >= 30*time.Second {
+			report()
+		}
+		received++
 		v, err := w.DecodeVoice(b, true)
 		if err != nil {
+			malformed++
 			continue
 		}
 		c.mu.Lock()
@@ -441,11 +480,15 @@ func (c *connection) voiceLoop() {
 		}
 		c.mu.Unlock()
 		if instance == "" {
+			stale++
 			continue
 		}
 		c.voiceMu.RLock()
 		if c.voiceHandler != nil {
+			delivered++
 			c.voiceHandler(audio.Packet{Instance: instance, ReceivedAt: time.Now(), Data: v.Data, Sequence: v.Sequence, SenderID: v.Sender, Codec: audio.CodecOpusVoice, End: v.End})
+		} else {
+			noHandler++
 		}
 		c.voiceMu.RUnlock()
 	}

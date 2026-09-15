@@ -3,9 +3,14 @@ package desktopipc
 import (
 	"context"
 	"github.com/tsukiyoz/resona/internal/client"
+	"github.com/tsukiyoz/resona/internal/diagnostics"
 )
 
 func dispatchRead(ctx context.Context, s *client.Service, req request) (any, error) {
+	if req.Method == "ExportDiagnostics" {
+		s.RecordVoiceDiagnostics()
+		return diagnostics.ExportDefault(ctx)
+	}
 	var p struct {
 		SessionID string `json:"sessionID"`
 		ChannelID string `json:"channelID"`

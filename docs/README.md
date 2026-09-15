@@ -8,6 +8,8 @@
 | [架构](architecture.md) | 进程边界、资源与语音路径 |
 | [产品](product.md) | 工作流与体验验收标准 |
 | [服务端](server.md) | 本地运行、容器与所有者认领 |
+| [客户端诊断](client-diagnostics.md) | 自动重连、日志位置与语音计数解释 |
+| [日志调研](diagnostic-logging-research.md) | 文件缓冲、flush 与内存诊断的取舍 |
 | [控制与语音协议](native-protocol.md) | Protobuf、语音包和身份 |
 | [Noise 传输](noise-protocol.md) | 握手、加密、可靠控制与换钥 |
 | [验收清单](native-acceptance.md) | 自动化与设备测试边界 |

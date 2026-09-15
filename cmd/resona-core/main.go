@@ -12,6 +12,7 @@ import (
 	"github.com/tsukiyoz/resona/internal/config"
 	"github.com/tsukiyoz/resona/internal/credentials"
 	"github.com/tsukiyoz/resona/internal/desktopipc"
+	"github.com/tsukiyoz/resona/internal/diagnostics"
 	"github.com/tsukiyoz/resona/internal/protocol"
 	"github.com/tsukiyoz/resona/internal/protocol/native"
 	"github.com/tsukiyoz/resona/internal/version"
@@ -19,9 +20,20 @@ import (
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)).With("component", "resona-core"))
+	if !version.Requested(os.Args[1:]) {
+		slog.SetDefault(slog.New(diagnostics.New()).With("component", "resona-core"))
+		slog.Info("client started", "version", version.Current().String())
+	}
+	exitCode := 0
 	if err := run(); err != nil {
 		slog.Error("core stopped", "error", err)
-		os.Exit(1)
+		exitCode = 1
+	}
+	if !version.Requested(os.Args[1:]) {
+		slog.Info("client stopped")
+	}
+	if exitCode != 0 {
+		os.Exit(exitCode)
 	}
 }
 

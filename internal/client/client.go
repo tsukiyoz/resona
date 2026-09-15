@@ -135,6 +135,8 @@ type Service struct {
 	newMicrophoneTest      func(func(audio.VoiceState)) voiceEngine
 
 	connection      RemoteConnection
+	reconnect       *reconnectPlan
+	reconnectDelay  time.Duration
 	connectCancel   context.CancelFunc
 	connectDone     chan struct{}
 	cleanupWG       sync.WaitGroup
