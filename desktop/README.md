@@ -14,9 +14,22 @@ RESONA_CORE=../build/bin/resona-core cargo run
 Build the macOS app bundle:
 
 ```sh
-CGO_ENABLED=1 go build -o ../build/bin/resona-core ../cmd/resona-core
-./scripts/package-macos.sh
+make -C .. build-desktop
+open dist/Resona.app
 ```
+
+Running `./scripts/package-macos.sh` directly also builds the core via
+`make build-core`. Both entries build the Go core (with CGO) and the Rust GUI from the current
+checkout. It does not reuse an old `build/bin/resona-core` by default. Set
+`RESONA_CORE_BINARY` only to deliberately package a supplied core, for example an
+isolated test harness; the caller is responsible for matching its IPC/protocol.
+Quit any running Resona before replacing and reopening its bundle.
+
+From the repository root, `make build` builds desktop, core and server;
+`make clean` removes `build/bin/` and `desktop/dist/` while keeping compiler
+caches. `make clean-all` additionally removes `desktop/target/`. Keep cleanup
+and build in separate invocations. On Linux, `make build-desktop` places both
+executables in `build/bin/`; Windows keeps the dedicated build entry below.
 
 The bundle includes a multi-resolution `Resona.icns` generated from
 `build/appicon.png` with macOS `sips` and `iconutil`. `CFBundleIconFile` supplies

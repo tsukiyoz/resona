@@ -9,15 +9,24 @@
 需要 Go 1.26、Rust 和原生 C 编译工具。macOS 需要 Xcode Command Line Tools；Windows 运行根目录 `build-windows.cmd`，详见 [Windows 构建](docs/windows-build.md)。
 
 ```sh
+make                 # 默认构建全部
+make build           # 核心 + 桌面 + 服务端
+make build-core      # Go 音频核心（需要 C 编译器）
+make build-desktop   # 核心 + 桌面；macOS 生成 Resona.app
+make build-server    # 纯 Go 服务端（不需要 C 编译器）
 make dev
-# macOS 独立应用
-make core
-./desktop/scripts/package-macos.sh
-# server 不依赖音频设备或 C 编译器
-CGO_ENABLED=0 go build -o build/bin/resona-server ./cmd/resona-server
+make clean           # 删除 build/bin/、desktop/dist/，保留编译缓存
+make clean-all       # 额外删除 desktop/target/，下次 Rust 构建会更慢
+make help
 ```
 
-macOS 打包产物为 `desktop/dist/Resona.app`。Windows 启动 `resona-desktop.exe`，保留同目录的辅助进程 `resona-core.exe`。产品不需要 Node.js 或 WebView。
+Makefile 面向 macOS/Linux。macOS 桌面产物为 `desktop/dist/Resona.app`；Linux 桌面与核心一起放在 `build/bin/`。核心和服务端分别为 `build/bin/resona-core`、`build/bin/resona-server`。Windows 继续使用 `build-windows.cmd` 配置 MSVC/UCRT64，启动 `resona-desktop.exe` 并保留同目录的 `resona-core.exe`。产品不需要 Node.js 或 WebView。
+
+`make core` 保留为 `make build-core` 的别名。`make build VERSION=v0.1.1` 可设置 Go 二进制版本元数据；默认 `dev`，不会自动改 Cargo 或发布版本。服务端支持如 `GOOS=linux GOARCH=amd64 make build-server` 的交叉编译；桌面按本机平台构建。
+
+直接执行 `./desktop/scripts/package-macos.sh` 也会通过 `make build-core` 构建当前核心。`make build-desktop` 复用其刚构建的核心，避免重复编译。只有显式设置 `RESONA_CORE_BINARY` 才会复用指定外部核心，需自行确保版本配套。先退出旧进程，再清理/打包并打开新应用。
+
+`clean` 不删除 `build/appicon.png`、`build/deploy-*`、`build/` 下其他目录中的性能报告、用户配置或全局 Go/Cargo 下载缓存。不要把需要保留的数据放在 `build/bin/` 或 `desktop/dist/`。不要在同一次调用中混用 `clean` 和构建目标；按顺序分别执行。
 
 ## 测试
 

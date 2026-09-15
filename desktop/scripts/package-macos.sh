@@ -18,15 +18,22 @@ case "$bundle_dir" in
   *) echo "bundle output must be an .app below $desktop_dir/dist" >&2; exit 1 ;;
 esac
 
+if [ -z "${RESONA_CORE_BINARY:-}" ]; then
+  echo "Building resona-core from the current checkout"
+  make -C "$repo_dir" build-core
+else
+  echo "Using explicit core override: $core_binary"
+fi
+
 if [ ! -x "$core_binary" ]; then
   echo "resona-core is missing or not executable: $core_binary" >&2
   exit 1
 fi
 
 if [ "$profile" = release ]; then
-  cargo build --manifest-path "$desktop_dir/Cargo.toml" --release
+  cargo build --locked --manifest-path "$desktop_dir/Cargo.toml" --release
 else
-  cargo build --manifest-path "$desktop_dir/Cargo.toml"
+  cargo build --locked --manifest-path "$desktop_dir/Cargo.toml"
 fi
 
 icon_tmp=$(mktemp -d "${TMPDIR:-/tmp}/resona-icon.XXXXXX")
