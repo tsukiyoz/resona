@@ -1,24 +1,76 @@
-.PHONY: dev build core test test-native generate
+.DEFAULT_GOAL := build
+.PHONY: help dev build build-core build-desktop build-server core clean clean-all test test-native test-build generate
+
+HOST_OS := $(shell uname -s)
+GOEXE = $(shell go env GOEXE)
+CORE_BINARY = $(CURDIR)/build/bin/resona-core$(GOEXE)
+
+# Cleaning and building in the same invocation can race under make -j.
+ifneq ($(filter clean clean-all,$(MAKECMDGOALS)),)
+ifneq ($(filter-out clean clean-all help,$(MAKECMDGOALS)),)
+$(error Run clean and build in separate make invocations)
+endif
+endif
 
 VERSION ?= dev
 BUILD_TIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 VERSION_LDFLAGS = -X github.com/tsukiyoz/resona/internal/version.Version=$(VERSION) -X github.com/tsukiyoz/resona/internal/version.BuildTime=$(BUILD_TIME)
 
+help:
+	@echo 'make / make build   Build core, native desktop and server'
+	@echo 'make build-core     Build the CGO audio core into build/bin/'
+	@echo 'make build-desktop  Build core and desktop (macOS: desktop/dist/Resona.app)'
+	@echo 'make build-server   Build the pure-Go server into build/bin/'
+	@echo 'make dev            Build core and run the debug desktop'
+	@echo 'make clean          Remove build/bin/ and desktop/dist/, keep compiler caches'
+	@echo 'make clean-all      Also remove desktop/target/ (Rust cache)'
+	@echo 'make test           Run Go and locked Rust tests'
+	@echo 'make test-build     Check cleanup boundaries in a temporary directory'
+	@echo 'VERSION=vX.Y.Z      Set Go binary version metadata (default: dev)'
+	@echo 'Windows desktop: use build-windows.cmd (MSVC + UCRT64 setup)'
+
 generate:
 	go generate ./internal/nativewire/pb
 
-dev: core
-	RESONA_CORE="$(CURDIR)/build/bin/resona-core" cargo run --manifest-path desktop/Cargo.toml
+dev: build-core
+	RESONA_CORE="$(CORE_BINARY)" cargo run --locked --manifest-path desktop/Cargo.toml
 
-build: core
-	cargo build --release --manifest-path desktop/Cargo.toml
+build: build-desktop build-server
 
-core:
-	CGO_ENABLED=1 go build -ldflags '$(VERSION_LDFLAGS)' -o build/bin/resona-core ./cmd/resona-core
+build-core:
+	mkdir -p build/bin
+	CGO_ENABLED=1 go build -trimpath -ldflags '$(VERSION_LDFLAGS)' -o "$(CORE_BINARY)" ./cmd/resona-core
 
-test:
+core: build-core
+
+build-server:
+	mkdir -p build/bin
+	CGO_ENABLED=0 go build -trimpath -ldflags '$(VERSION_LDFLAGS)' -o "build/bin/resona-server$(GOEXE)" ./cmd/resona-server
+
+build-desktop: build-core
+ifeq ($(HOST_OS),Darwin)
+	RESONA_CORE_BINARY="$(CORE_BINARY)" ./desktop/scripts/package-macos.sh
+else ifeq ($(HOST_OS),Linux)
+	cargo build --locked --release --manifest-path desktop/Cargo.toml
+	cp desktop/target/release/resona-desktop build/bin/resona-desktop
+	@echo 'Built: build/bin/resona-desktop (keep resona-core beside it)'
+else
+	@echo 'For Windows desktop builds, run build-windows.cmd.' >&2
+	@exit 1
+endif
+
+clean:
+	rm -rf -- "$(CURDIR)/build/bin" "$(CURDIR)/desktop/dist"
+
+clean-all: clean
+	rm -rf -- "$(CURDIR)/desktop/target"
+
+test-build:
+	sh tools/test-build-toolchain.sh
+
+test: test-build
 	go test ./internal/...
-	cargo test --manifest-path desktop/Cargo.toml
+	cargo test --locked --manifest-path desktop/Cargo.toml
 
 test-native:
 	go test -race ./internal/protocol ./internal/protocol/native ./internal/nativewire ./internal/nativeidentity ./internal/noiseudp ./internal/server ./internal/audio ./internal/client ./internal/desktopipc ./cmd/resona-core

@@ -1,5 +1,14 @@
 # 当前验证记录
 
+## 2026-09-15 构建入口与清理
+
+- `make` 默认目标为完整构建；增加独立 core/desktop/server 目标，保留 `core` 别名。macOS 打包脚本直调也通过统一 core 目标构建，避免新界面混入旧核心。
+- `make test-build` 在临时目录验证 clean/clean-all 的删除边界、缓存区别、幂等，以及拒绝在同一调用中混合清理和构建；图标、部署数据、其他目录中的性能报告保留。
+- 本地实际执行 `make clean` 后，`make -j2 build VERSION=v0.1.1-dev` 成功。core/server 的版本输出正确，应用包内核心与 build/bin 产物一致，图标源文件 SHA-256 不变。
+- macOS 脚本从 desktop 目录直接调用、锁定依赖的 Rust 29 项测试、shell 语法和 diff 检查通过。Linux 目标依赖与 server 交叉编译命令做 dry-run 检查，未进行 Linux GUI 或 Windows 实机验证；Windows 保留既有专用脚本。
+
+本次仅维护工具链，不修改协议、部署远端或移动已发布 tag。`clean-all` 的删除范围在临时目录验证，没有为了验证而删除本机完整 Rust 编译缓存。
+
 ## v0.1.1 发布检查
 
 版本、Cargo 锁文件、macOS bundle 与 [发布说明](releases/v0.1.1.md)同步更新。完整 Go 竞态回归、锁定依赖的 Rust 29 项测试和 macOS release 构建用于本次发布；保持 RN05 兼容，不部署服务端。另补恢复频道被拒绝后清理会话重连信息的回归测试。
