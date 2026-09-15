@@ -2,7 +2,7 @@
 set -eu
 
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-version=${VERSION:-dev}
+version=${VERSION:-v$(cat "$repo_dir/VERSION")}
 arch=${DEPLOY_ARCH:-amd64}
 build_time=${BUILD_TIME:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
 case "$version" in *[!A-Za-z0-9._+-]*) echo 'Invalid VERSION' >&2; exit 1 ;; esac

@@ -2,11 +2,11 @@
 
 `deploy/` 保存可复用源码；`make deploy` 仅生成文件，不 SSH、不上传、不重启服务。
 
-在仓库根目录：
+在仓库根目录执行，默认读取根目录 `VERSION` 并添加 `v` 前缀。临时覆盖仍可传 `VERSION=v0.1.1-test`，不会修改文件：
 
 ```sh
-make deploy VERSION=v0.1.1
-make deploy VERSION=v0.1.1 DEPLOY_ARCH=arm64
+make deploy
+make deploy DEPLOY_ARCH=arm64
 ```
 
 默认架构为 amd64，与构建机器架构无关。产物在 `build/deploy/resona-server-版本-linux-架构/`，旁边有同名 `.tar.gz`。包包含静态 Linux 二进制、预编译 Dockerfile、受限构建上下文、升级脚本、许可证和 Go 构建元数据。开发树的 dirty 状态如实保留；仅指定版本号不代表正式发布。

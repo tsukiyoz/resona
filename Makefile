@@ -12,7 +12,7 @@ $(error Run clean and build in separate make invocations)
 endif
 endif
 
-VERSION ?= dev
+VERSION ?= v$(shell cat VERSION)
 DEPLOY_ARCH ?= amd64
 BUILD_TIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 VERSION_LDFLAGS = -X github.com/tsukiyoz/resona/internal/version.Version=$(VERSION) -X github.com/tsukiyoz/resona/internal/version.BuildTime=$(BUILD_TIME)
@@ -29,7 +29,7 @@ help:
 	@echo 'make test           Run Go and locked Rust tests'
 	@echo 'make test-build     Check cleanup boundaries in a temporary directory'
 	@echo 'make test-deploy    Check deployment scripts without a real server'
-	@echo 'VERSION=vX.Y.Z      Set Go binary version metadata (default: dev)'
+	@echo 'VERSION=vX.Y.Z      Override Go metadata (default: v + root VERSION file)'
 	@echo 'Windows desktop: use build-windows.cmd (MSVC + UCRT64 setup)'
 
 generate:

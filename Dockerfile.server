@@ -9,12 +9,13 @@ COPY internal/noiseudp/ internal/noiseudp/
 COPY internal/server/ internal/server/
 COPY internal/nativeidentity/ internal/nativeidentity/
 COPY internal/version/ internal/version/
-ARG VERSION=dev
+COPY VERSION ./VERSION
+ARG VERSION
 ARG COMMIT=unknown
 ARG BUILD_TIME=unknown
 ARG DIRTY=unknown
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 go build -mod=readonly -trimpath -ldflags="-s -w -X github.com/tsukiyoz/resona/internal/version.Version=${VERSION} -X github.com/tsukiyoz/resona/internal/version.Commit=${COMMIT} -X github.com/tsukiyoz/resona/internal/version.BuildTime=${BUILD_TIME} -X github.com/tsukiyoz/resona/internal/version.Dirty=${DIRTY}" -o /out/resona-server ./cmd/resona-server
+    CGO_ENABLED=0 go build -mod=readonly -trimpath -ldflags="-s -w -X github.com/tsukiyoz/resona/internal/version.Version=${VERSION:-v$(cat VERSION)} -X github.com/tsukiyoz/resona/internal/version.Commit=${COMMIT} -X github.com/tsukiyoz/resona/internal/version.BuildTime=${BUILD_TIME} -X github.com/tsukiyoz/resona/internal/version.Dirty=${DIRTY}" -o /out/resona-server ./cmd/resona-server
 
 FROM alpine:3.23
 RUN addgroup -S -g 10001 resona && adduser -S -D -H -u 10001 -G resona resona \

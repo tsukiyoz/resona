@@ -15,6 +15,7 @@ on:
       - 'third_party/**'
       - 'go.mod'
       - 'go.sum'
+      - 'VERSION'
   pull_request:
     paths:
       - '.github/workflows/windows-build.yml'
@@ -26,6 +27,7 @@ on:
       - 'third_party/**'
       - 'go.mod'
       - 'go.sum'
+      - 'VERSION'
 
 permissions:
   contents: read
@@ -55,9 +57,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $package = ($metadata | ConvertFrom-Json).packages | Where-Object { $_.name -eq 'resona-desktop' }
           if (-not $package) { throw 'Desktop package metadata missing' }
-          $version = "v$($package.version)-dev"
+          $baseVersion = (Get-Content -Raw VERSION).Trim()
+          if ($baseVersion -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid root VERSION' }
+          if ($package.version -ne $baseVersion) { throw 'VERSION and desktop version disagree' }
+          $version = "v$baseVersion-dev"
           if ($env:BUILD_REF_TYPE -eq 'tag') {
-            if ($env:BUILD_REF_NAME -ne "v$($package.version)") { throw 'Tag and desktop version disagree' }
+            if ($env:BUILD_REF_NAME -ne "v$baseVersion") { throw 'Tag and VERSION disagree' }
             $version = $env:BUILD_REF_NAME
           }
           "version=$version" >> $env:GITHUB_OUTPUT

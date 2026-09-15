@@ -23,11 +23,11 @@ make help
 
 Makefile 面向 macOS/Linux。macOS 桌面产物为 `desktop/dist/Resona.app`；Linux 桌面与核心一起放在 `build/bin/`。核心和服务端分别为 `build/bin/resona-core`、`build/bin/resona-server`。Windows 继续使用 `build-windows.cmd` 配置 MSVC/UCRT64，启动 `resona-desktop.exe` 并保留同目录的 `resona-core.exe`。产品不需要 Node.js 或 WebView。
 
-`make core` 保留为 `make build-core` 的别名。`make build VERSION=v0.1.1` 可设置 Go 二进制版本元数据；默认 `dev`，不会自动改 Cargo 或发布版本。服务端支持如 `GOOS=linux GOARCH=amd64 make build-server` 的交叉编译；桌面按本机平台构建。
+`make core` 保留为 `make build-core` 的别名。根目录 `VERSION` 是基础版本来源（如 `0.1.1`），构建默认使用 `v0.1.1`；`make build VERSION=v0.1.1-test` 可临时覆盖 Go 元数据，不代表正式发布。桌面 Cargo 版本必须与文件一致，构建时会校验；macOS 包版本自动读取该文件。服务端支持如 `GOOS=linux GOARCH=amd64 make build-server` 的交叉编译；桌面按本机平台构建。
 
 直接执行 `./desktop/scripts/package-macos.sh` 也会通过 `make build-core` 构建当前核心。`make build-desktop` 复用其刚构建的核心，避免重复编译。只有显式设置 `RESONA_CORE_BINARY` 才会复用指定外部核心，需自行确保版本配套。先退出旧进程，再清理/打包并打开新应用。
 
-`make deploy VERSION=v0.1.1 DEPLOY_ARCH=amd64` 在 `build/deploy/` 生成静态 Linux 服务端、Dockerfile、升级脚本及压缩包。通用源码在 [deploy/](deploy/README.md)，支持 amd64/arm64，默认 amd64；不依赖本机 Docker，不执行远端操作。
+`make deploy` 从 `VERSION` 读取版本，在 `build/deploy/` 生成静态 Linux 服务端、Dockerfile、升级脚本及压缩包。通用源码在 [deploy/](deploy/README.md)，支持 amd64/arm64，默认 amd64；不依赖本机 Docker，不执行远端操作。
 
 `clean` 不删除 `build/appicon.png`、旧的 `build/deploy-*`、`build/` 下其他目录中的性能报告、用户配置或全局 Go/Cargo 下载缓存。不要把需要保留的数据放在 `build/bin/`、新的 `build/deploy/` 或 `desktop/dist/`。不要在同一次调用中混用 `clean` 和构建目标；按顺序分别执行。
 

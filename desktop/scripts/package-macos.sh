@@ -4,6 +4,10 @@ set -eu
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 desktop_dir=$(dirname -- "$script_dir")
 repo_dir=$(dirname -- "$desktop_dir")
+bundle_version=$(cat "$repo_dir/VERSION")
+if ! printf '%s\n' "$bundle_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+  echo 'Invalid root VERSION' >&2; exit 1
+fi
 core_binary=${RESONA_CORE_BINARY:-"$repo_dir/build/bin/resona-core"}
 bundle_dir=${RESONA_BUNDLE_DIR:-"$desktop_dir/dist/Resona.app"}
 profile=${RESONA_CARGO_PROFILE:-release}
@@ -72,7 +76,7 @@ cat > "$bundle_dir/Contents/Info.plist" <<'PLIST'
   <key>CFBundleName</key><string>Resona</string>
   <key>CFBundleIconFile</key><string>Resona.icns</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1.1</string>
+  <key>CFBundleShortVersionString</key><string>0.0.0</string>
   <key>CFBundleVersion</key><string>5</string>
   <key>LSMinimumSystemVersion</key><string>12.0</string>
   <key>NSHighResolutionCapable</key><true/>
@@ -80,6 +84,8 @@ cat > "$bundle_dir/Contents/Info.plist" <<'PLIST'
 </dict></plist>
 PLIST
 
+plutil -replace CFBundleShortVersionString -string "$bundle_version" "$bundle_dir/Contents/Info.plist"
+plutil -replace CFBundleVersion -string "$bundle_version" "$bundle_dir/Contents/Info.plist"
 plutil -lint "$bundle_dir/Contents/Info.plist"
 test -s "$bundle_dir/Contents/Resources/Resona.icns"
 
