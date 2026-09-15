@@ -36,9 +36,15 @@ every affected release. Use minor versions for substantial milestones or breakin
 protocol changes and patch versions for compatible fixes. Adopt 1.0 only after
 the supported workflows and protocol compatibility commitments are established.
 
-Before tagging, update Cargo.toml/Cargo.lock, macOS bundle version and
-`docs/releases/vX.Y.Z.md`. CI derives the core build version from the exact tag
-and rejects a mismatch with the desktop version. Main-branch builds are development
+The root `VERSION` file is the base version source, without the `v` prefix
+(for example `0.1.1`). Before tagging, update it, synchronize desktop
+Cargo.toml/Cargo.lock and write `docs/releases/vX.Y.Z.md`. Cargo requires a literal
+manifest version; desktop builds reject a mismatch with VERSION. macOS bundle
+versions are read automatically. Make, deployment packaging, Windows local builds
+and Docker builds default to `v` plus VERSION; explicit build overrides do not
+edit the file or create a release. Raw `go build` without build flags still reports
+`dev`. CI requires the exact tag to match VERSION and the desktop version.
+Main-branch CI builds append `-dev` and are development
 snapshots. A tag also runs the Windows packaging workflow; do not call the Windows
 package verified until that run succeeds. Downloadable workflow artifacts are
 temporary (14 days), not durable GitHub Release assets.

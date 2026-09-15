@@ -1,7 +1,7 @@
 param(
     [string]$Msys2Root = "C:\msys64",
     [ValidatePattern('^[A-Za-z0-9.+_-]+$')]
-    [string]$Version = "dev",
+    [string]$Version,
     [switch]$SkipTests
 )
 
@@ -11,6 +11,9 @@ if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
     throw "This build requires Windows x64. Use the Windows build GitHub Action on other systems."
 }
 $RepoDirectory = (Resolve-Path "$PSScriptRoot\..\..").Path
+$BaseVersion = (Get-Content -Raw "$RepoDirectory\VERSION").Trim()
+if ($BaseVersion -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid root VERSION' }
+if (-not $Version) { $Version = "v$BaseVersion" }
 
 function Invoke-Checked {
     param([string]$Program, [string[]]$Arguments)
