@@ -1,0 +1,7 @@
+FROM scratch
+COPY --chmod=755 resona-server /resona-server
+COPY noise-license.txt /licenses/noise-license.txt
+USER 10001:10001
+ENV XDG_CONFIG_HOME=/data
+EXPOSE 9988/udp
+ENTRYPOINT ["/resona-server"]
