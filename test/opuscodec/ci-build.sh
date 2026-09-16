@@ -55,10 +55,14 @@ gopus_dir=$(go list -m -f '{{.Dir}}' github.com/thesyncim/gopus)
 if command -v cygpath >/dev/null; then gopus_dir=$(cygpath -m "$gopus_dir"); fi
 cp "$gopus_dir/LICENSE" "$build/package/licenses/gopus-LICENSE"
 cargo_home=${CARGO_HOME:-$HOME/.cargo}
+if [[ -n "$suffix" && -z "${CARGO_HOME:-}" ]]; then cargo_home="$USERPROFILE/.cargo"; fi
 if command -v cygpath >/dev/null; then cargo_home=$(cygpath -m "$cargo_home"); fi
 for crate in opus-rs-0.1.33 rusty-opus-0.9.1; do
     files=("$cargo_home"/registry/src/*/"$crate"/COPYING)
-    test -f "${files[0]}"
+    if [[ ! -f "${files[0]}" ]]; then
+        echo "Missing Cargo registry license for $crate under $cargo_home" >&2
+        exit 1
+    fi
     cp "${files[0]}" "$build/package/licenses/$crate-COPYING"
 done
 if [[ -n "$suffix" ]]; then

@@ -1,5 +1,6 @@
 /build/bin/
 /build/opuscodec/
+/build/audio3a/
 /build/deploy-*/
 /build/deploy/
 /desktop/target/

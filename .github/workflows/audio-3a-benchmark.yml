@@ -1,0 +1,79 @@
+name: Audio 3A benchmark
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audio-3a-benchmark-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux-x64
+            toolchain: 1.96.0
+            shell: bash
+          - os: windows-2022
+            platform: windows-x64
+            toolchain: 1.96.0-x86_64-pc-windows-gnu
+            shell: 'msys2 {0}'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Checkout pinned RNNoise
+        uses: actions/checkout@v5
+        with:
+          repository: xiph/rnnoise
+          ref: 70f1d256acd4b34a572f999a05c87bf00b67730d
+          path: build/audio3a/rnnoise-source
+          persist-credentials: false
+      - name: Windows C/C++ and build tools
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          path-type: inherit
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-clang
+            mingw-w64-x86_64-meson
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-python
+      - name: Linux build tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang libclang-dev pkg-config python3-venv
+          python3 -m venv build/audio3a/tools
+          build/audio3a/tools/bin/pip install meson==1.9.1 ninja==1.13.0
+          echo "$GITHUB_WORKSPACE/build/audio3a/tools/bin" >> "$GITHUB_PATH"
+      - name: Rust with LLVM archive tools
+        run: rustup toolchain install '${{ matrix.toolchain }}' --profile minimal --component llvm-tools-preview
+      - name: Build and verify adapters
+        env:
+          BENCH_RUST_TOOLCHAIN: ${{ matrix.toolchain }}
+        run: bash test/audio3a/build.sh
+      - name: Benchmark independent modules and chains
+        run: bash test/audio3a/run-ci.sh
+      - name: Upload tools, reports and listening samples
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: audio-3a-benchmark-${{ matrix.platform }}-${{ github.sha }}
+          path: |
+            build/audio3a/package/
+            build/audio3a/reports/
+          if-no-files-found: error
+          retention-days: 14
