@@ -45,3 +45,13 @@ The script now also reports the missing registry path instead of silently exitin
 - Run 35088401341 passed all four Windows tests and built both executables, then
   exposed Python's Windows locale decoding of Cargo metadata. License collection
   now explicitly reads Cargo's JSON as UTF-8.
+- Run 35089239205 reached the clean-PATH startup check but exited 127. Rust's
+  dynamic `stdc++` selection survived the broad `-static` linker argument.
+  Windows now requests `static=stdc++` explicitly and supplies GCC's archive
+  search directory. The package records its DLL imports in `windows-dlls.txt`.
+- [Run 35091667754](https://github.com/tsukiyoz/resona/actions/runs/35091667754)
+  passed on both Windows 2022 x64 and Ubuntu 24.04 x64 at commit `059742f`:
+  four adapter tests, both executable builds, license packaging, all regular and
+  little benchmark cases, and artifact upload. Both Windows executables started
+  with only System32 on PATH; the regular executable's import table contained
+  only Windows system DLLs, without MinGW runtime DLLs.
