@@ -459,6 +459,7 @@ type engineRun struct {
 	cancel                 context.CancelFunc
 	codec                  Codec
 	volume                 float32
+	limiter                outputLimiter
 	incoming               chan Packet
 	captureWake            chan struct{}
 	capturePCM             *sampleRing
@@ -887,9 +888,7 @@ func (r *engineRun) mixLoop() {
 					}
 					r.activityMu.Unlock()
 				}
-				for i := range mix {
-					mix[i] = max(-1, min(1, mix[i]*gain))
-				}
+				r.limiter.apply(mix, gain)
 				r.playbackPCM.Push(mix)
 			}
 		}

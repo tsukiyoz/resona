@@ -333,6 +333,9 @@ func (s *Service) SelectChannel(id string) (Workspace, error) {
 			s.state.Channels[i].Members = 1
 		}
 	}
+	if s.state.Session.ChannelID != id {
+		s.state.Messages = []Message{}
+	}
 	s.state.Session.ChannelID = id
 	for i := range s.state.Users {
 		if s.state.Users[i].Self {

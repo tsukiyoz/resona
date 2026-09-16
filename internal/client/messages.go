@@ -11,6 +11,7 @@ import (
 
 const MaxChannelMessageBytes = 8192
 const maxMessages = 500
+const maxMessageBytes = 512 * 1024
 
 var (
 	ErrMessageChannelChanged   = errors.New("当前频道已改变，消息未发送")
@@ -186,7 +187,7 @@ func (s *Service) cancelMessageLocked() {
 
 func (s *Service) appendRemoteMessagesLocked(messages []RemoteMessage) {
 	for _, remote := range messages {
-		if remote.UserID == "" || remote.UserID == s.state.Session.SelfID || remote.ChannelID == "" || !utf8.ValidString(remote.Text) || len(remote.Text) > MaxChannelMessageBytes {
+		if remote.UserID == "" || remote.UserID == s.state.Session.SelfID || remote.ChannelID == "" || remote.ChannelID != s.state.Session.ChannelID || !utf8.ValidString(remote.Text) || len(remote.Text) > MaxChannelMessageBytes {
 			continue
 		}
 		s.state.Messages = append(s.state.Messages, Message{ID: rand.Text(), ChannelID: remote.ChannelID, AuthorID: remote.UserID, Author: remote.Author, Text: remote.Text, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Status: "received"})
@@ -195,11 +196,19 @@ func (s *Service) appendRemoteMessagesLocked(messages []RemoteMessage) {
 }
 
 func (s *Service) trimMessagesLocked() {
-	for len(s.state.Messages) > maxMessages {
+	bytes := 0
+	for _, message := range s.state.Messages {
+		bytes += len(message.Text) + len(message.Author) + len(message.Error)
+	}
+	for len(s.state.Messages) > maxMessages || (bytes > maxMessageBytes && len(s.state.Messages) > 1) {
 		index := 0
 		if s.state.Messages[0].ID == s.state.Session.SendingMessageID {
 			index = 1
 		}
-		s.state.Messages = append(s.state.Messages[:index], s.state.Messages[index+1:]...)
+		message := s.state.Messages[index]
+		bytes -= len(message.Text) + len(message.Author) + len(message.Error)
+		copy(s.state.Messages[index:], s.state.Messages[index+1:])
+		s.state.Messages[len(s.state.Messages)-1] = Message{}
+		s.state.Messages = s.state.Messages[:len(s.state.Messages)-1]
 	}
 }

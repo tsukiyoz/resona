@@ -126,9 +126,8 @@ func (s *Service) configureVoice(config audio.VoiceConfig, expectedGeneration *u
 	}
 	if !config.Enabled {
 		engine := s.detachVoiceLocked()
-		if monitorAction == 2 || monitorAction == 3 {
-			s.voiceState.VoiceConfig = config
-		}
+		config.Muted = true
+		s.voiceState.VoiceConfig = config
 		state := s.voiceState
 		if engine != nil {
 			s.cleanupWG.Add(1)

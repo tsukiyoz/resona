@@ -66,8 +66,8 @@ func (s *Service) SetUserPlayback(sessionID, userID, instance string, volume int
 	if s.shutdown || s.state.Session.Mode != "connected" || s.state.Session.ID != sessionID || s.state.Session.SwitchingChannelID != "" {
 		return Workspace{}, errors.New("会话已改变，请重新选择用户")
 	}
-	if volume < 0 || volume > 200 {
-		return Workspace{}, errors.New("单人音量必须在0到200之间")
+	if volume < 0 || volume > audio.MaxPlaybackVolume {
+		return Workspace{}, errors.New("单人收听增益超出范围")
 	}
 	if _, ok := s.connection.(audio.Transport); !ok {
 		return Workspace{}, errors.New("当前连接不支持单人音量")

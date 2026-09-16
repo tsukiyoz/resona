@@ -59,7 +59,7 @@ fn main() -> Result<()> {
             KeyBinding::new("ctrl-q", ui::Quit, None),
             KeyBinding::new("shift-enter", Enter { secondary: true }, Some("Input")),
         ]);
-        let bounds = Bounds::centered(None, size(px(1240.), px(780.)), cx);
+        let bounds = Bounds::centered(None, size(px(800.), px(900.)), cx);
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {
                 cx.quit();
@@ -70,10 +70,14 @@ fn main() -> Result<()> {
             WindowOptions {
                 titlebar: Some(gpui::TitlebarOptions {
                     title: Some(concat!("Resona v", env!("CARGO_PKG_VERSION")).into()),
-                    ..Default::default()
+                    ..if cfg!(target_os = "macos") {
+                        gpui_component::TitleBar::title_bar_options()
+                    } else {
+                        Default::default()
+                    }
                 }),
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(size(px(900.), px(600.))),
+                window_min_size: Some(size(px(760.), px(600.))),
                 ..Default::default()
             },
             |window, cx| {

@@ -9,6 +9,7 @@ import (
 )
 
 const (
+	MaxPlaybackVolume = 794 // +18 dB, as a linear percentage; UI uses dB.
 	SampleRate        = 48000
 	FrameSamples      = 960
 	MaxOpusPacketSize = 1275
@@ -111,8 +112,8 @@ func validateConfig(config VoiceConfig) error {
 	if config.InputGain < 0 || config.InputGain > 200 {
 		return errors.New("麦克风输入增益必须在 0 到 200 之间")
 	}
-	if config.Volume < 0 || config.Volume > 100 {
-		return errors.New("音量必须在 0 到 100 之间")
+	if config.Volume < 0 || config.Volume > MaxPlaybackVolume {
+		return errors.New("收听增益超出范围")
 	}
 	if config.ActivationMode != "" && config.ActivationMode != "continuous" && config.ActivationMode != "ptt" && config.ActivationMode != "vad" {
 		return errors.New("未知的语音激活模式")

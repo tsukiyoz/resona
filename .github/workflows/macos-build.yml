@@ -1,0 +1,121 @@
+name: macOS build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - '.github/workflows/macos-build.yml'
+      - 'Makefile'
+      - 'build/appicon.png'
+      - 'desktop/**'
+      - 'cmd/resona-core/**'
+      - 'internal/**'
+      - 'third_party/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'VERSION'
+      - 'docs/noise-license.txt'
+  pull_request:
+    paths:
+      - '.github/workflows/macos-build.yml'
+      - 'Makefile'
+      - 'build/appicon.png'
+      - 'desktop/**'
+      - 'cmd/resona-core/**'
+      - 'internal/**'
+      - 'third_party/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'VERSION'
+      - 'docs/noise-license.txt'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+            machine: arm64
+          - runner: macos-15-intel
+            arch: x64
+            machine: x86_64
+    env:
+      CARGO_BUILD_JOBS: '2'
+      MACOSX_DEPLOYMENT_TARGET: '12.0'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Set up Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Resolve build version
+        id: version
+        env:
+          BUILD_REF_TYPE: ${{ github.ref_type }}
+          BUILD_REF_NAME: ${{ github.ref_name }}
+          EXPECTED_MACHINE: ${{ matrix.machine }}
+        run: |
+          test "$(uname -m)" = "$EXPECTED_MACHINE"
+          base_version=$(tr -d '\r\n' < VERSION)
+          [[ "$base_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          desktop_version=$(cargo metadata --locked --no-deps --format-version 1 --manifest-path desktop/Cargo.toml | jq -er '.packages[] | select(.name == "resona-desktop") | .version')
+          test "$desktop_version" = "$base_version"
+          version="v${base_version}-dev"
+          if [[ "$BUILD_REF_TYPE" == tag ]]; then
+            test "$BUILD_REF_NAME" = "v${base_version}"
+            version="$BUILD_REF_NAME"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Test core and desktop
+        run: |
+          go test ./internal/...
+          cargo test --locked --release --manifest-path desktop/Cargo.toml
+      - name: Build app bundle
+        env:
+          RESONA_BUILD_VERSION: ${{ steps.version.outputs.version }}
+        run: make build-desktop VERSION="$RESONA_BUILD_VERSION"
+      - name: Verify and archive app
+        env:
+          PACKAGE_ARCH: ${{ matrix.arch }}
+          EXPECTED_MACHINE: ${{ matrix.machine }}
+        run: |
+          app=desktop/dist/Resona.app
+          plutil -lint "$app/Contents/Info.plist"
+          for binary in resona-core resona-desktop; do
+            test -x "$app/Contents/MacOS/$binary"
+            test "$(lipo -archs "$app/Contents/MacOS/$binary")" = "$EXPECTED_MACHINE"
+            codesign --verify --strict "$app/Contents/MacOS/$binary"
+          done
+          codesign --verify --deep --strict "$app"
+          "$app/Contents/MacOS/resona-core" --version
+          ditto -c -k --sequesterRsrc --keepParent "$app" "desktop/dist/Resona-macos-${PACKAGE_ARCH}.zip"
+          echo '### macOS test package' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Ad-hoc signed only. No Developer ID certificate or Apple notarization; macOS may require manual approval to open.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload macOS package
+        uses: actions/upload-artifact@v6
+        with:
+          name: Resona-${{ steps.version.outputs.version }}-macos-${{ matrix.arch }}-${{ github.sha }}
+          path: desktop/dist/Resona-macos-${{ matrix.arch }}.zip
+          if-no-files-found: error
+          retention-days: 14

@@ -166,6 +166,7 @@ func (s *Service) startReconnectLocked(plan reconnectPlan, old RemoteConnection,
 			s.connection = conn
 			s.reconnect = &plan
 			s.state.Session.ID = rand.Text()
+			s.state.Messages = []Message{}
 			s.state.Session.Mode = "connected"
 			s.state.Session.Error = "连接已恢复，麦克风保持静音，请确认后开启"
 			if !restored {
