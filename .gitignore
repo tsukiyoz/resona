@@ -1,4 +1,5 @@
 /build/bin/
+/build/opuscodec/
 /build/deploy-*/
 /build/deploy/
 /desktop/target/

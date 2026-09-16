@@ -1,0 +1,78 @@
+name: Opus codec benchmark
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: opus-benchmark-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux-x64
+            target: x86_64-unknown-linux-gnu
+            shell: bash
+          - os: windows-2022
+            platform: windows-x64
+            target: x86_64-pc-windows-gnu
+            shell: 'msys2 {0}'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Checkout official libopus 1.6.1
+        uses: actions/checkout@v5
+        with:
+          repository: xiph/opus
+          ref: 22244de5a79bd1d6d623c32e72bf1954b56235be
+          path: build/opuscodec/opus-source
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: test/opuscodec/go.mod
+          cache-dependency-path: test/opuscodec/go.sum
+      - name: Windows GNU toolchain
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          path-type: inherit
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-pkgconf
+      - name: Linux build prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.96.0 --profile minimal --target '${{ matrix.target }}'
+      - name: Build and test portable benchmark
+        env:
+          BENCH_TARGET: ${{ matrix.target }}
+          BENCH_PLATFORM: ${{ matrix.platform }}
+        run: bash test/opuscodec/ci-build.sh
+      - name: Measure CBR and exploratory VBR
+        run: bash test/opuscodec/ci-run.sh
+      - name: Upload reports and tool even when a candidate fails
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: opus-benchmark-${{ matrix.platform }}-${{ github.sha }}
+          path: |
+            build/opuscodec/package/
+            build/opuscodec/reports/
+          if-no-files-found: error
+          retention-days: 14
