@@ -1,5 +1,6 @@
 """Package upstream notices from Cargo's structured dependency inventory."""
 import json
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -19,5 +20,5 @@ for name, root in [("rnnoise", rnnoise), ("speexdsp", Path("internal/audio/speex
     target = output / name
     target.mkdir(exist_ok=True)
     shutil.copyfile(root / "COPYING", target / "COPYING")
-for source in Path("build/audio3a/target").glob("release/build/webrtc-audio-processing-sys-*/out/webrtc-audio-processing/subprojects/abseil-cpp-*/LICENSE"):
+for source in Path(os.environ.get("CARGO_TARGET_DIR", "build/audio3a/target")).glob("release/build/webrtc-audio-processing-sys-*/out/webrtc-audio-processing/subprojects/abseil-cpp-*/LICENSE"):
     shutil.copyfile(source, output / "abseil-LICENSE")
