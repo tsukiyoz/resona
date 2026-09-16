@@ -26,4 +26,5 @@ if [[ "$actual" != "$model_hash" ]]; then
     echo "RNNoise model checksum mismatch: $archive" >&2
     exit 1
 fi
-tar -xzf "$archive" -C "$RNNOISE_SOURCE"
+# GNU tar treats a Windows drive colon in -f as a remote host; stdin is portable.
+tar -xzf - -C "$RNNOISE_SOURCE" < "$archive"
