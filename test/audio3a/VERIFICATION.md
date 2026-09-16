@@ -27,3 +27,21 @@ The adjacent Opus packaging fix uses USERPROFILE for Cargo's default registry on
 Windows when CARGO_HOME is unset. MSYS HOME had pointed elsewhere; adapter tests
 and executable compilation had already passed, but license collection failed.
 The script now also reports the missing registry path instead of silently exiting.
+
+## Windows build fixes
+
+- Run 35086271354 reached WebRTC compilation but MinGW `ar` failed to read an
+  Abseil object whose absolute path was 260 characters. CI now uses a short
+  runner-temporary Cargo target directory (the same object path is 234 characters).
+  Packaging still goes under `build/audio3a/`; dependency notices follow the
+  selected `CARGO_TARGET_DIR`.
+- Run 35087510667 passed archive creation and exposed bundled WebRTC's DLL
+  export directives in its static archive. The wrapper prefixes native symbols,
+  leaving those export names unresolved. The Windows forced-include header
+  disables `WEBRTC_ENABLE_SYMBOL_EXPORT` for static compilation. `winmm` is
+  linked after dependency archives so MinGW resolves `timeGetTime`.
+- These changes affect benchmark build plumbing, not audio processing settings
+  or production dependencies. The four local release adapter tests passed again.
+- Run 35088401341 passed all four Windows tests and built both executables, then
+  exposed Python's Windows locale decoding of Cargo metadata. License collection
+  now explicitly reads Cargo's JSON as UTF-8.
