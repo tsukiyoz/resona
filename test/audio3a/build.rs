@@ -2,7 +2,8 @@ use std::{env, path::PathBuf};
 
 fn main() {
     if env::var("CARGO_CFG_TARGET_OS").unwrap() == "windows" {
-        println!("cargo:rustc-link-lib=winmm");
+        // Keep this after the dependency archives for MinGW's one-pass linker.
+        println!("cargo:rustc-link-arg=-lwinmm");
     }
     let speex = PathBuf::from("../../internal/audio/speexdsp");
     let mut c = cc::Build::new();

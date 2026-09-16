@@ -11,6 +11,10 @@ if [[ "$(uname -s)" == MINGW* ]]; then
     export LIBCLANG_PATH
     LIBCLANG_PATH=$(cygpath -m /mingw64/bin)
     export BINDGEN_EXTRA_CLANG_ARGS=--target=x86_64-w64-windows-gnu
+    # Bundled Meson enables DLL exports even for static archives. Include after
+    # command-line defines so objcopy's symbol prefixing leaves no stale exports.
+    export CFLAGS="${CFLAGS:-} -include $root/test/audio3a/windows-static.h"
+    export CXXFLAGS="${CXXFLAGS:-} -include $root/test/audio3a/windows-static.h"
     export RUSTFLAGS='-C target-feature=+crt-static -C link-arg=-static'
 fi
 {
