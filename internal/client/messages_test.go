@@ -15,6 +15,23 @@ type fakeMessageConnection struct {
 	send func(context.Context, string, string) error
 }
 
+func TestTranscriptByteLimitPreservesPendingSend(t *testing.T) {
+	s := &Service{}
+	s.state.Session.SendingMessageID = "pending"
+	s.state.Messages = []Message{{ID: "pending", Text: "not acknowledged"}}
+	for i := 0; i < 140; i++ {
+		s.state.Messages = append(s.state.Messages, Message{ID: fmt.Sprint(i), Text: strings.Repeat("x", 4096)})
+	}
+	s.trimMessagesLocked()
+	total := 0
+	for _, message := range s.state.Messages {
+		total += len(message.Text) + len(message.Author) + len(message.Error)
+	}
+	if total > maxMessageBytes || len(s.state.Messages) > maxMessages || s.state.Messages[0].ID != "pending" || s.state.Messages[len(s.state.Messages)-1].ID != "139" {
+		t.Fatalf("invalid transcript eviction: bytes=%d count=%d", total, len(s.state.Messages))
+	}
+}
+
 func (c *fakeMessageConnection) SendChannelMessage(ctx context.Context, channelID, text string) error {
 	if c.send == nil {
 		return ErrMessageUnavailable
@@ -214,7 +231,7 @@ func TestChannelMessageRejectRetryAfterChannelChanges(t *testing.T) {
 	}
 	waitForMessageResult(t, service, id, "failed")
 	update(channelState("2"))
-	if _, err := service.RetryMessage(id, true); !errors.Is(err, ErrMessageChannelChanged) || calls.Load() != 2 {
+	if _, err := service.RetryMessage(id, true); err == nil || calls.Load() != 2 {
 		t.Fatalf("old-channel retry was not rejected: %v", err)
 	}
 }
@@ -235,18 +252,32 @@ func TestChannelMessagesKeepPeerDuplicatesAndHistoryAcrossUpdates(t *testing.T) 
 		t.Fatalf("self echo duplicated local row or peer messages collapsed: %+v", state.Messages)
 	}
 	state.Messages[1].Text = "mutated snapshot"
-	update(channelState("2"))
+	update(channelState("1"))
 	state, _ = service.GetWorkspace()
 	if len(state.Messages) != 3 || state.Messages[1].Text != "same" || state.Messages[1].ChannelID != "1" {
 		t.Fatalf("ordinary update erased or altered history: %+v", state.Messages)
 	}
+	update(channelState("2"))
+	late := channelState("2")
+	late.Messages = remote.Messages
+	update(late)
+	state, _ = service.GetWorkspace()
+	if len(state.Messages) != 0 {
+		t.Fatal("channel departure or late messages retained old history")
+	}
+	update(channelState("1"))
+	state, _ = service.GetWorkspace()
+	if len(state.Messages) != 0 {
+		t.Fatal("returning restored old history")
+	}
+	update(remote)
 	state, err := service.DisconnectServer()
-	if err != nil || state.Session.Mode != "offline" || len(state.Messages) != 3 {
-		t.Fatalf("disconnect erased history: %+v %v", state, err)
+	if err != nil || state.Session.Mode != "offline" || len(state.Messages) != 0 {
+		t.Fatalf("disconnect retained history: %+v %v", state, err)
 	}
 }
 
-func TestChannelMessageDisconnectCancelsPendingAndKeepsUnknownHistory(t *testing.T) {
+func TestChannelMessageDisconnectCancelsPendingAndClearsHistory(t *testing.T) {
 	started, canceled := make(chan struct{}), make(chan struct{})
 	connection := &fakeMessageConnection{send: func(ctx context.Context, _, _ string) error {
 		close(started)
@@ -255,11 +286,11 @@ func TestChannelMessageDisconnectCancelsPendingAndKeepsUnknownHistory(t *testing
 		return ctx.Err()
 	}}
 	service, _ := connectedMessageService(t, connection)
-	pending := sendTestMessage(t, service, "pending")
+	sendTestMessage(t, service, "pending")
 	<-started
 	state, err := service.DisconnectServer()
-	if err != nil || state.Session.Mode != "offline" || state.Session.SendingMessageID != "" || len(state.Messages) != 1 || state.Messages[0].ID != pending.Messages[0].ID || state.Messages[0].Status != "unconfirmed" {
-		t.Fatalf("disconnect did not retain uncertain message: %+v %v", state, err)
+	if err != nil || state.Session.Mode != "offline" || state.Session.SendingMessageID != "" || len(state.Messages) != 0 {
+		t.Fatalf("disconnect retained uncertain message: %+v %v", state, err)
 	}
 	select {
 	case <-canceled:

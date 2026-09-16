@@ -39,10 +39,16 @@ func TestReconnectRetriesRestoresChannelAndCancelsOldCallbacks(t *testing.T) {
 	_, _ = s.ConnectServer("home", "session-secret")
 	before := waitForMode(t, s, "connected")
 	old := <-updates
+	s.mu.Lock()
+	s.state.Messages = []Message{{ID: "old", ChannelID: "2", Text: "old channel text"}}
+	s.mu.Unlock()
 	old(RemoteState{Closed: true, Retryable: true})
 	after := waitForMode(t, s, "connected")
 	if calls.Load() != 3 || after.Session.ChannelID != "2" || after.Session.ID == before.Session.ID {
 		t.Fatalf("bad recovery: calls=%d session=%+v", calls.Load(), after.Session)
+	}
+	if len(after.Messages) != 0 {
+		t.Fatal("reconnected session retained old channel text")
 	}
 	old(RemoteState{Closed: true, Retryable: true})
 	state, _ := s.GetWorkspace()

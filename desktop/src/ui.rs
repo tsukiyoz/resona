@@ -80,13 +80,15 @@ enum Pending {
         session: String,
         revision: u64,
     },
-    InputGain,
+    OutputGain(String),
     UserPlayback(UserPlaybackTarget),
     Workspace(&'static str),
     SaveServer(u64),
     Credential(String, u64),
     Connect(String, bool),
     Voice,
+    SettingsApply(String),
+    SettingsStatus(String),
     VoicePreferences {
         connect: Option<String>,
         session: String,
@@ -127,12 +129,12 @@ enum UserPlaybackAction {
 impl UserPlaybackAction {
     fn apply(self, user: &User) -> (u16, bool) {
         match self {
-            Self::Mute(muted) => (user.playback_volume.min(200), muted),
+            Self::Mute(muted) => (user.playback_volume.min(794), muted),
             Self::Step(step) => (
-                (i32::from(user.playback_volume) + i32::from(step)).clamp(0, 200) as u16,
+                step_playback_volume(user.playback_volume, step),
                 user.playback_muted,
             ),
-            Self::Volume(volume) => (volume.min(200), user.playback_muted),
+            Self::Volume(volume) => (volume.min(794), user.playback_muted),
         }
     }
 }
@@ -190,6 +192,10 @@ pub struct ResonaApp {
     resources_syncing: bool,
     composer_height: f32,
     composer_drag: Option<(f32, f32)>,
+    chat_collapsed: bool,
+    chat_unread: bool,
+    chat_follow_bottom: bool,
+    chat_scroll: gpui::ScrollHandle,
     logo: Arc<Image>,
     core: Option<CoreClient>,
     workspace: Workspace,
@@ -216,6 +222,11 @@ pub struct ResonaApp {
     closing: bool,
     connect_revision: u64,
     preferences: Preferences,
+    settings_draft: Option<Preferences>,
+    settings_baseline: Option<Preferences>,
+    settings_apply: Option<(Preferences, String, bool)>,
+    settings_notice: String,
+    settings_discard: bool,
     preference_revision: u64,
     preference_save_order: Arc<Mutex<u64>>,
     audio_settings_pending: bool,
@@ -315,7 +326,7 @@ impl ResonaApp {
                             Ok(volume) => {
                                 this.playback_input_error.clear();
                                 input.update(cx, |input, cx| {
-                                    input.set_value(volume.to_string(), window, cx)
+                                    input.set_value(playback_db(volume).to_string(), window, cx)
                                 });
                                 this.user_playback_action(
                                     target,
@@ -332,7 +343,11 @@ impl ResonaApp {
                     InputEvent::Blur if !pending => {
                         this.playback_input_error.clear();
                         input.update(cx, |input, cx| {
-                            input.set_value(this.playback_input_confirmed.to_string(), window, cx)
+                            input.set_value(
+                                playback_db(this.playback_input_confirmed).to_string(),
+                                window,
+                                cx,
+                            )
                         });
                         cx.notify();
                     }
@@ -345,6 +360,13 @@ impl ResonaApp {
                 .default_value(preferences.push_to_talk_shortcut.clone())
                 .placeholder("F8")
         });
+        cx.subscribe(&shortcut_input, |this, input, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) && this.settings_draft.is_some() {
+                let value = input.read(cx).value().trim().to_owned();
+                this.update_audio_preferences(|p| p.push_to_talk_shortcut = value, cx);
+            }
+        })
+        .detach();
         let chat_subscription = cx.subscribe_in(
             &chat_input,
             window,
@@ -441,8 +463,12 @@ impl ResonaApp {
             resource_interest: None,
             resource_generation: 0,
             resources_syncing: false,
-            composer_height: 96.,
+            composer_height: 210.,
             composer_drag: None,
+            chat_collapsed: false,
+            chat_unread: false,
+            chat_follow_bottom: true,
+            chat_scroll: gpui::ScrollHandle::new(),
             logo: Arc::new(Image::from_bytes(
                 ImageFormat::Png,
                 include_bytes!("../../build/appicon.png").to_vec(),
@@ -472,6 +498,11 @@ impl ResonaApp {
             closing: false,
             connect_revision: 0,
             preferences,
+            settings_draft: None,
+            settings_baseline: None,
+            settings_apply: None,
+            settings_notice: String::new(),
+            settings_discard: false,
             preference_revision: 0,
             preference_save_order: Arc::new(Mutex::new(0)),
             audio_settings_pending: false,
@@ -620,6 +651,10 @@ impl ResonaApp {
 
     fn request_failed(&mut self, pending: Pending, error: String) {
         match pending {
+            Pending::SettingsApply(_) | Pending::SettingsStatus(_) => {
+                self.settings_apply = None;
+                self.settings_notice = format!("未应用：{error}");
+            }
             Pending::ChannelMutation { session, revision } => {
                 if self.channel_matches(&session, revision) {
                     self.channel_error = error;
@@ -634,7 +669,6 @@ impl ResonaApp {
                     self.ownership_error = error;
                 }
             }
-            Pending::InputGain => self.input_gain_error = format!("输入增益未应用：{error}"),
             Pending::UserPlayback(target) => self.user_playback_failed(target, error),
             Pending::Icon { reference, .. } => {
                 self.icon_requested.remove(&reference);
@@ -767,22 +801,6 @@ impl ResonaApp {
                             }
                         }
                     }
-                    (Some(Pending::InputGain), result) => {
-                        match result.and_then(|value| {
-                            serde_json::from_value::<u16>(value).map_err(|e| e.to_string())
-                        }) {
-                            Ok(gain) if gain <= 200 => {
-                                self.preferences.input_gain = gain;
-                                self.voice.input_gain = gain;
-                                self.microphone_test.input_gain = gain;
-                                self.save_preferences(cx);
-                            }
-                            Ok(_) => self.input_gain_error = "输入增益响应无效".into(),
-                            Err(error) => {
-                                self.input_gain_error = format!("输入增益未应用：{error}")
-                            }
-                        }
-                    }
                     (Some(Pending::UserPlayback(target)), result) => {
                         if target.session == self.workspace.session.id {
                             match result.and_then(|value| {
@@ -861,6 +879,61 @@ impl ResonaApp {
                         self.connect_error.clear();
                     }
                     (Some(Pending::Voice), Ok(value)) => self.apply_voice(value),
+                    (Some(Pending::SettingsApply(session)), result)
+                        if self.settings_apply.as_ref().is_some_and(|(_, current, _)| {
+                            *current == session && session == self.workspace.session.id
+                        }) =>
+                    {
+                        match result {
+                            Ok(_) => {
+                                self.request(
+                                    "GetVoiceState",
+                                    json!({}),
+                                    Pending::SettingsStatus(session),
+                                );
+                            }
+                            Err(error) => {
+                                self.settings_apply = None;
+                                self.settings_notice = format!("未应用：{error}");
+                            }
+                        }
+                    }
+                    (Some(Pending::SettingsStatus(session)), result)
+                        if self.settings_apply.as_ref().is_some_and(|(_, current, _)| {
+                            *current == session && session == self.workspace.session.id
+                        }) =>
+                    {
+                        match result.and_then(|value| {
+                            serde_json::from_value::<VoiceState>(value).map_err(|e| e.to_string())
+                        }) {
+                            Ok(voice) => {
+                                self.voice = voice;
+                                if let Some((_, _, ready)) = &mut self.settings_apply {
+                                    *ready = true;
+                                }
+                            }
+                            Err(error) => {
+                                self.settings_apply = None;
+                                self.settings_notice = format!("无法确认应用结果：{error}");
+                            }
+                        }
+                    }
+                    (Some(Pending::SettingsApply(_) | Pending::SettingsStatus(_)), _) => {}
+                    (Some(Pending::OutputGain(session)), result) => {
+                        if session == self.workspace.session.id {
+                            match result.and_then(|v| {
+                                serde_json::from_value::<u16>(v).map_err(|e| e.to_string())
+                            }) {
+                                Ok(volume) if volume <= 794 => {
+                                    self.preferences.playback_volume = volume;
+                                    self.voice.volume = volume;
+                                    self.save_preferences(cx);
+                                }
+                                Ok(_) => self.error = "收听增益响应无效".into(),
+                                Err(error) => self.error = format!("收听增益未应用：{error}"),
+                            }
+                        }
+                    }
                     (
                         Some(Pending::VoicePreferences {
                             connect,
@@ -1009,6 +1082,7 @@ impl ResonaApp {
                 }
             }
         }
+        self.finish_settings_apply(cx);
         self.flush_queued_voice(cx);
         self.sync_hotkey(cx);
         cx.notify();
@@ -1042,13 +1116,14 @@ impl ResonaApp {
             || self
                 .pending
                 .values()
-                .any(|p| matches!(p, Pending::Voice | Pending::InputGain))
+                .any(|p| matches!(p, Pending::Voice | Pending::OutputGain(_)))
         {
             return;
         }
         self.voice_target = None;
         if let Some(mut next) = self.queued_voice.take() {
             next.input_gain = self.preferences.input_gain.min(200);
+            next.volume = self.preferences.playback_volume.min(794);
             if self.workspace.connected() {
                 self.configure_voice(|v| *v = next, cx);
             }
@@ -1058,6 +1133,24 @@ impl ResonaApp {
     fn apply_workspace(&mut self, value: Value, window: &mut Window, cx: &mut Context<Self>) {
         match serde_json::from_value::<Workspace>(value) {
             Ok(workspace) => {
+                let changed_channel = workspace.session.id != self.workspace.session.id
+                    || workspace.session.channel_id != self.workspace.session.channel_id
+                    || (workspace.session.mode == "offline"
+                        && self.workspace.session.mode != "offline");
+                let new_message = workspace.messages.last().map(|m| &m.id)
+                    != self.workspace.messages.last().map(|m| &m.id);
+                if changed_channel {
+                    self.chat_unread = false;
+                    self.chat_follow_bottom = true;
+                    self.chat_scroll = gpui::ScrollHandle::new();
+                    self.submitted_drafts.clear();
+                } else if new_message && !workspace.messages.is_empty() {
+                    if !self.chat_collapsed && self.chat_follow_bottom {
+                        self.chat_scroll.scroll_to_bottom();
+                    } else {
+                        self.chat_unread = true;
+                    }
+                }
                 if let Some(Modal::Channel { session, .. }) = &self.modal {
                     if !workspace.connected()
                         || workspace.session.id != *session
@@ -1196,6 +1289,9 @@ impl ResonaApp {
             return;
         }
         self._audio_update = None;
+        self.settings_apply = None;
+        self.settings_draft = None;
+        self.settings_baseline = None;
         self.flush_preferences();
         self.clear_hotkey(cx);
         self.closing = true;
@@ -1450,6 +1546,9 @@ impl ResonaApp {
     }
 
     fn speaking_transition_pending(&self) -> bool {
+        if self.settings_apply.is_some() {
+            return true;
+        }
         self.pending.values().any(|pending| match pending {
             Pending::Voice
             | Pending::VoicePreferences { .. }
@@ -1842,6 +1941,19 @@ impl ResonaApp {
     }
 
     fn close_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.modal, Some(Modal::Audio | Modal::Settings)) {
+            if self.settings_apply.is_some() {
+                return;
+            }
+            if self.settings_dirty() {
+                self.settings_discard = true;
+                cx.notify();
+                return;
+            }
+            self.settings_draft = None;
+            self.settings_baseline = None;
+            self.settings_discard = false;
+        }
         self.channel_audio_preset = 32000;
         self.channel_bitrate_input
             .update(cx, |input, cx| input.set_value("32", window, cx));
@@ -1990,7 +2102,6 @@ impl ResonaApp {
         }
         let mut config = VoiceState::default();
         self.apply_audio_preferences(&mut config);
-        config.volume = self.voice.volume;
         self.request(
             "SetVoicePreferences",
             voice_params(&config),
@@ -2142,7 +2253,7 @@ impl ResonaApp {
         let request_pending = self
             .pending
             .values()
-            .any(|pending| matches!(pending, Pending::Voice | Pending::InputGain));
+            .any(|pending| matches!(pending, Pending::Voice | Pending::OutputGain(_)));
         if (self.voice.busy || request_pending) && !stopping {
             self.queued_voice = Some(next);
             cx.notify();
@@ -2170,15 +2281,160 @@ impl ResonaApp {
     }
 
     fn apply_audio_preferences(&self, voice: &mut VoiceState) {
-        voice.input_gain = self.preferences.input_gain.min(200);
-        voice.activation_mode = self.preferences.activation_mode.clone();
-        voice.vad_threshold_db = self.preferences.vad_threshold_db;
-        voice.noise_suppression = self.preferences.noise_suppression.clone();
-        voice.echo_cancellation = self.preferences.echo_cancellation;
-        voice.echo_suppression = self.preferences.echo_suppression;
-        voice.ducking = self.preferences.ducking;
-        voice.input_device_id = self.preferences.input_device_id.clone();
-        voice.output_device_id = self.preferences.output_device_id.clone();
+        apply_preferences(&self.preferences, voice);
+    }
+
+    fn editing_preferences(&self) -> &Preferences {
+        self.settings_draft.as_ref().unwrap_or(&self.preferences)
+    }
+
+    fn settings_dirty(&self) -> bool {
+        self.settings_draft != self.settings_baseline
+    }
+
+    fn apply_settings(&mut self, cx: &mut Context<Self>) {
+        if !self.settings_dirty()
+            || self.global_gain_busy()
+            || self.settings_apply.is_some()
+            || self.core.is_none()
+            || self.is_busy()
+            || !self.workspace.session.switching_channel_id.is_empty()
+            || matches!(
+                self.workspace.session.mode.as_str(),
+                "connecting" | "reconnecting" | "disconnecting"
+            )
+        {
+            return;
+        }
+        let mut desired = self.preferences.clone();
+        desired.merge_settings(
+            self.settings_baseline.as_ref().unwrap(),
+            self.settings_draft.as_ref().unwrap(),
+        );
+        if desired.global_push_to_talk && desired.push_to_talk_shortcut.parse::<HotKey>().is_err() {
+            self.settings_notice = "快捷键格式无效，请检查后再应用".into();
+            cx.notify();
+            return;
+        }
+        let mut next = self.voice.clone();
+        apply_preferences(&desired, &mut next);
+        let mut before = VoiceState::default();
+        let mut after = VoiceState::default();
+        apply_preferences(&self.preferences, &mut before);
+        apply_preferences(&desired, &mut after);
+        if voice_params(&before) == voice_params(&after) {
+            self.commit_settings(desired, cx);
+            cx.notify();
+            return;
+        }
+        self.settings_notice = "应用中".into();
+        self.settings_apply = Some((desired, self.workspace.session.id.clone(), false));
+        self.set_push_to_talk(false, cx);
+        self.request(
+            if self.workspace.connected() {
+                "ConfigureVoice"
+            } else {
+                "SetVoicePreferences"
+            },
+            voice_params(&next),
+            Pending::SettingsApply(self.workspace.session.id.clone()),
+        );
+        cx.notify();
+    }
+
+    fn finish_settings_apply(&mut self, cx: &mut Context<Self>) {
+        let Some((desired, session, ready)) = self.settings_apply.as_ref() else {
+            return;
+        };
+        if *session != self.workspace.session.id
+            || self.core.is_none()
+            || matches!(
+                self.workspace.session.mode.as_str(),
+                "connecting" | "reconnecting" | "disconnecting"
+            )
+        {
+            self.settings_apply = None;
+            self.settings_notice = "连接已变化，请重新应用设置".into();
+            return;
+        }
+        if !ready || self.voice.busy {
+            return;
+        }
+        if !self.voice.error.is_empty() {
+            self.settings_notice = format!("未应用：{}", self.voice.error);
+            self.settings_apply = None;
+            return;
+        }
+        let mut expected = self.voice.clone();
+        apply_preferences(desired, &mut expected);
+        if voice_params(&expected) != voice_params(&self.voice) {
+            self.settings_apply = None;
+            self.settings_notice = "设备配置未完整应用，请检查设备后重试".into();
+            return;
+        }
+        let mut next = desired.clone();
+        next.server_sidebar_collapsed = self.preferences.server_sidebar_collapsed;
+        next.channel_sidebar_collapsed = self.preferences.channel_sidebar_collapsed;
+        self.commit_settings(next, cx);
+    }
+
+    fn commit_settings(&mut self, next: Preferences, cx: &mut Context<Self>) {
+        self.preferences = next;
+        self.settings_apply = None;
+        self.settings_draft = Some(self.preferences.clone());
+        self.settings_baseline = self.settings_draft.clone();
+        self.settings_notice = "已应用".into();
+        self.clear_hotkey(cx);
+        if !self.preferences.notifications_enabled {
+            self.request("StopNotifications", json!({}), Pending::Notification);
+        }
+        self.save_preferences(cx);
+    }
+
+    fn change_global_gain(&mut self, step: Option<i16>, cx: &mut Context<Self>) {
+        if self.closing
+            || self.voice.busy
+            || self.microphone_test.enabled
+            || self.microphone_test.busy
+            || self.audio_settings_pending
+            || self.queued_voice.is_some()
+            || self.pending.values().any(|p| {
+                matches!(
+                    p,
+                    Pending::Voice | Pending::VoicePreferences { .. } | Pending::OutputGain(_)
+                )
+            })
+        {
+            return;
+        }
+        let current = if self.workspace.connected() {
+            self.voice.volume
+        } else {
+            self.preferences.playback_volume
+        };
+        let volume = step.map_or(200, |step| step_playback_volume(current, step));
+        self.request(
+            "SetOutputGain",
+            json!({"sessionID":self.workspace.session.id, "volume": volume}),
+            Pending::OutputGain(self.workspace.session.id.clone()),
+        );
+        cx.notify();
+    }
+
+    fn global_gain_busy(&self) -> bool {
+        self.settings_apply.is_some()
+            || self.closing
+            || self.voice.busy
+            || self.microphone_test.enabled
+            || self.microphone_test.busy
+            || self.audio_settings_pending
+            || self.queued_voice.is_some()
+            || self.pending.values().any(|p| {
+                matches!(
+                    p,
+                    Pending::Voice | Pending::VoicePreferences { .. } | Pending::OutputGain(_)
+                )
+            })
     }
 
     fn update_audio_preferences(
@@ -2186,6 +2442,14 @@ impl ResonaApp {
         change: impl FnOnce(&mut Preferences),
         cx: &mut Context<Self>,
     ) {
+        if let Some(draft) = &mut self.settings_draft {
+            if self.settings_apply.is_none() {
+                change(draft);
+                self.settings_notice.clear();
+                cx.notify();
+            }
+            return;
+        }
         let previous = self.preferences.clone();
         change(&mut self.preferences);
         self.audio_settings_pending = true;
@@ -2232,7 +2496,7 @@ impl ResonaApp {
                                 matches!(
                                     p,
                                     Pending::Voice
-                                        | Pending::InputGain
+                                        | Pending::OutputGain(_)
                                         | Pending::VoicePreferences { .. }
                                 )
                             })
@@ -2262,6 +2526,9 @@ impl ResonaApp {
     }
 
     fn can_start_microphone_test(&self) -> bool {
+        if self.settings_dirty() || self.settings_apply.is_some() {
+            return false;
+        }
         !self.closing
             && self.capabilities.voice
             && matches!(
@@ -2278,7 +2545,7 @@ impl ResonaApp {
                 matches!(
                     pending,
                     Pending::Voice
-                        | Pending::InputGain
+                        | Pending::OutputGain(_)
                         | Pending::VoicePreferences { .. }
                         | Pending::MicrophoneTest
                 )
@@ -2309,14 +2576,10 @@ impl ResonaApp {
     }
 
     fn navigation_width(&self) -> f32 {
-        (if self.preferences.server_sidebar_collapsed {
+        if self.preferences.server_sidebar_collapsed {
             52.
         } else {
             172.
-        }) + if self.preferences.channel_sidebar_collapsed {
-            44.
-        } else {
-            220.
         }
     }
 
@@ -2690,7 +2953,8 @@ impl ResonaApp {
                     }),
             );
         let mut sidebar = div()
-            .w(px(if collapsed { 44. } else { 220. }))
+            .when(collapsed, |s| s.w(px(44.)).flex_shrink_0())
+            .when(!collapsed, |s| s.flex_1().min_w_0())
             .h_full()
             .flex_shrink_0()
             .bg(rgb(PANEL))
@@ -2920,11 +3184,13 @@ impl ResonaApp {
                                                     .values()
                                                     .any(|p| matches!(p, Pending::UserPlayback(_)));
                                             let volume = current
-                                                .map(|u| u.playback_volume.min(200))
+                                                .map(|u| u.playback_volume.min(794))
                                                 .unwrap_or(100);
                                             let muted = current.is_some_and(|u| u.playback_muted);
-                                            let mut menu =
-                                                menu.label(format!("本机收听 · {volume}%"));
+                                            let mut menu = menu.label(format!(
+                                                "本机收听 · {}",
+                                                playback_label(volume)
+                                            ));
                                             for (label, action, disabled) in [
                                                 (
                                                     if muted {
@@ -2936,17 +3202,17 @@ impl ResonaApp {
                                                     false,
                                                 ),
                                                 (
-                                                    "降低音量 10%",
-                                                    UserPlaybackAction::Step(-10),
-                                                    volume == 0,
+                                                    "降低 1 dB",
+                                                    UserPlaybackAction::Step(-1),
+                                                    volume <= 10,
                                                 ),
                                                 (
-                                                    "提高音量 10%",
-                                                    UserPlaybackAction::Step(10),
-                                                    volume == 200,
+                                                    "提高 1 dB",
+                                                    UserPlaybackAction::Step(1),
+                                                    volume >= 794,
                                                 ),
                                                 (
-                                                    "恢复100%音量",
+                                                    "恢复原始增益 0 dB",
                                                     UserPlaybackAction::Volume(100),
                                                     volume == 100,
                                                 ),
@@ -2974,11 +3240,15 @@ impl ResonaApp {
                                                 window,
                                                 cx,
                                                 move |mut menu, _, _| {
-                                                    for value in [0, 50, 100, 150, 200] {
+                                                    for db in [-20, -12, -6, 0, 6, 12, 18] {
+                                                        let value = playback_from_db(db);
                                                         let entity = entity.clone();
                                                         let target = target.clone();
-                                                        menu = menu.item(
-                                                            PopupMenuItem::new(format!("{value}%"))
+                                                        menu =
+                                                            menu.item(
+                                                                PopupMenuItem::new(playback_label(
+                                                                    value,
+                                                                ))
                                                                 .checked(value == volume)
                                                                 .disabled(!enabled)
                                                                 .on_click(move |_, _, cx| {
@@ -2990,7 +3260,7 @@ impl ResonaApp {
                                                             )
                                                         });
                                                                 }),
-                                                        );
+                                                            );
                                                     }
                                                     menu
                                                 },
@@ -3168,299 +3438,341 @@ impl ResonaApp {
             .channels
             .iter()
             .find(|c| c.id == self.workspace.session.channel_id)
-            .cloned();
-        let channel_name = channel
-            .as_ref()
-            .map(|c| c.name.clone())
-            .unwrap_or_else(|| "未选择频道".into());
-        let messages = self
-            .workspace
-            .messages
-            .iter()
-            .filter(|m| m.channel_id == self.workspace.session.channel_id)
-            .cloned()
-            .map(|message| {
-                let own = message.author_id == self.workspace.session.self_id;
-                let retryable = matches!(message.status.as_str(), "failed" | "unconfirmed");
-                let retry_id = message.id.clone();
-                let entity = view.clone();
-                div()
-                    .px_5()
-                    .py_2()
-                    .flex()
-                    .gap_3()
-                    .hover(|s| s.bg(rgb(0x1b1f24)))
-                    .child(
-                        div()
-                            .size(px(30.))
-                            .rounded(px(6.))
-                            .bg(rgb(if own { 0x315546 } else { 0x344351 }))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_xs()
-                            .text_color(rgb(TEXT))
-                            .child(message.author.chars().next().unwrap_or('?').to_string()),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                                            .text_color(rgb(if own { MINT } else { ICE }))
-                                            .child(message.author),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(9.))
-                                            .text_color(rgb(MUTED))
-                                            .child(short_time(&message.created_at)),
-                                    )
-                                    .when(message.status != "received", |line| {
-                                        line.child(
-                                            div()
-                                                .text_size(px(9.))
-                                                .text_color(rgb(message_status_color(
-                                                    &message.status,
-                                                )))
-                                                .child(message_status_label(&message.status)),
-                                        )
-                                    }),
-                            )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(rgb(0xd8dde2))
-                                    .child(message.text),
-                            )
-                            .when(!message.error.is_empty(), |body| {
-                                body.child(
-                                    div().text_xs().text_color(rgb(RED)).child(message.error),
-                                )
-                            })
-                            .when(retryable, |body| {
-                                body.child(
-                                    Button::new(SharedString::from(format!("retry-{retry_id}")))
-                                        .label("重试")
-                                        .warning()
-                                        .outline()
-                                        .on_click(move |_, _, cx| {
-                                            entity.update(cx, |this, cx| {
-                                                this.retry_message(retry_id.clone(), false, cx)
-                                            });
-                                        }),
-                                )
-                            }),
-                    )
-                    .into_any_element()
-            })
-            .collect::<Vec<_>>();
+            .filter(|_| {
+                matches!(
+                    self.workspace.session.mode.as_str(),
+                    "connected" | "reconnecting" | "preview"
+                )
+            });
         let can_send = (self.workspace.session.mode == "preview" || self.workspace.connected())
             && !self.resources_syncing
-            && channel.as_ref().is_some_and(|c| c.kind != "separator")
+            && channel.is_some_and(|c| c.kind != "separator")
             && self.workspace.session.switching_channel_id.is_empty()
             && self.workspace.session.sending_message_id.is_empty()
             && !self.pending.values().any(|p| matches!(p, Pending::Send(_)));
-        let entity = view.clone();
+        let toggle = view.clone();
+        let latest = view.clone();
+        let send = view.clone();
+        let drag = view.clone();
+        let scrolled = view.clone();
         div()
-            .flex_1()
-            .min_w_0()
-            .h_full()
+            .w_full()
+            .flex_shrink_0()
             .bg(rgb(BG))
             .flex()
             .flex_col()
+            .h(px(if self.chat_collapsed {
+                36.
+            } else {
+                self.composer_height
+            }))
             .child(
                 div()
-                    .min_h(px(104.))
-                    .px_5()
-                    .py_4()
+                    .id("text-panel-resize")
+                    .h(px(5.))
+                    .w_full()
+                    .flex_shrink_0()
+                    .border_t_1()
+                    .border_color(rgb(LINE))
+                    .cursor_row_resize()
+                    .hover(|s| s.bg(gpui::rgba(0xffffff20)))
+                    .on_mouse_down(gpui::MouseButton::Left, move |event, _, cx| {
+                        drag.update(cx, |this, cx| {
+                            this.chat_collapsed = false;
+                            this.composer_drag =
+                                Some((f32::from(event.position.y), this.composer_height));
+                            cx.notify();
+                        });
+                        cx.stop_propagation();
+                    }),
+            )
+            .child(
+                div()
+                    .h(px(30.))
+                    .px_3()
+                    .flex_shrink_0()
                     .flex()
-                    .items_start()
-                    .gap_3()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        Button::new("toggle-channel-text")
+                            .icon(if self.chat_collapsed {
+                                IconName::ChevronUp
+                            } else {
+                                IconName::ChevronDown
+                            })
+                            .ghost()
+                            .tooltip(if self.chat_collapsed {
+                                "展开频道文字"
+                            } else {
+                                "收起频道文字"
+                            })
+                            .on_click(move |_, _, cx| {
+                                toggle.update(cx, |this, cx| {
+                                    this.chat_collapsed = !this.chat_collapsed;
+                                    cx.notify();
+                                });
+                            }),
+                    )
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .text_size(px(24.))
-                                    .truncate()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .child(channel_name),
-                            )
-                            .child(div().text_xs().truncate().text_color(rgb(MUTED)).child(
-                                if self.workspace.session.mode == "preview" {
-                                    "本地预览".to_owned()
-                                } else {
-                                    let description = channel
-                                        .as_ref()
-                                        .map(|c| c.description.as_str())
-                                        .unwrap_or("");
-                                    format!(
-                                        "{}{}{}",
-                                        self.workspace.session.server_name,
-                                        if description.is_empty() { "" } else { " · " },
-                                        description
-                                    )
-                                },
+                            .truncate()
+                            .text_xs()
+                            .text_color(rgb(MUTED))
+                            .child(format!(
+                                "频道文字 · {}",
+                                channel.map(|c| c.name.as_str()).unwrap_or("未加入频道")
                             )),
                     )
-                    .when(channel.is_some(), |header| {
-                        let entity = view.clone();
-                        let id = channel.as_ref().unwrap().id.clone();
+                    .when(self.chat_unread, |header| {
                         header.child(
-                            Button::new("channel-details")
-                                .icon(IconName::Info)
-                                .disabled(!self.workspace.connected())
+                            Button::new("latest-channel-text")
+                                .label("新消息")
+                                .icon(IconName::ArrowDown)
                                 .ghost()
-                                .tooltip("频道资料")
                                 .on_click(move |_, _, cx| {
-                                    entity.update(cx, |this, cx| {
-                                        this.select_details(
-                                            DetailSelection::Channel(id.clone()),
-                                            cx,
-                                        )
+                                    latest.update(cx, |this, cx| {
+                                        this.chat_collapsed = false;
+                                        this.chat_unread = false;
+                                        this.chat_follow_bottom = true;
+                                        this.chat_scroll.scroll_to_bottom();
+                                        cx.notify();
                                     });
                                 }),
                         )
                     }),
             )
-            .child(if messages.is_empty() {
-                div()
-                    .flex_1()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .gap_2()
-                    .text_color(rgb(MUTED))
+            .when(!self.chat_collapsed, |panel| {
+                panel
                     .child(
                         div()
-                            .text_lg()
-                            .text_color(rgb(TEXT))
-                            .child(if channel.is_some() {
-                                "开始这个频道的对话"
-                            } else {
-                                "选择服务器开始"
-                            }),
+                            .id("channel-transcript")
+                            .flex_1()
+                            .min_h_0()
+                            .px_3()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.chat_scroll)
+                            .relative()
+                            .vertical_scrollbar(&self.chat_scroll)
+                            .on_scroll_wheel(move |_, window, cx| {
+                                let view = scrolled.clone();
+                                view.update(cx, |this, _| this.chat_follow_bottom = false);
+                                window.on_next_frame(move |_, cx| {
+                                    view.update(cx, |this, cx| {
+                                        this.chat_follow_bottom =
+                                            f32::from(this.chat_scroll.max_offset().height)
+                                                + f32::from(this.chat_scroll.offset().y)
+                                                <= 4.;
+                                        if this.chat_unread
+                                            && !this.chat_collapsed
+                                            && this.chat_follow_bottom
+                                        {
+                                            this.chat_unread = false;
+                                            cx.notify();
+                                        }
+                                    });
+                                });
+                            })
+                            .when(self.workspace.messages.is_empty(), |list| {
+                                list.child(
+                                    div()
+                                        .py_2()
+                                        .text_xs()
+                                        .text_color(rgb(MUTED))
+                                        .child("暂无实时消息"),
+                                )
+                            })
+                            .children(
+                                self.workspace
+                                    .messages
+                                    .iter()
+                                    .filter(|m| m.channel_id == self.workspace.session.channel_id)
+                                    .map(|message| {
+                                        let retry = view.clone();
+                                        let retry_id = message.id.clone();
+                                        let copy_text = message.text.clone();
+                                        div()
+                                            .id(SharedString::from(format!("text-{}", message.id)))
+                                            .py_1()
+                                            .flex()
+                                            .items_start()
+                                            .gap_2()
+                                            .child(
+                                                div()
+                                                    .w(px(40.))
+                                                    .flex_shrink_0()
+                                                    .text_xs()
+                                                    .text_color(rgb(MUTED))
+                                                    .child(short_time(&message.created_at)),
+                                            )
+                                            .child(
+                                                div()
+                                                    .max_w(px(100.))
+                                                    .flex_shrink_0()
+                                                    .truncate()
+                                                    .text_xs()
+                                                    .text_color(rgb(
+                                                        if message.author_id
+                                                            == self.workspace.session.self_id
+                                                        {
+                                                            MINT
+                                                        } else {
+                                                            ICE
+                                                        },
+                                                    ))
+                                                    .child(message.author.clone()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .text_sm()
+                                                    .text_color(rgb(TEXT))
+                                                    .child(message.text.clone())
+                                                    .when(!message.error.is_empty(), |body| {
+                                                        body.child(
+                                                            div()
+                                                                .text_xs()
+                                                                .text_color(rgb(RED))
+                                                                .child(message.error.clone()),
+                                                        )
+                                                    })
+                                                    .when(
+                                                        matches!(
+                                                            message.status.as_str(),
+                                                            "sending" | "failed" | "unconfirmed"
+                                                        ),
+                                                        |body| {
+                                                            body.child(
+                                                                div()
+                                                                    .text_xs()
+                                                                    .text_color(rgb(
+                                                                        message_status_color(
+                                                                            &message.status,
+                                                                        ),
+                                                                    ))
+                                                                    .child(message_status_label(
+                                                                        &message.status,
+                                                                    )),
+                                                            )
+                                                        },
+                                                    ),
+                                            )
+                                            .children(
+                                                message
+                                                    .text
+                                                    .split_whitespace()
+                                                    .filter(|word| {
+                                                        word.starts_with("https://")
+                                                            || word.starts_with("http://")
+                                                    })
+                                                    .take(8)
+                                                    .enumerate()
+                                                    .map(|(i, url)| {
+                                                        let url = url.to_owned();
+                                                        Button::new(SharedString::from(format!(
+                                                            "link-{}-{i}",
+                                                            message.id
+                                                        )))
+                                                        .icon(IconName::ExternalLink)
+                                                        .ghost()
+                                                        .tooltip(url.clone())
+                                                        .on_click(move |_, _, cx| cx.open_url(&url))
+                                                    }),
+                                            )
+                                            .child(
+                                                Button::new(SharedString::from(format!(
+                                                    "copy-{}",
+                                                    message.id
+                                                )))
+                                                .icon(IconName::Copy)
+                                                .ghost()
+                                                .tooltip("复制消息")
+                                                .on_click(move |_, _, cx| {
+                                                    cx.write_to_clipboard(
+                                                        gpui::ClipboardItem::new_string(
+                                                            copy_text.clone(),
+                                                        ),
+                                                    )
+                                                }),
+                                            )
+                                            .when(
+                                                matches!(
+                                                    message.status.as_str(),
+                                                    "failed" | "unconfirmed"
+                                                ),
+                                                |row| {
+                                                    row.child(
+                                                        Button::new(SharedString::from(format!(
+                                                            "retry-{}",
+                                                            message.id
+                                                        )))
+                                                        .icon(IconName::Undo2)
+                                                        .ghost()
+                                                        .tooltip("重试发送")
+                                                        .on_click(move |_, _, cx| {
+                                                            retry.update(cx, |this, cx| {
+                                                                this.retry_message(
+                                                                    retry_id.clone(),
+                                                                    false,
+                                                                    cx,
+                                                                )
+                                                            });
+                                                        }),
+                                                    )
+                                                },
+                                            )
+                                    }),
+                            ),
                     )
-                    .child(div().text_xs().child(if channel.is_some() {
-                        "消息只会发送到你当前所在的频道"
-                    } else {
-                        if cfg!(debug_assertions) {
-                            "选择书签连接，或使用本地预览"
-                        } else {
-                            "选择或添加服务器"
-                        }
-                    }))
-                    .into_any_element()
-            } else {
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .py_3()
-                    .children(messages)
-                    .overflow_y_scrollbar()
-                    .into_any_element()
-            })
-            .child({
-                let drag = view.clone();
-                div()
-                    .id("composer-resize")
-                    .h(px(8.))
-                    .w_full()
-                    .flex_shrink_0()
-                    .cursor_row_resize()
-                    .border_t_1()
-                    .border_color(rgb(LINE))
-                    .hover(|s| s.bg(gpui::rgba(0xffffff16)))
-                    .on_mouse_down(gpui::MouseButton::Left, move |event, _, cx| {
-                        drag.update(cx, |this, _| {
-                            this.composer_drag =
-                                Some((f32::from(event.position.y), this.composer_height));
-                        });
-                        cx.stop_propagation();
-                    })
-            })
-            .child(
-                div()
-                    .px_4()
-                    .pb_3()
-                    .bg(gpui::rgba(0xffffff04))
-                    .flex_shrink_0()
                     .child(
                         div()
-                            .w_full()
-                            .h(px(self.composer_height))
-                            .flex()
-                            .flex_col()
-                            .rounded(px(8.))
+                            .mx_3()
+                            .my_2()
+                            .min_w_0()
+                            .h(px(64.))
+                            .flex_shrink_0()
+                            .relative()
+                            .rounded(px(6.))
                             .border_1()
                             .border_color(rgb(LINE))
-                            .bg(gpui::rgba(0xffffff08))
-                            .overflow_hidden()
+                            .bg(gpui::rgba(0xffffff06))
                             .child(
                                 Input::new(&self.chat_input)
                                     .appearance(false)
-                                    .h(px(self.composer_height - 38.))
-                                    .px(px(12.))
-                                    .py(px(2.))
+                                    .w_full()
+                                    .h_full()
+                                    .pr(px(44.))
                                     .disabled(!can_send),
                             )
                             .child(
                                 div()
-                                    .h(px(36.))
-                                    .flex_shrink_0()
-                                    .flex()
-                                    .justify_end()
-                                    .pr(px(6.))
-                                    .pb(px(4.))
+                                    .absolute()
+                                    .right(px(5.))
+                                    .bottom(px(5.))
+                                    .size(px(28.))
+                                    .rounded(px(5.))
+                                    .border_1()
+                                    .border_color(gpui::rgba(0xffffff00))
+                                    .hover(|s| s.border_color(gpui::rgba(0xffffff40)))
                                     .child(
-                                        div()
-                                            .w(px(32.))
-                                            .h(px(32.))
-                                            .flex_shrink_0()
-                                            .rounded(px(6.))
-                                            .border_1()
-                                            .border_color(gpui::rgba(0xffffff00))
-                                            .when(can_send, |this| {
-                                                this.hover(|style| {
-                                                    style.border_color(gpui::rgba(0xffffff40))
-                                                })
-                                            })
-                                            .child(
-                                                Button::new("send-message")
-                                                    .icon(IconName::ArrowUp)
-                                                    .text()
-                                                    .h_full()
-                                                    .w_full()
-                                                    .flex_shrink_0()
-                                                    .tooltip("发送消息")
-                                                    .disabled(!can_send)
-                                                    .on_click(move |_, window, cx| {
-                                                        entity.update(cx, |this, cx| {
-                                                            this.send_message(window, cx)
-                                                        });
-                                                    }),
-                                            ),
+                                        Button::new("send-message")
+                                            .icon(IconName::ArrowUp)
+                                            .text()
+                                            .size_full()
+                                            .tooltip("发送消息")
+                                            .disabled(!can_send)
+                                            .on_click(move |_, window, cx| {
+                                                send.update(cx, |this, cx| {
+                                                    this.send_message(window, cx)
+                                                });
+                                            }),
                                     ),
                             ),
-                    ),
-            )
+                    )
+            })
             .into_any_element()
     }
 
@@ -3643,40 +3955,37 @@ impl ResonaApp {
                 Button::new("volume-down")
                     .icon(IconName::Minus)
                     .ghost()
-                    .tooltip("降低收听音量")
-                    .disabled(!connected || !self.voice.enabled || self.closing)
+                    .tooltip("全局收听增益降低 1 dB")
+                    .disabled(!connected || !self.voice.enabled || self.global_gain_busy())
                     .on_click({
                         let entity = view.clone();
                         move |_, _, cx| {
-                            entity.update(cx, |this, cx| {
-                                this.configure_voice(|v| v.volume = v.volume.saturating_sub(10), cx)
-                            });
+                            entity.update(cx, |this, cx| this.change_global_gain(Some(-1), cx));
                         }
                     }),
             )
             .child(
                 div()
-                    .w(px(40.))
+                    .w(px(64.))
                     .text_center()
                     .text_xs()
                     .text_color(rgb(MUTED))
-                    .child(format!("{}%", target.volume)),
+                    .child(playback_label(if connected {
+                        target.volume
+                    } else {
+                        self.preferences.playback_volume
+                    })),
             )
             .child(
                 Button::new("volume-up")
                     .icon(IconName::Plus)
                     .ghost()
-                    .tooltip("提高收听音量")
-                    .disabled(!connected || !self.voice.enabled || self.closing)
+                    .tooltip("全局收听增益提高 1 dB")
+                    .disabled(!connected || !self.voice.enabled || self.global_gain_busy())
                     .on_click({
                         let entity = view.clone();
                         move |_, _, cx| {
-                            entity.update(cx, |this, cx| {
-                                this.configure_voice(
-                                    |v| v.volume = v.volume.saturating_add(10).min(100),
-                                    cx,
-                                )
-                            });
+                            entity.update(cx, |this, cx| this.change_global_gain(Some(1), cx));
                         }
                     }),
             )
@@ -3735,9 +4044,9 @@ impl ResonaApp {
         view: &Entity<Self>,
     ) -> AnyElement {
         let id = if menu == DeviceMenu::Input {
-            &self.preferences.input_device_id
+            &self.editing_preferences().input_device_id
         } else {
-            &self.preferences.output_device_id
+            &self.editing_preferences().output_device_id
         };
         let kind = if menu == DeviceMenu::Input {
             "input"
@@ -3931,7 +4240,7 @@ impl ResonaApp {
             .child(div().text_xs().text_color(rgb(MUTED)).child("收听音量"));
         let mute = view.clone();
         let mute_target = target.clone();
-        let volume = user.playback_volume.min(200);
+        let volume = user.playback_volume.min(794);
         let muted = user.playback_muted;
         let mut row = div().flex().items_center().gap_1().child(
             Button::new("peer-mute")
@@ -3962,12 +4271,12 @@ impl ResonaApp {
                     .icon(IconName::Minus)
                     .ghost()
                     .tooltip("降低收听音量")
-                    .disabled(disabled || volume == 0)
+                    .disabled(disabled || volume <= 10)
                     .on_click(move |_, _, cx| {
                         minus.update(cx, |this, cx| {
                             this.set_user_playback(
                                 minus_target.clone(),
-                                volume.saturating_sub(10),
+                                step_playback_volume(volume, -1),
                                 muted,
                                 cx,
                             )
@@ -3975,10 +4284,10 @@ impl ResonaApp {
                     }),
             )
             .child(
-                div().w(px(72.)).flex_shrink_0().child(
+                div().w(px(88.)).flex_shrink_0().child(
                     Input::new(&self.playback_input)
                         .disabled(disabled)
-                        .suffix(div().text_xs().child("%")),
+                        .suffix(div().text_xs().child("dB")),
                 ),
             );
         let plus = view.clone();
@@ -3988,12 +4297,12 @@ impl ResonaApp {
                 .icon(IconName::Plus)
                 .ghost()
                 .tooltip("提高收听音量")
-                .disabled(disabled || volume == 200)
+                .disabled(disabled || volume >= 794)
                 .on_click(move |_, _, cx| {
                     plus.update(cx, |this, cx| {
                         this.set_user_playback(
                             plus_target.clone(),
-                            (volume + 10).min(200),
+                            step_playback_volume(volume, 1),
                             muted,
                             cx,
                         )
@@ -4006,7 +4315,7 @@ impl ResonaApp {
             Button::new("peer-volume-reset")
                 .icon(IconName::Undo2)
                 .ghost()
-                .tooltip("恢复100%音量")
+                .tooltip("恢复原始增益 0 dB")
                 .disabled(disabled || volume == 100)
                 .on_click(move |_, _, cx| {
                     reset.update(cx, |this, cx| {
@@ -4213,13 +4522,14 @@ impl ResonaApp {
                 matches!(
                     p,
                     Pending::Voice
-                        | Pending::InputGain
+                        | Pending::OutputGain(_)
                         | Pending::VoicePreferences { .. }
                         | Pending::MicrophoneTest
                 )
             });
         let disabled = busy || !self.capabilities.voice;
-        let preferences_disabled = self.closing
+        let preferences_disabled = self.settings_apply.is_some()
+            || self.closing
             || !self.capabilities.voice
             || matches!(
                 self.workspace.session.mode.as_str(),
@@ -4364,7 +4674,7 @@ impl ResonaApp {
                         .on_click(move |_, _, cx| {
                             entity.update(cx, |this, cx| {
                                 this.device_menu = None;
-                                this.configure_voice(
+                                this.update_audio_preferences(
                                     |v| {
                                         if menu == DeviceMenu::Input {
                                             v.input_device_id = id.clone();
@@ -4394,10 +4704,55 @@ impl ResonaApp {
                     .overflow_y_scrollbar(),
             );
         }
-        let gain_pending = self
-            .pending
-            .values()
-            .any(|p| matches!(p, Pending::InputGain));
+        let global_volume = self.editing_preferences().playback_volume;
+        let global_disabled = self.global_gain_busy()
+            || !self.capabilities.voice
+            || self.voice.busy
+            || !self.workspace.session.switching_channel_id.is_empty()
+            || matches!(
+                self.workspace.session.mode.as_str(),
+                "connecting" | "reconnecting" | "disconnecting"
+            );
+        let mut global_row = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(div().flex_1().text_sm().child("全局收听增益"))
+            .child(
+                div()
+                    .w(px(64.))
+                    .text_sm()
+                    .text_center()
+                    .child(playback_label(global_volume)),
+            );
+        for (id, icon, tooltip, step) in [
+            ("global-gain-down", IconName::Minus, "降低 1 dB", Some(-1)),
+            ("global-gain-up", IconName::Plus, "提高 1 dB", Some(1)),
+            ("global-gain-reset", IconName::Undo2, "恢复默认 +6 dB", None),
+        ] {
+            let entity = view.clone();
+            global_row = global_row.child(
+                Button::new(id)
+                    .icon(icon)
+                    .ghost()
+                    .tooltip(tooltip)
+                    .disabled(global_disabled)
+                    .on_click(move |_, _, cx| {
+                        entity.update(cx, |this, cx| {
+                            this.update_audio_preferences(
+                                |p| {
+                                    p.playback_volume = step.map_or(200, |step| {
+                                        step_playback_volume(p.playback_volume, step)
+                                    })
+                                },
+                                cx,
+                            )
+                        })
+                    }),
+            );
+        }
+        content = content.child(global_row);
+        let gain_pending = self.settings_apply.is_some();
         let gain_disabled = self.closing
             || !self.capabilities.voice
             || self.voice.busy
@@ -4412,13 +4767,10 @@ impl ResonaApp {
             || self.pending.values().any(|p| {
                 matches!(
                     p,
-                    Pending::InputGain
-                        | Pending::Voice
-                        | Pending::VoicePreferences { .. }
-                        | Pending::MicrophoneTest
+                    Pending::Voice | Pending::VoicePreferences { .. } | Pending::MicrophoneTest
                 )
             });
-        let gain = self.preferences.input_gain.min(200);
+        let gain = self.editing_preferences().input_gain.min(200);
         let gain_buttons = [
             (
                 "input-gain-down",
@@ -4444,13 +4796,7 @@ impl ResonaApp {
                 .disabled(gain_disabled || value == gain)
                 .on_click(move |_, _, cx| {
                     entity.update(cx, |this, cx| {
-                        this.input_gain_error.clear();
-                        this.request(
-                            "SetInputGain",
-                            json!({"inputGain": value}),
-                            Pending::InputGain,
-                        );
-                        cx.notify();
+                        this.update_audio_preferences(|p| p.input_gain = value, cx);
                     });
                 })
         })
@@ -4495,7 +4841,7 @@ impl ResonaApp {
             let entity = view.clone();
             Button::new(SharedString::from(format!("activation-{mode}")))
                 .label(label)
-                .selected(self.preferences.activation_mode == mode)
+                .selected(self.editing_preferences().activation_mode == mode)
                 .disabled(preferences_disabled)
                 .on_click(move |_, _, cx| {
                     entity.update(cx, |this, cx| {
@@ -4504,147 +4850,111 @@ impl ResonaApp {
                 })
         })
         .collect::<Vec<_>>();
-        content = content
-            .child(
-                div()
-                    .border_t_1()
-                    .border_color(rgb(LINE))
-                    .pt_3()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(div().text_xs().text_color(rgb(MUTED)).child("发言激活"))
-                    .child(div().flex().gap_2().children(mode_buttons)),
-            )
-            .when(self.preferences.activation_mode == "ptt", |s| {
-                let status = if !self.hotkey_error.is_empty() {
-                    self.hotkey_error.clone()
-                } else if self.hotkey.is_some() {
-                    format!(
-                        "{} · 全局快捷键已注册",
-                        self.preferences.push_to_talk_shortcut
-                    )
-                } else if !self.preferences.global_push_to_talk {
-                    "F8 · 仅当前窗口".into()
-                } else {
-                    "启用麦克风后注册全局快捷键".into()
-                };
-                s.child(self.audio_toggle(
-                    "global-ptt",
-                    "后台按键发言",
-                    self.preferences.global_push_to_talk,
-                    disabled,
-                    |p, v| p.global_push_to_talk = v,
-                    view,
-                ))
+        content =
+            content
                 .child(
                     div()
+                        .border_t_1()
+                        .border_color(rgb(LINE))
+                        .pt_3()
                         .flex()
-                        .items_center()
+                        .flex_col()
                         .gap_2()
-                        .child(
-                            div().flex_1().child(
-                                Input::new(&self.shortcut_input)
-                                    .disabled(disabled || !self.preferences.global_push_to_talk),
+                        .child(div().text_xs().text_color(rgb(MUTED)).child("发言激活"))
+                        .child(div().flex().gap_2().children(mode_buttons)),
+                )
+                .when(self.editing_preferences().activation_mode == "ptt", |s| {
+                    let status = if !self.hotkey_error.is_empty() {
+                        self.hotkey_error.clone()
+                    } else if self.hotkey.is_some() {
+                        format!(
+                            "{} · 全局快捷键已注册",
+                            self.editing_preferences().push_to_talk_shortcut
+                        )
+                    } else if !self.editing_preferences().global_push_to_talk {
+                        "F8 · 仅当前窗口".into()
+                    } else {
+                        "启用麦克风后注册全局快捷键".into()
+                    };
+                    s.child(self.audio_toggle(
+                        "global-ptt",
+                        "后台按键发言",
+                        self.editing_preferences().global_push_to_talk,
+                        disabled,
+                        |p, v| p.global_push_to_talk = v,
+                        view,
+                    ))
+                    .child(div().flex().items_center().gap_2().child(
+                        div().flex_1().child(
+                            Input::new(&self.shortcut_input).disabled(
+                                disabled || !self.editing_preferences().global_push_to_talk,
                             ),
-                        )
-                        .child(
-                            Button::new("apply-ptt-shortcut")
-                                .label("应用快捷键")
-                                .disabled(disabled || !self.preferences.global_push_to_talk)
-                                .on_click({
-                                    let entity = view.clone();
-                                    move |_, _, cx| {
-                                        entity.update(cx, |this, cx| {
-                                            let value = this
-                                                .shortcut_input
-                                                .read(cx)
-                                                .value()
-                                                .trim()
-                                                .to_owned();
-                                            match value.parse::<HotKey>() {
-                                                Ok(_) => this.update_audio_preferences(
-                                                    |p| p.push_to_talk_shortcut = value,
+                        ),
+                    ))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(if self.hotkey_error.is_empty() {
+                                MUTED
+                            } else {
+                                AMBER
+                            }))
+                            .child(status),
+                    )
+                })
+                .when(self.editing_preferences().activation_mode == "vad", |s| {
+                    s.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(div().flex_1().text_xs().child("检测阈值"))
+                            .child(
+                                Button::new("vad-threshold-down")
+                                    .icon(IconName::Minus)
+                                    .ghost()
+                                    .disabled(preferences_disabled)
+                                    .on_click({
+                                        let entity = view.clone();
+                                        move |_, _, cx| {
+                                            entity.update(cx, |this, cx| {
+                                                this.update_audio_preferences(
+                                                    |p| {
+                                                        p.vad_threshold_db =
+                                                            (p.vad_threshold_db - 2).max(-60)
+                                                    },
                                                     cx,
-                                                ),
-                                                Err(error) => {
-                                                    this.hotkey_error =
-                                                        format!("快捷键格式无效：{error}");
-                                                    cx.notify();
-                                                }
-                                            }
-                                        });
-                                    }
-                                }),
-                        ),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(rgb(if self.hotkey_error.is_empty() {
-                            MUTED
-                        } else {
-                            AMBER
-                        }))
-                        .child(status),
-                )
-            })
-            .when(self.preferences.activation_mode == "vad", |s| {
-                s.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(div().flex_1().text_xs().child("检测阈值"))
-                        .child(
-                            Button::new("vad-threshold-down")
-                                .icon(IconName::Minus)
-                                .ghost()
-                                .disabled(preferences_disabled)
-                                .on_click({
-                                    let entity = view.clone();
-                                    move |_, _, cx| {
-                                        entity.update(cx, |this, cx| {
-                                            this.update_audio_preferences(
-                                                |p| {
-                                                    p.vad_threshold_db =
-                                                        (p.vad_threshold_db - 2).max(-60)
-                                                },
-                                                cx,
-                                            )
-                                        });
-                                    }
-                                }),
-                        )
-                        .child(
-                            div()
-                                .w(px(70.))
-                                .text_xs()
-                                .text_center()
-                                .child(format!("{} dB", self.preferences.vad_threshold_db)),
-                        )
-                        .child(
-                            Button::new("vad-threshold-up")
-                                .icon(IconName::Plus)
-                                .ghost()
-                                .disabled(preferences_disabled)
-                                .on_click({
-                                    let entity = view.clone();
-                                    move |_, _, cx| {
-                                        entity.update(cx, |this, cx| {
-                                            this.update_audio_preferences(
-                                                |p| {
-                                                    p.vad_threshold_db =
-                                                        (p.vad_threshold_db + 2).min(0)
-                                                },
-                                                cx,
-                                            )
-                                        });
-                                    }
-                                }),
-                        ),
-                )
-            });
+                                                )
+                                            });
+                                        }
+                                    }),
+                            )
+                            .child(div().w(px(70.)).text_xs().text_center().child(format!(
+                                "{} dB",
+                                self.editing_preferences().vad_threshold_db
+                            )))
+                            .child(
+                                Button::new("vad-threshold-up")
+                                    .icon(IconName::Plus)
+                                    .ghost()
+                                    .disabled(preferences_disabled)
+                                    .on_click({
+                                        let entity = view.clone();
+                                        move |_, _, cx| {
+                                            entity.update(cx, |this, cx| {
+                                                this.update_audio_preferences(
+                                                    |p| {
+                                                        p.vad_threshold_db =
+                                                            (p.vad_threshold_db + 2).min(0)
+                                                    },
+                                                    cx,
+                                                )
+                                            });
+                                        }
+                                    }),
+                            ),
+                    )
+                });
         let suppress_buttons = [
             ("off", "关闭"),
             ("low", "低"),
@@ -4656,7 +4966,7 @@ impl ResonaApp {
             let entity = view.clone();
             Button::new(SharedString::from(format!("noise-{level}")))
                 .label(label)
-                .selected(self.preferences.noise_suppression == level)
+                .selected(self.editing_preferences().noise_suppression == level)
                 .disabled(preferences_disabled)
                 .on_click(move |_, _, cx| {
                     entity.update(cx, |this, cx| {
@@ -4678,7 +4988,7 @@ impl ResonaApp {
                 .child(self.audio_toggle(
                     "echo-cancellation",
                     "回声消除",
-                    self.preferences.echo_cancellation,
+                    self.editing_preferences().echo_cancellation,
                     preferences_disabled,
                     |p, v| p.echo_cancellation = v,
                     view,
@@ -4686,7 +4996,7 @@ impl ResonaApp {
                 .child(self.audio_toggle(
                     "echo-suppression",
                     "残余回声抑制",
-                    self.preferences.echo_suppression,
+                    self.editing_preferences().echo_suppression,
                     preferences_disabled,
                     |p, v| p.echo_suppression = v,
                     view,
@@ -4694,7 +5004,7 @@ impl ResonaApp {
                 .child(self.audio_toggle(
                     "voice-ducking",
                     "发言时降低频道音量",
-                    self.preferences.ducking,
+                    self.editing_preferences().ducking,
                     preferences_disabled,
                     |p, v| p.ducking = v,
                     view,
@@ -4732,6 +5042,7 @@ impl ResonaApp {
                                 } else {
                                     VoiceIcon::Mic
                                 })
+                                .tooltip("使用已应用的语音设置")
                                 .disabled(!running && !self.can_start_microphone_test())
                                 .on_click(move |_, _, cx| {
                                     entity.update(cx, |this, cx| {
@@ -4746,9 +5057,9 @@ impl ResonaApp {
                         .items_center()
                         .gap_3()
                         .child(
-                            div().w(px(340.)).h(px(8.)).bg(rgb(LINE)).child(
+                            div().flex_1().min_w_0().h(px(8.)).bg(rgb(LINE)).child(
                                 div()
-                                    .w(px((level + 60) as f32 / 60. * 340.))
+                                    .w(gpui::relative((level + 60) as f32 / 60.))
                                     .h_full()
                                     .bg(rgb(if level > -6 { AMBER } else { MINT })),
                             ),
@@ -4803,8 +5114,9 @@ impl ResonaApp {
             );
         }
         div()
-            .w(px(600.))
-            .h(px(540.))
+            .w_full()
+            .min_w_0()
+            .h(px(480.))
             .p_5()
             .flex()
             .flex_col()
@@ -5424,14 +5736,15 @@ impl ResonaApp {
                     let entity = entity.clone();
                     Button::new(SharedString::from(format!("preview-{kind}"))).label(label).outline().disabled(self.core.is_none() || self.voice.deafened).on_click(move |_, _, cx| {
                         entity.update(cx, |this, cx| {
-                            this.request("PlayNotification", json!({"kind": kind, "volume": this.preferences.notification_volume}), Pending::Notification);
+                            this.request("PlayNotification", json!({"kind": kind, "volume": this.editing_preferences().notification_volume}), Pending::Notification);
                             cx.notify();
                         });
                     })
                 }).collect::<Vec<_>>();
                 div()
-                    .w(px(600.))
-                    .h(px(540.))
+                    .w_full()
+                    .min_w_0()
+                    .h(px(480.))
                     .p_5()
                     .flex()
                     .flex_col()
@@ -5440,21 +5753,15 @@ impl ResonaApp {
                     .child(
                         Checkbox::new("notifications-enabled")
                             .label("播放连接与成员提示音")
-                            .checked(self.preferences.notifications_enabled)
+                            .checked(self.editing_preferences().notifications_enabled)
                             .on_click({
                                 let entity = entity.clone();
                                 move |enabled, _, cx| {
                                     entity.update(cx, |this, cx| {
-                                        this.preferences.notifications_enabled = *enabled;
-                                        if !*enabled {
-                                            this.request(
-                                                "StopNotifications",
-                                                json!({}),
-                                                Pending::Notification,
-                                            );
-                                        }
-                                        this.save_preferences(cx);
-                                        cx.notify();
+                                        this.update_audio_preferences(
+                                            |p| p.notifications_enabled = *enabled,
+                                            cx,
+                                        );
                                     })
                                 }
                             }),
@@ -5473,12 +5780,13 @@ impl ResonaApp {
                                         let entity = entity.clone();
                                         move |_, _, cx| {
                                             entity.update(cx, |this, cx| {
-                                                this.preferences.notification_volume = this
-                                                    .preferences
-                                                    .notification_volume
-                                                    .saturating_sub(5);
-                                                this.save_preferences(cx);
-                                                cx.notify();
+                                                this.update_audio_preferences(
+                                                    |p| {
+                                                        p.notification_volume =
+                                                            p.notification_volume.saturating_sub(5)
+                                                    },
+                                                    cx,
+                                                );
                                             })
                                         }
                                     }),
@@ -5492,7 +5800,9 @@ impl ResonaApp {
                                     .child(
                                         div()
                                             .h_full()
-                                            .w(px(self.preferences.notification_volume as f32 * 2.))
+                                            .w(px(self.editing_preferences().notification_volume
+                                                as f32
+                                                * 2.))
                                             .rounded_full()
                                             .bg(rgb(ICE)),
                                     ),
@@ -5503,7 +5813,9 @@ impl ResonaApp {
                                     .text_right()
                                     .text_xs()
                                     .text_color(rgb(TEXT))
-                                    .child(self.preferences.notification_volume.to_string()),
+                                    .child(
+                                        self.editing_preferences().notification_volume.to_string(),
+                                    ),
                             )
                             .child(
                                 Button::new("notification-volume-up")
@@ -5513,35 +5825,28 @@ impl ResonaApp {
                                         let entity = entity.clone();
                                         move |_, _, cx| {
                                             entity.update(cx, |this, cx| {
-                                                this.preferences.notification_volume = this
-                                                    .preferences
-                                                    .notification_volume
-                                                    .saturating_add(5)
-                                                    .min(100);
-                                                this.save_preferences(cx);
-                                                cx.notify();
+                                                this.update_audio_preferences(
+                                                    |p| {
+                                                        p.notification_volume = p
+                                                            .notification_volume
+                                                            .saturating_add(5)
+                                                            .min(100)
+                                                    },
+                                                    cx,
+                                                );
                                             })
                                         }
                                     }),
                             ),
                     )
                     .child(div().flex().flex_wrap().gap_2().children(previews))
-                    .child(
-                        div().flex().justify_end().child(
-                            Button::new("close-settings")
-                                .label("完成")
-                                .primary()
-                                .on_click(move |_, window, cx| {
-                                    entity.update(cx, |this, cx| this.close_modal(window, cx))
-                                }),
-                        ),
-                    )
             }
         };
         let card = if settings_page {
             let change_disabled = self.microphone_test.enabled || self.microphone_test.busy;
             div()
                 .w(px(780.))
+                .max_w_full()
                 .h(px(540.))
                 .flex()
                 .rounded(px(8.))
@@ -5552,7 +5857,7 @@ impl ResonaApp {
                 .shadow_lg()
                 .child(
                     div()
-                        .w(px(180.))
+                        .w(px(148.))
                         .h_full()
                         .flex_shrink_0()
                         .p_4()
@@ -5608,7 +5913,92 @@ impl ResonaApp {
                                 }),
                         ),
                 )
-                .child(card)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(card)
+                        .child(
+                            div()
+                                .h(px(60.))
+                                .flex_shrink_0()
+                                .px_4()
+                                .border_t_1()
+                                .border_color(rgb(LINE))
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .text_xs()
+                                        .text_color(rgb(AMBER))
+                                        .child(if self.settings_discard {
+                                            "放弃未应用的修改？".to_owned()
+                                        } else {
+                                            self.settings_notice.clone()
+                                        }),
+                                )
+                                .child(
+                                    Button::new("cancel-settings")
+                                        .label(if self.settings_discard {
+                                            "放弃修改"
+                                        } else {
+                                            "取消"
+                                        })
+                                        .ghost()
+                                        .disabled(self.settings_apply.is_some())
+                                        .on_click({
+                                            let entity = view.clone();
+                                            move |_, window, cx| {
+                                                entity.update(cx, |this, cx| {
+                                                    this.settings_draft =
+                                                        this.settings_baseline.clone();
+                                                    this.close_modal(window, cx);
+                                                });
+                                            }
+                                        }),
+                                )
+                                .child(
+                                    Button::new("apply-settings")
+                                        .label(if self.settings_discard {
+                                            "继续编辑"
+                                        } else {
+                                            "应用"
+                                        })
+                                        .primary()
+                                        .disabled(
+                                            !self.settings_discard
+                                                && (!self.settings_dirty()
+                                                    || self.global_gain_busy()
+                                                    || self.is_busy()
+                                                    || self.settings_apply.is_some()
+                                                    || matches!(
+                                                        self.workspace.session.mode.as_str(),
+                                                        "connecting"
+                                                            | "reconnecting"
+                                                            | "disconnecting"
+                                                    )),
+                                        )
+                                        .on_click({
+                                            let entity = view.clone();
+                                            move |_, _, cx| {
+                                                entity.update(cx, |this, cx| {
+                                                    if this.settings_discard {
+                                                        this.settings_discard = false;
+                                                        cx.notify();
+                                                    } else {
+                                                        this.apply_settings(cx);
+                                                    }
+                                                });
+                                            }
+                                        }),
+                                ),
+                        ),
+                )
                 .into_any_element()
         } else {
             card.into_any_element()
@@ -5621,6 +6011,7 @@ impl ResonaApp {
                 .flex()
                 .items_center()
                 .justify_center()
+                .px_3()
                 .child(card)
                 .into_any_element(),
         )
@@ -5670,6 +6061,16 @@ impl ResonaApp {
 
 impl Render for ResonaApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if matches!(self.modal, Some(Modal::Audio | Modal::Settings))
+            && self.settings_draft.is_none()
+        {
+            self.settings_draft = Some(self.preferences.clone());
+            self.settings_baseline = self.settings_draft.clone();
+            self.settings_notice.clear();
+            let shortcut = self.preferences.push_to_talk_shortcut.clone();
+            self.shortcut_input
+                .update(cx, |input, cx| input.set_value(shortcut, window, cx));
+        }
         self.sync_resource_interest(window.is_window_active());
         self.composer_height = composer_height(
             self.composer_height,
@@ -5689,14 +6090,14 @@ impl Render for ResonaApp {
             instance: user.instance.clone(),
         });
         let confirmed = selected
-            .map(|user| user.playback_volume.min(200))
+            .map(|user| user.playback_volume.min(794))
             .unwrap_or(100);
         if target != self.playback_input_target || confirmed != self.playback_input_confirmed {
             self.playback_input_target = target;
             self.playback_input_confirmed = confirmed;
             self.playback_input_error.clear();
             self.playback_input.update(cx, |input, cx| {
-                input.set_value(confirmed.to_string(), window, cx)
+                input.set_value(playback_db(confirmed).to_string(), window, cx)
             });
         }
         let view = cx.entity().clone();
@@ -5718,12 +6119,13 @@ impl Render for ResonaApp {
                 format!("{name} 的收听设置未应用：{error}")
             })
             .unwrap_or_else(|| self.error.clone());
-        div()
+        let content = div()
             .id("resona-root")
             .relative()
-            .size_full()
-            .min_w(px(900.))
-            .min_h(px(600.))
+            .w_full()
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
             .overflow_hidden()
             .track_focus(&self.focus)
             .on_mouse_move(
@@ -5743,7 +6145,12 @@ impl Render for ResonaApp {
             )
             .on_mouse_up(
                 gpui::MouseButton::Left,
-                cx.listener(|this, _, _, _| this.composer_drag = None),
+                cx.listener(|this, _, _, _| {
+                    this.composer_drag = None;
+                    this.chat_follow_bottom = f32::from(this.chat_scroll.max_offset().height)
+                        + f32::from(this.chat_scroll.offset().y)
+                        <= 4.;
+                }),
             )
             .on_mouse_up_out(
                 gpui::MouseButton::Left,
@@ -5785,11 +6192,28 @@ impl Render for ResonaApp {
                     .w_full()
                     .flex()
                     .child(self.render_rail(&view))
-                    .child(self.render_sidebar(&view))
-                    .child(self.render_chat(&view))
-                    .when(self.detail_selection.is_some(), |body| {
-                        body.child(self.render_details(&view))
-                    }),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .w_full()
+                                    .flex()
+                                    .child(self.render_sidebar(&view))
+                                    .when(self.detail_selection.is_some(), |body| {
+                                        body.child(self.render_details(&view))
+                                    })
+                                    .when(self.preferences.channel_sidebar_collapsed, |body| {
+                                        body.child(div().flex_1())
+                                    }),
+                            )
+                            .child(self.render_chat(&view)),
+                    ),
             )
             .child(self.render_voicebar(&view))
             .when(
@@ -5864,7 +6288,17 @@ impl Render for ResonaApp {
                         .justify_center()
                         .child(div().text_sm().child("正在断开并退出")),
                 )
+            });
+        div()
+            .w(window.viewport_size().width)
+            .h(window.viewport_size().height)
+            .flex()
+            .flex_col()
+            .bg(rgb(PANEL))
+            .when(cfg!(target_os = "macos"), |root| {
+                root.child(gpui_component::TitleBar::new().bg(rgb(PANEL)).border_b_0())
             })
+            .child(content)
     }
 }
 
@@ -5883,6 +6317,25 @@ fn channel_bitrate(preset: u32, custom: &str) -> Option<u32> {
     (16..=64).contains(&kbps).then(|| kbps * 1000)
 }
 
+fn playback_from_db(db: i16) -> u16 {
+    (100.0 * 10_f64.powf(f64::from(db.clamp(-20, 18)) / 20.0)).round() as u16
+}
+
+fn playback_db(volume: u16) -> i16 {
+    (20.0 * (f64::from(volume.max(1)) / 100.0).log10()).round() as i16
+}
+
+fn playback_label(volume: u16) -> String {
+    if volume == 0 {
+        return "静音".into();
+    }
+    format!("{:+} dB", playback_db(volume))
+}
+
+fn step_playback_volume(volume: u16, step: i16) -> u16 {
+    playback_from_db(playback_db(volume).saturating_add(step))
+}
+
 fn parse_playback_volume(value: &str) -> Result<u16, &'static str> {
     let value = value.trim();
     let (negative, digits) = if let Some(rest) = value.strip_prefix('-') {
@@ -5891,14 +6344,16 @@ fn parse_playback_volume(value: &str) -> Result<u16, &'static str> {
         (false, value.strip_prefix('+').unwrap_or(value))
     };
     if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
-        return Err("请输入整数音量（0–200）");
+        return Err("请输入整数增益（-20 到 +18 dB）");
     }
-    if negative {
-        return Ok(0);
-    }
-    Ok(digits
+    let magnitude = digits
         .bytes()
-        .fold(0u16, |n, b| (n * 10 + u16::from(b - b'0')).min(200)))
+        .fold(0i16, |n, b| (n * 10 + i16::from(b - b'0')).min(100));
+    Ok(playback_from_db(if negative {
+        -magnitude
+    } else {
+        magnitude
+    }))
 }
 
 fn can_show_session_channels(workspace: &Workspace, selected: &str) -> bool {
@@ -6030,7 +6485,20 @@ fn ptt_can_send(workspace: &Workspace, voice: &VoiceState, closing: bool) -> boo
 }
 
 fn composer_height(requested: f32, viewport_height: f32) -> f32 {
-    requested.clamp(64., (viewport_height * 0.35).clamp(64., 280.))
+    requested.clamp(160., (viewport_height * 0.55).clamp(160., 480.))
+}
+
+fn apply_preferences(preferences: &Preferences, voice: &mut VoiceState) {
+    voice.volume = preferences.playback_volume.min(794);
+    voice.input_gain = preferences.input_gain.min(200);
+    voice.activation_mode = preferences.activation_mode.clone();
+    voice.vad_threshold_db = preferences.vad_threshold_db;
+    voice.noise_suppression = preferences.noise_suppression.clone();
+    voice.echo_cancellation = preferences.echo_cancellation;
+    voice.echo_suppression = preferences.echo_suppression;
+    voice.ducking = preferences.ducking;
+    voice.input_device_id = preferences.input_device_id.clone();
+    voice.output_device_id = preferences.output_device_id.clone();
 }
 
 fn resource_needs_full_list(
@@ -6332,10 +6800,10 @@ mod tests {
     }
     #[test]
     fn composer_resize_preserves_space_for_chat_and_voicebar() {
-        assert_eq!(super::composer_height(20., 600.), 64.);
-        assert_eq!(super::composer_height(800., 600.), 210.);
-        assert_eq!(super::composer_height(800., 1200.), 280.);
-        assert_eq!(super::composer_height(96., 600.), 96.);
+        assert_eq!(super::composer_height(20., 600.), 160.);
+        assert_eq!(super::composer_height(800., 600.), 330.);
+        assert_eq!(super::composer_height(800., 1200.), 480.);
+        assert_eq!(super::composer_height(210., 600.), 210.);
     }
     #[test]
     fn native_detail_cache_projects_membership_and_metadata_notifications() {
@@ -6494,15 +6962,18 @@ mod tests {
 
     #[test]
     fn manual_playback_volume_validates_before_clamping() {
+        for db in -20..=18 {
+            assert_eq!(super::playback_db(super::playback_from_db(db)), db);
+        }
         for (value, expected) in [
-            ("110", 110),
-            ("  +37 ", 37),
-            ("200", 200),
-            ("201", 200),
-            ("-1", 0),
-            ("0", 0),
-            ("999999999999999999999999999", 200),
-            ("-999999999999999999999999", 0),
+            ("6", 200),
+            ("  +18 ", 794),
+            ("200", 794),
+            ("-20", 10),
+            ("-1", 89),
+            ("0", 100),
+            ("999999999999999999999999999", 794),
+            ("-999999999999999999999999", 10),
         ] {
             assert_eq!(super::parse_playback_volume(value), Ok(expected));
         }
@@ -6522,20 +6993,20 @@ mod tests {
             playback_muted: true,
             ..User::default()
         };
-        assert_eq!(UserPlaybackAction::Step(10).apply(&user), (160, true));
+        assert_eq!(UserPlaybackAction::Step(1).apply(&user), (178, true));
         assert_eq!(UserPlaybackAction::Mute(false).apply(&user), (150, false));
         assert_eq!(UserPlaybackAction::Volume(100).apply(&user), (100, true));
         assert_eq!(UserPlaybackAction::Volume(0).apply(&user), (0, true));
         let max = User {
-            playback_volume: 200,
+            playback_volume: 794,
             ..user.clone()
         };
-        assert_eq!(UserPlaybackAction::Step(10).apply(&max), (200, true));
+        assert_eq!(UserPlaybackAction::Step(1).apply(&max), (794, true));
         let zero = User {
             playback_volume: 0,
             ..user
         };
-        assert_eq!(UserPlaybackAction::Step(-10).apply(&zero), (0, true));
+        assert_eq!(UserPlaybackAction::Step(-1).apply(&zero), (10, true));
     }
 
     #[test]

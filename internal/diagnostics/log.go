@@ -54,6 +54,8 @@ func (*Recorder) Enabled(_ context.Context, level slog.Level) bool { return leve
 // Only explicitly reviewed events and primitive fields can enter an export.
 func allowedMessage(s string) bool {
 	switch s {
+	case "keychain operation started", "keychain operation finished":
+		return true
 	case "client started", "client stopped", "core stopped", "connection requested", "connection failed", "connection established", "connection lost", "connection cancelled by user", "reconnect scheduled", "reconnect failed", "reconnect succeeded", "native transport closed", "voice devices ready", "voice configuration failed", "voice routing interval", "voice counters", "voice peer interval":
 		return true
 	}
@@ -61,6 +63,8 @@ func allowedMessage(s string) bool {
 }
 func allowedKey(s string) bool {
 	switch s {
+	case "operation", "operation_id", "status", "os_status":
+		return true
 	case "component", "version", "timeout", "retryable", "attempt", "delay_ms", "elapsed_ms", "channel_restored", "reason", "capture", "deafened", "activation", "local_monitor", "cancelled", "received", "malformed", "stale_member_or_epoch", "no_audio_handler", "delivered", "receive_queue_drops", "sent", "send_errors", "capture_dropped_samples", "final", "sender", "decoded", "decode_errors", "jitter_rejected", "unknown_peer", "muted_frames":
 		return true
 	}

@@ -11,6 +11,12 @@ fi
 core_binary=${RESONA_CORE_BINARY:-"$repo_dir/build/bin/resona-core"}
 bundle_dir=${RESONA_BUNDLE_DIR:-"$desktop_dir/dist/Resona.app"}
 profile=${RESONA_CARGO_PROFILE:-release}
+sign_identity=${RESONA_CODESIGN_IDENTITY:-}
+
+if [ "$sign_identity" = - ]; then
+  echo 'RESONA_CODESIGN_IDENTITY must be a certificate identity, not ad-hoc (-)' >&2
+  exit 1
+fi
 
 case "$profile" in
   debug|release) ;;
@@ -52,13 +58,13 @@ for size in 16 32 128 256 512; do
 done
 iconutil -c icns "$icon_tmp/Resona.iconset" -o "$icon_tmp/Resona.icns"
 
-if [ -d "$bundle_dir" ] && [ ! -f "$bundle_dir/Contents/.resona-bundle" ]; then
+if [ -d "$bundle_dir" ] && [ ! -f "$bundle_dir/Contents/Resources/.resona-bundle" ] && [ ! -f "$bundle_dir/Contents/.resona-bundle" ]; then
   echo "refusing to replace an unrecognized app bundle: $bundle_dir" >&2
   exit 1
 fi
 rm -rf "$bundle_dir"
 mkdir -p "$bundle_dir/Contents/MacOS" "$bundle_dir/Contents/Resources"
-touch "$bundle_dir/Contents/.resona-bundle"
+touch "$bundle_dir/Contents/Resources/.resona-bundle"
 cp "$desktop_dir/target/$profile/resona-desktop" "$bundle_dir/Contents/MacOS/resona-desktop"
 cp "$core_binary" "$bundle_dir/Contents/MacOS/resona-core"
 cp "$icon_tmp/Resona.icns" "$bundle_dir/Contents/Resources/Resona.icns"
@@ -88,5 +94,21 @@ plutil -replace CFBundleShortVersionString -string "$bundle_version" "$bundle_di
 plutil -replace CFBundleVersion -string "$bundle_version" "$bundle_dir/Contents/Info.plist"
 plutil -lint "$bundle_dir/Contents/Info.plist"
 test -s "$bundle_dir/Contents/Resources/Resona.icns"
+
+if [ -n "$sign_identity" ]; then
+  # Sign nested code first; let codesign derive certificate-bound requirements.
+  codesign --force --sign "$sign_identity" --identifier dev.resona.core \
+    "$bundle_dir/Contents/MacOS/resona-core"
+  codesign --force --sign "$sign_identity" "$bundle_dir"
+  codesign --verify --strict --verbose=2 "$bundle_dir/Contents/MacOS/resona-core"
+  codesign --verify --deep --strict --verbose=2 "$bundle_dir"
+else
+  # Seal the completed bundle even for local/CI builds. Ad-hoc identity still
+  # changes with the code hash and does not solve persistent Keychain access.
+  codesign --force --sign - --identifier dev.resona.core "$bundle_dir/Contents/MacOS/resona-core"
+  codesign --force --sign - "$bundle_dir"
+  codesign --verify --deep --strict --verbose=2 "$bundle_dir"
+  echo 'No signing identity: development build; Keychain may prompt again after rebuilds.' >&2
+fi
 
 echo "$bundle_dir"

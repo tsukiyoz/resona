@@ -41,6 +41,44 @@ func TestConcurrentReadsReuseAuthorizedPassword(t *testing.T) {
 	}
 }
 
+func TestDirectPasswordReadIsSingleAndCached(t *testing.T) {
+	store := fakeStore(t)
+	reads := 0
+	store.api.querySilent = func(keychain.Item) ([]keychain.QueryResult, error) {
+		return nil, keychain.ErrorInteractionNotAllowed
+	}
+	store.api.read = func(key string) ([]byte, error) {
+		reads++
+		if key != "protected" {
+			t.Fatal("read escaped selected destination")
+		}
+		return []byte(`{"version":1,"password":"test-only"}`), nil
+	}
+	if found, err := store.Has("protected"); !found || err != nil {
+		t.Fatal("protected item not available for explicit reading")
+	}
+	for i := 0; i < 3; i++ {
+		if value, err := store.Get("protected"); err != nil || value != "test-only" {
+			t.Fatal("direct password read failed")
+		}
+	}
+	if err := store.Set("protected", "test-only"); err != nil || reads != 1 {
+		t.Fatal("read or same-value write caused redundant authorization")
+	}
+}
+
+func TestDirectPasswordReadDenialIsNotRetriedOrCached(t *testing.T) {
+	store := fakeStore(t)
+	reads := 0
+	store.api.read = func(string) ([]byte, error) {
+		reads++
+		return nil, keychain.ErrorAuthFailed
+	}
+	if _, err := store.Get("protected"); !errors.Is(err, errRead) || reads != 1 || len(store.cache) != 0 {
+		t.Fatal("denied direct read was retried or cached")
+	}
+}
+
 func TestCacheInvalidatesOnMutationAndDoesNotCacheDenial(t *testing.T) {
 	store := fakeStore(t)
 	reads := 0

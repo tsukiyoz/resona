@@ -140,7 +140,7 @@ pub struct VoiceState {
     pub input_device_id: String,
     #[serde(rename = "outputDeviceID")]
     pub output_device_id: String,
-    pub volume: u8,
+    pub volume: u16,
     pub input_gain: u16,
     pub active: bool,
     pub channel_codec: Value,

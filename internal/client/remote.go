@@ -240,6 +240,8 @@ func (s *Service) applyRemoteState(generation uint64, remote RemoteState) {
 		s.clearRemotePresenceLocked()
 	} else {
 		if wasConnected && previousChannel != remote.ChannelID {
+			s.cancelMessageLocked()
+			s.state.Messages = []Message{}
 			s.voiceChannelChangedLocked()
 		}
 		s.appendRemoteMessagesLocked(remote.Messages)
@@ -377,6 +379,7 @@ func (s *Service) clearRemoteCollectionsLocked() {
 
 func (s *Service) setOfflineLocked() {
 	defer s.notifyChangedLocked()
+	s.state.Messages = []Message{}
 	if s.state.Session.ID != "" {
 		s.state.Session.Mode = "offline"
 		s.state.Session.Error = ""

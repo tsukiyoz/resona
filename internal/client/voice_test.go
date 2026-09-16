@@ -171,6 +171,24 @@ func TestVoiceAutomaticallyStartsMutedAndDoesNotAlterTextSession(t *testing.T) {
 	}
 }
 
+func TestDisabledVoiceSettingsRemainPreparedWithoutOpeningDevices(t *testing.T) {
+	e := &fakeVoiceEngine{}
+	s := voiceService(t, e)
+	config := s.GetVoiceState().VoiceConfig
+	config.Enabled = false
+	config.Volume = 250
+	config.InputGain = 130
+	config.InputDeviceID = "next-input"
+	state, err := s.ConfigureVoice(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.cleanupWG.Wait()
+	if state.Enabled || !state.Muted || state.Volume != 250 || state.InputGain != 130 || state.InputDeviceID != "next-input" || e.closed.Load() != 1 {
+		t.Fatalf("disabled settings not prepared safely: %+v", state)
+	}
+}
+
 func TestDisconnectCancelsVoiceStartupAndIgnoresLateCompletion(t *testing.T) {
 	started := make(chan struct{})
 	e := &fakeVoiceEngine{configure: func(ctx context.Context, _ audio.VoiceConfig) error { close(started); <-ctx.Done(); return ctx.Err() }}

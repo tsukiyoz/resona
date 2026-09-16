@@ -20,6 +20,7 @@ type passwordPayload struct {
 }
 
 type keychainAPI struct {
+	read        func(string) ([]byte, error)
 	query       func(keychain.Item) ([]keychain.QueryResult, error)
 	querySilent func(keychain.Item) ([]keychain.QueryResult, error)
 	update      func(keychain.Item, keychain.Item) error
@@ -35,6 +36,7 @@ type Store struct {
 
 func New() *Store {
 	return &Store{api: keychainAPI{
+		read:  readNativePassword,
 		query: queryNativeKeychain, update: updateNativeKeychain,
 		querySilent: queryNativeKeychainSilent,
 		add:         addNativeKeychain, delete: deleteNativeKeychain,
@@ -86,15 +88,32 @@ func (s *Store) Get(key string) (string, error) {
 	}
 	query.SetMatchLimit(keychain.MatchLimitOne)
 	query.SetReturnData(true)
-	results, err := s.api.query(query)
-	if errors.Is(err, keychain.ErrorItemNotFound) || (err == nil && len(results) == 0) {
+	var data []byte
+	if s.api.read != nil {
+		data, err = s.api.read(key)
+	} else {
+		var results []keychain.QueryResult
+		results, err = s.api.query(query)
+		if err == nil {
+			switch len(results) {
+			case 0:
+				err = keychain.ErrorItemNotFound
+			case 1:
+				data = results[0].Data
+			default:
+				err = errRead
+			}
+		}
+	}
+	if errors.Is(err, keychain.ErrorItemNotFound) {
 		return "", ErrNotFound
 	}
-	if err != nil || len(results) != 1 {
+	if err != nil {
 		return "", errRead
 	}
 	var payload passwordPayload
-	if err := json.Unmarshal(results[0].Data, &payload); err != nil || payload.Version != 1 || payload.Password == nil {
+	defer clear(data)
+	if err := json.Unmarshal(data, &payload); err != nil || payload.Version != 1 || payload.Password == nil {
 		return "", errRead
 	}
 	s.cachePassword(key, *payload.Password)

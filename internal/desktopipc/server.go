@@ -438,6 +438,19 @@ func dispatchWithContext(ctx context.Context, s *client.Service, req request) (a
 		}
 		return s.SetInputGain(*p.InputGain)
 	}
+	if req.Method == "SetOutputGain" {
+		var p struct {
+			SessionID string `json:"sessionID"`
+			Volume    *int   `json:"volume"`
+		}
+		if err := decodeParams(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if p.Volume == nil {
+			return nil, errors.New("缺少收听增益")
+		}
+		return s.SetOutputGain(p.SessionID, *p.Volume)
+	}
 	if err := decodeParams(req.Params, &p); err != nil {
 		return nil, err
 	}

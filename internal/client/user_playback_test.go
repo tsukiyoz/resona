@@ -36,7 +36,7 @@ func TestUserPlaybackValidatesTargetAndDoesNotReopenDevices(t *testing.T) {
 		session, id, instance string
 		volume                int
 	}{
-		{"old", "2", "alice", 100}, {"session", "2", "old-alice", 100}, {"session", "1", "self", 100}, {"session", "2", "alice", 201}, {"session", "2", "alice", -1},
+		{"old", "2", "alice", 100}, {"session", "2", "old-alice", 100}, {"session", "1", "self", 100}, {"session", "2", "alice", 795}, {"session", "2", "alice", -1},
 	} {
 		if _, err := s.SetUserPlayback(tc.session, tc.id, tc.instance, tc.volume, true); err == nil {
 			t.Fatal("stale/invalid target accepted")

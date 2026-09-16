@@ -12,7 +12,7 @@ type PeerPlayback struct {
 func (e *Engine) SetPeerPlayback(peers map[uint16]PeerPlayback) {
 	copy := make(map[uint16]PeerPlayback, len(peers))
 	for id, peer := range peers {
-		peer.Volume = max(0, min(200, peer.Volume))
+		peer.Volume = max(0, min(MaxPlaybackVolume, peer.Volume))
 		copy[id] = peer
 	}
 	e.peers.Store(&copy)

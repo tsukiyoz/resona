@@ -45,8 +45,10 @@ and Docker builds default to `v` plus VERSION; explicit build overrides do not
 edit the file or create a release. Raw `go build` without build flags still reports
 `dev`. CI requires the exact tag to match VERSION and the desktop version.
 Main-branch CI builds append `-dev` and are development
-snapshots. A tag also runs the Windows packaging workflow; do not call the Windows
-package verified until that run succeeds. Downloadable workflow artifacts are
+snapshots. A tag also runs the Windows and macOS packaging workflows; do not call
+either platform package verified until its run succeeds. macOS builds separate
+Apple Silicon and Intel bundles; without a configured certificate they are ad-hoc
+signed test packages, not notarized releases. Downloadable workflow artifacts are
 temporary (14 days), not durable GitHub Release assets.
 
 Push the release commit and annotated tag together after local checks. Publish
