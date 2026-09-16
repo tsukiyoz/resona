@@ -15,7 +15,11 @@ if [[ "$(uname -s)" == MINGW* ]]; then
     # command-line defines so objcopy's symbol prefixing leaves no stale exports.
     export CFLAGS="${CFLAGS:-} -include $root/test/audio3a/windows-static.h"
     export CXXFLAGS="${CXXFLAGS:-} -include $root/test/audio3a/windows-static.h"
-    export RUSTFLAGS='-C target-feature=+crt-static -C link-arg=-static'
+    # cc otherwise requests a dynamic libstdc++, overriding the broad -static.
+    export CXXSTDLIB=static=stdc++
+    cxx_library=$(g++ -print-file-name=libstdc++.a)
+    test -f "$cxx_library"
+    export RUSTFLAGS="-C target-feature=+crt-static -C link-arg=-static -L native=$(dirname "$cxx_library")"
 fi
 {
     git rev-parse HEAD
@@ -40,6 +44,7 @@ cargo +"$toolchain" metadata --locked --format-version 1 --manifest-path test/au
 # Keep license notices for the statically linked dependencies alongside the tools.
 python3 test/audio3a/licenses.py "$build/reports/dependencies.json" "$build/package/licenses" "$RNNOISE_SOURCE"
 if [[ -n "$suffix" ]]; then
+    objdump -p "$build/package/resona-3a-bench.exe" | grep 'DLL Name:' | tee "$build/reports/windows-dlls.txt"
     PATH=/c/Windows/System32 "$build/package/resona-3a-bench.exe" --help
     PATH=/c/Windows/System32 "$build/package/resona-3a-bench-little.exe" --help
 fi
