@@ -11,7 +11,15 @@ if [[ "$(uname -s)" == MINGW* ]]; then
     export LIBCLANG_PATH
     LIBCLANG_PATH=$(cygpath -m /mingw64/bin)
     export BINDGEN_EXTRA_CLANG_ARGS=--target=x86_64-w64-windows-gnu
-    export RUSTFLAGS='-C target-feature=+crt-static -C link-arg=-static'
+    # Bundled Meson enables DLL exports even for static archives. Include after
+    # command-line defines so objcopy's symbol prefixing leaves no stale exports.
+    export CFLAGS="${CFLAGS:-} -include $root/test/audio3a/windows-static.h"
+    export CXXFLAGS="${CXXFLAGS:-} -include $root/test/audio3a/windows-static.h"
+    # cc otherwise requests a dynamic libstdc++, overriding the broad -static.
+    export CXXSTDLIB=static=stdc++
+    cxx_library=$(g++ -print-file-name=libstdc++.a)
+    test -f "$cxx_library"
+    export RUSTFLAGS="-C target-feature=+crt-static -C link-arg=-static -L native=$(dirname "$cxx_library")"
 fi
 {
     git rev-parse HEAD
@@ -36,6 +44,7 @@ cargo +"$toolchain" metadata --locked --format-version 1 --manifest-path test/au
 # Keep license notices for the statically linked dependencies alongside the tools.
 python3 test/audio3a/licenses.py "$build/reports/dependencies.json" "$build/package/licenses" "$RNNOISE_SOURCE"
 if [[ -n "$suffix" ]]; then
+    objdump -p "$build/package/resona-3a-bench.exe" | grep 'DLL Name:' | tee "$build/reports/windows-dlls.txt"
     PATH=/c/Windows/System32 "$build/package/resona-3a-bench.exe" --help
     PATH=/c/Windows/System32 "$build/package/resona-3a-bench-little.exe" --help
 fi

@@ -61,6 +61,10 @@ jobs:
           echo "$GITHUB_WORKSPACE/build/audio3a/tools/bin" >> "$GITHUB_PATH"
       - name: Rust with LLVM archive tools
         run: rustup toolchain install '${{ matrix.toolchain }}' --profile minimal --component llvm-tools-preview
+      - name: Short Windows native build paths
+        if: runner.os == 'Windows'
+        # Abseil object names exceed MinGW ar's path limit below the workspace.
+        run: echo "CARGO_TARGET_DIR=$(cygpath -m "$RUNNER_TEMP/3a")" >> "$GITHUB_ENV"
       - name: Build and verify adapters
         env:
           BENCH_RUST_TOOLCHAIN: ${{ matrix.toolchain }}

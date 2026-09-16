@@ -2,7 +2,7 @@
 set -euo pipefail
 root=$(pwd)
 if command -v cygpath >/dev/null; then root=$(cygpath -m "$root"); fi
-export CARGO_TARGET_DIR="$root/build/audio3a/target"
+export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$root/build/audio3a/target}
 export RNNOISE_SOURCE=${RNNOISE_SOURCE:-$root/build/audio3a/rnnoise-source}
 revision=70f1d256acd4b34a572f999a05c87bf00b67730d
 model_hash=0a8755f8e2d834eff6a54714ecc7d75f9932e845df35f8b59bc52a7cfe6e8b37
