@@ -91,12 +91,41 @@ jobs:
         run: |
           go test ./internal/...
           cargo test --locked --release --manifest-path desktop/Cargo.toml
+      # PR code must never receive the signing identity or certificate secrets.
+      - name: Import signing identity for trusted builds
+        id: signing
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          test -n "$CERTIFICATE_BASE64"
+          test -n "$CERTIFICATE_PASSWORD"
+          [[ "$SIGNING_IDENTITY" =~ ^[0-9A-Fa-f]{40}$ ]]
+          umask 077
+          certificate="$RUNNER_TEMP/resona-signing.p12"
+          keychain="$RUNNER_TEMP/resona-signing.keychain-db"
+          keychain_password=$(openssl rand -hex 32)
+          trap 'rm -f "$certificate"' EXIT
+          printf '%s' "$CERTIFICATE_BASE64" | base64 --decode > "$certificate"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$certificate" -P "$CERTIFICATE_PASSWORD" -k "$keychain" -t cert -f pkcs12 -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -k "$keychain_password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" "$HOME/Library/Keychains/login.keychain-db"
+          security find-identity -v -p codesigning "$keychain" | grep -F "$SIGNING_IDENTITY" >/dev/null
+          echo "RESONA_CODESIGN_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
+          echo 'signed=true' >> "$GITHUB_OUTPUT"
       - name: Build app bundle
         env:
           RESONA_BUILD_VERSION: ${{ steps.version.outputs.version }}
         run: make build-desktop VERSION="$RESONA_BUILD_VERSION"
       - name: Verify and archive app
         env:
+          CERTIFICATE_SIGNED: ${{ steps.signing.outputs.signed }}
           PACKAGE_ARCH: ${{ matrix.arch }}
           EXPECTED_MACHINE: ${{ matrix.machine }}
         run: |
@@ -111,7 +140,11 @@ jobs:
           "$app/Contents/MacOS/resona-core" --version
           ditto -c -k --sequesterRsrc --keepParent "$app" "desktop/dist/Resona-macos-${PACKAGE_ARCH}.zip"
           echo '### macOS test package' >> "$GITHUB_STEP_SUMMARY"
-          echo 'Ad-hoc signed only. No Developer ID certificate or Apple notarization; macOS may require manual approval to open.' >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$CERTIFICATE_SIGNED" == true ]]; then
+            echo 'Signed with the configured Apple certificate. Not notarized; a development certificate is not a Developer ID distribution certificate.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Ad-hoc signed PR/test package. Not notarized; macOS may require manual approval to open.' >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Upload macOS package
         uses: actions/upload-artifact@v6
         with:
@@ -119,3 +152,11 @@ jobs:
           path: desktop/dist/Resona-macos-${{ matrix.arch }}.zip
           if-no-files-found: error
           retention-days: 14
+      - name: Remove temporary signing keychain
+        if: always()
+        run: |
+          keychain="$RUNNER_TEMP/resona-signing.keychain-db"
+          if [[ -f "$keychain" ]]; then
+            security delete-keychain "$keychain"
+          fi
+          rm -f "$RUNNER_TEMP/resona-signing.p12"

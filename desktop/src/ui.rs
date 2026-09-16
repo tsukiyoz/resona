@@ -1096,7 +1096,6 @@ impl ResonaApp {
             && resource_needs_full_list(
                 &self.workspace,
                 &self.selected_server,
-                self.preferences.channel_sidebar_collapsed,
                 self.detail_selection.as_ref(),
             );
         let next = (active, all);
@@ -1245,6 +1244,9 @@ impl ResonaApp {
                     }
                 }
                 self.workspace = workspace;
+                if visible_text_channel(&self.workspace, &self.selected_server).is_none() {
+                    self.composer_drag = None;
+                }
                 if let Some(selection) = refresh_details {
                     self.select_details(selection, cx);
                 } else {
@@ -2132,7 +2134,11 @@ impl ResonaApp {
     }
 
     fn send_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.resources_syncing {
+        if self.resources_syncing
+            || visible_text_channel(&self.workspace, &self.selected_server).is_none()
+            || !self.workspace.session.switching_channel_id.is_empty()
+            || !self.workspace.session.sending_message_id.is_empty()
+        {
             return;
         }
         if self.pending.values().any(|p| matches!(p, Pending::Send(_))) {
@@ -2374,7 +2380,6 @@ impl ResonaApp {
         }
         let mut next = desired.clone();
         next.server_sidebar_collapsed = self.preferences.server_sidebar_collapsed;
-        next.channel_sidebar_collapsed = self.preferences.channel_sidebar_collapsed;
         self.commit_settings(next, cx);
     }
 
@@ -2640,10 +2645,6 @@ impl ResonaApp {
                             .on_click(move |event, _, cx| {
                                 entity.update(cx, |this, cx| {
                                     this.selected_server = id.clone();
-                                    if this.preferences.channel_sidebar_collapsed {
-                                        this.preferences.channel_sidebar_collapsed = false;
-                                        this.save_preferences(cx);
-                                    }
                                     if (event.is_keyboard() || event.click_count() >= 2)
                                         && !this.is_busy()
                                     {
@@ -2737,8 +2738,6 @@ impl ResonaApp {
                     .on_click(move |_, _, cx| {
                         preview.update(cx, |this, cx| {
                             this.selected_server = "__preview__".into();
-                            this.preferences.channel_sidebar_collapsed = false;
-                            this.save_preferences(cx);
                             if this.workspace.session.mode != "preview"
                                 && !this.workspace.connected()
                             {
@@ -2830,7 +2829,6 @@ impl ResonaApp {
     }
 
     fn render_sidebar(&self, view: &Entity<Self>) -> AnyElement {
-        let collapsed = self.preferences.channel_sidebar_collapsed;
         let preview_selected = self.selected_server == "__preview__";
         let profile = self.selected_profile().cloned();
         let showing_session = if self.workspace.session.mode == "preview" {
@@ -2848,7 +2846,6 @@ impl ResonaApp {
                 .map(|p| p.name.clone())
                 .unwrap_or_else(|| "频道".into())
         };
-        let toggle = view.clone();
         let header = div()
             .h(px(62.))
             .flex_shrink_0()
@@ -2857,8 +2854,7 @@ impl ResonaApp {
             .items_center()
             .gap_1()
             .when(
-                !collapsed
-                    && showing_session
+                showing_session
                     && self.workspace.connected()
                     && self.workspace.session.can_manage_channels,
                 |header| {
@@ -2882,38 +2878,35 @@ impl ResonaApp {
                     )
                 },
             )
-            .when(!collapsed, |header| {
-                header.child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .pl_2()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .truncate()
-                                .child(title),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(10.))
-                                .text_color(rgb(MUTED))
-                                .truncate()
-                                .child(if showing_session {
-                                    self.session_label()
-                                } else {
-                                    "未连接".into()
-                                }),
-                        ),
-                )
-            })
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .pl_2()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .truncate()
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(10.))
+                            .text_color(rgb(MUTED))
+                            .truncate()
+                            .child(if showing_session {
+                                self.session_label()
+                            } else {
+                                "未连接".into()
+                            }),
+                    ),
+            )
             .when(
-                !collapsed
-                    && showing_session
+                showing_session
                     && self.workspace.connected()
                     && (!self.workspace.session.server_role.is_empty()
                         || self.workspace.session.can_claim_owner),
@@ -2929,32 +2922,10 @@ impl ResonaApp {
                             }),
                     )
                 },
-            )
-            .child(
-                Button::new("toggle-channel-sidebar")
-                    .icon(if collapsed {
-                        IconName::ChevronRight
-                    } else {
-                        IconName::ChevronLeft
-                    })
-                    .ghost()
-                    .tooltip(if collapsed {
-                        "展开频道栏"
-                    } else {
-                        "收起频道栏"
-                    })
-                    .on_click(move |_, _, cx| {
-                        toggle.update(cx, |this, cx| {
-                            this.preferences.channel_sidebar_collapsed =
-                                !this.preferences.channel_sidebar_collapsed;
-                            this.save_preferences(cx);
-                            cx.notify();
-                        });
-                    }),
             );
         let mut sidebar = div()
-            .when(collapsed, |s| s.w(px(44.)).flex_shrink_0())
-            .when(!collapsed, |s| s.flex_1().min_w_0())
+            .flex_1()
+            .min_w_0()
             .h_full()
             .flex_shrink_0()
             .bg(rgb(PANEL))
@@ -2963,9 +2934,6 @@ impl ResonaApp {
             .flex()
             .flex_col()
             .child(header);
-        if collapsed {
-            return sidebar.into_any_element();
-        }
         if can_show_session_channels(&self.workspace, &self.selected_server) {
             sidebar = sidebar.child(self.render_channels(view));
         } else {
@@ -3432,21 +3400,9 @@ impl ResonaApp {
             .into_any_element()
     }
 
-    fn render_chat(&self, view: &Entity<Self>) -> AnyElement {
-        let channel = self
-            .workspace
-            .channels
-            .iter()
-            .find(|c| c.id == self.workspace.session.channel_id)
-            .filter(|_| {
-                matches!(
-                    self.workspace.session.mode.as_str(),
-                    "connected" | "reconnecting" | "preview"
-                )
-            });
+    fn render_chat(&self, channel: &crate::model::Channel, view: &Entity<Self>) -> AnyElement {
         let can_send = (self.workspace.session.mode == "preview" || self.workspace.connected())
             && !self.resources_syncing
-            && channel.is_some_and(|c| c.kind != "separator")
             && self.workspace.session.switching_channel_id.is_empty()
             && self.workspace.session.sending_message_id.is_empty()
             && !self.pending.values().any(|p| matches!(p, Pending::Send(_)));
@@ -3521,10 +3477,7 @@ impl ResonaApp {
                             .truncate()
                             .text_xs()
                             .text_color(rgb(MUTED))
-                            .child(format!(
-                                "频道文字 · {}",
-                                channel.map(|c| c.name.as_str()).unwrap_or("未加入频道")
-                            )),
+                            .child(format!("频道文字 · {}", channel.name)),
                     )
                     .when(self.chat_unread, |header| {
                         header.child(
@@ -6131,7 +6084,10 @@ impl Render for ResonaApp {
             .on_mouse_move(
                 cx.listener(|this, event: &gpui::MouseMoveEvent, window, cx| {
                     if let Some((start_y, start_height)) = this.composer_drag {
-                        if event.pressed_button != Some(gpui::MouseButton::Left) {
+                        if event.pressed_button != Some(gpui::MouseButton::Left)
+                            || visible_text_channel(&this.workspace, &this.selected_server)
+                                .is_none()
+                        {
                             this.composer_drag = None;
                             return;
                         }
@@ -6207,12 +6163,12 @@ impl Render for ResonaApp {
                                     .child(self.render_sidebar(&view))
                                     .when(self.detail_selection.is_some(), |body| {
                                         body.child(self.render_details(&view))
-                                    })
-                                    .when(self.preferences.channel_sidebar_collapsed, |body| {
-                                        body.child(div().flex_1())
                                     }),
                             )
-                            .child(self.render_chat(&view)),
+                            .when_some(
+                                visible_text_channel(&self.workspace, &self.selected_server),
+                                |body, channel| body.child(self.render_chat(channel, &view)),
+                            ),
                     ),
             )
             .child(self.render_voicebar(&view))
@@ -6366,6 +6322,19 @@ fn can_show_session_channels(workspace: &Workspace, selected: &str) -> bool {
     workspace.connected() && selected == workspace.session.server_id
 }
 
+fn visible_text_channel<'a>(
+    workspace: &'a Workspace,
+    selected: &str,
+) -> Option<&'a crate::model::Channel> {
+    if !can_show_session_channels(workspace, selected) || workspace.session.channel_id.is_empty() {
+        return None;
+    }
+    workspace
+        .channels
+        .iter()
+        .find(|channel| channel.id == workspace.session.channel_id && channel.kind != "separator")
+}
+
 fn voice_params(voice: &VoiceState) -> Value {
     json!({
         "enabled": voice.enabled, "muted": voice.muted, "deafened": voice.deafened,
@@ -6504,10 +6473,9 @@ fn apply_preferences(preferences: &Preferences, voice: &mut VoiceState) {
 fn resource_needs_full_list(
     workspace: &Workspace,
     viewed_server: &str,
-    collapsed: bool,
     selection: Option<&DetailSelection>,
 ) -> bool {
-    if !collapsed && viewed_server == workspace.session.server_id {
+    if viewed_server == workspace.session.server_id {
         return true;
     }
     match selection {
@@ -6775,26 +6743,20 @@ fn ordered_channels(channels: &[crate::model::Channel]) -> Vec<(crate::model::Ch
 #[cfg(test)]
 mod tests {
     #[test]
-    fn collapsed_current_details_do_not_subscribe_unrelated_members() {
+    fn viewed_server_and_details_determine_resource_scope() {
         let mut workspace = Workspace::default();
         workspace.session.server_id = "live".into();
         workspace.session.channel_id = "1".into();
-        assert!(super::resource_needs_full_list(
-            &workspace, "live", false, None
-        ));
-        assert!(!super::resource_needs_full_list(
-            &workspace, "other", false, None
-        ));
+        assert!(super::resource_needs_full_list(&workspace, "live", None));
+        assert!(!super::resource_needs_full_list(&workspace, "other", None));
         assert!(!super::resource_needs_full_list(
             &workspace,
-            "live",
-            true,
+            "other",
             Some(&DetailSelection::Channel("1".into()))
         ));
         assert!(super::resource_needs_full_list(
             &workspace,
-            "live",
-            true,
+            "other",
             Some(&DetailSelection::Channel("2".into()))
         ));
     }
@@ -6923,7 +6885,7 @@ mod tests {
     use super::{
         DetailChange, DetailSelection, can_prepare_voice_preferences, can_show_session_channels,
         detail_selection_change, detail_text, ptt_can_send, remove_inserted_newline,
-        user_is_speaking, voice_params,
+        user_is_speaking, visible_text_channel, voice_params,
     };
     use crate::model::{User, VoiceState, Workspace};
 
@@ -7007,6 +6969,36 @@ mod tests {
             ..user
         };
         assert_eq!(UserPlaybackAction::Step(-1).apply(&zero), (10, true));
+    }
+
+    #[test]
+    fn channel_text_requires_joined_channel_in_viewed_server() {
+        let mut workspace = Workspace::default();
+        workspace.session.server_id = "a".into();
+        workspace.session.channel_id = "room".into();
+        workspace.channels.push(crate::model::Channel {
+            id: "room".into(),
+            ..Default::default()
+        });
+        for mode in ["offline", "connecting", "failed", "reconnecting"] {
+            workspace.session.mode = mode.into();
+            assert!(visible_text_channel(&workspace, "a").is_none());
+        }
+        workspace.session.mode = "connected".into();
+        assert!(visible_text_channel(&workspace, "a").is_some());
+        assert!(visible_text_channel(&workspace, "b").is_none());
+        workspace.session.switching_channel_id = "next".into();
+        assert!(visible_text_channel(&workspace, "a").is_some());
+        workspace.session.channel_id = "missing".into();
+        assert!(visible_text_channel(&workspace, "a").is_none());
+        workspace.session.channel_id.clear();
+        assert!(visible_text_channel(&workspace, "a").is_none());
+        workspace.session.channel_id = "room".into();
+        workspace.channels[0].kind = "separator".into();
+        assert!(visible_text_channel(&workspace, "a").is_none());
+        workspace.channels[0].kind.clear();
+        workspace.session.mode = "preview".into();
+        assert!(visible_text_channel(&workspace, "__preview__").is_some());
     }
 
     #[test]

@@ -9,7 +9,6 @@ use std::{
 #[serde(default)]
 pub struct Preferences {
     pub server_sidebar_collapsed: bool,
-    pub channel_sidebar_collapsed: bool,
     pub notifications_enabled: bool,
     pub notification_volume: u8,
     pub activation_mode: String,
@@ -30,7 +29,6 @@ impl Default for Preferences {
     fn default() -> Self {
         Self {
             server_sidebar_collapsed: false,
-            channel_sidebar_collapsed: false,
             notifications_enabled: true,
             notification_volume: 35,
             activation_mode: "continuous".into(),
@@ -122,6 +120,22 @@ impl Preferences {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn retired_channel_collapse_preference_is_ignored() {
+        let preferences: super::Preferences = serde_json::from_str(
+            r#"{"channel_sidebar_collapsed":true,"server_sidebar_collapsed":true,"playback_volume":300}"#,
+        )
+        .unwrap();
+        assert!(preferences.server_sidebar_collapsed);
+        assert_eq!(preferences.playback_volume, 300);
+        assert!(
+            serde_json::to_value(preferences)
+                .unwrap()
+                .get("channel_sidebar_collapsed")
+                .is_none()
+        );
+    }
+
     #[test]
     fn settings_merge_preserves_concurrent_quick_controls_and_navigation() {
         let baseline = super::Preferences::default();
