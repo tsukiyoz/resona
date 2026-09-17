@@ -20,9 +20,11 @@ func (c *blockingChannel) CreateChannel(ctx context.Context, _, _ string) error 
 	<-ctx.Done()
 	return ctx.Err()
 }
+
 func (c *blockingChannel) UpdateChannel(ctx context.Context, _, _, _ string) error {
 	return c.CreateChannel(ctx, "", "")
 }
+
 func (c *blockingChannel) DeleteChannel(ctx context.Context, _ string) error {
 	return c.CreateChannel(ctx, "", "")
 }

@@ -1,8 +1,9 @@
 package client
 
 import (
-	"github.com/tsukiyoz/resona/internal/audio"
 	"testing"
+
+	"github.com/tsukiyoz/resona/internal/audio"
 )
 
 type playbackEngine struct {

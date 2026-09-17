@@ -116,7 +116,7 @@ func TestExportOnlyExplicitlyAndCancellation(t *testing.T) {
 		t.Fatal("invalid export", err)
 	}
 	bad := filepath.Join(dir, "file")
-	if err := os.WriteFile(bad, nil, 0600); err != nil {
+	if err := os.WriteFile(bad, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := r.Export(context.Background(), bad); err == nil {

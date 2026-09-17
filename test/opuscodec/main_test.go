@@ -12,14 +12,14 @@ func TestInputValidation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "input.pcm")
 	data := make([]byte, frameSize*4)
 	binary.LittleEndian.PutUint32(data, math.Float32bits(float32(math.NaN())))
-	if err := os.WriteFile(path, data, 0600); err != nil {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := loadPCM(path, 1); err == nil {
 		t.Fatal("accepted NaN")
 	}
 	binary.LittleEndian.PutUint32(data, math.Float32bits(.25))
-	if err := os.WriteFile(path, data, 0600); err != nil {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := loadPCM(path, 2); err == nil {

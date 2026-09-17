@@ -2,6 +2,7 @@ package client
 
 import (
 	"errors"
+
 	"github.com/tsukiyoz/resona/internal/audio"
 )
 

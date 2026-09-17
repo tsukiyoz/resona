@@ -20,6 +20,7 @@ const (
 	ServerVoiceHeader    = 13
 	AuthenticationFailed = 2
 )
+
 const (
 	HelloKind uint8 = iota + 1
 	WelcomeKind
@@ -50,24 +51,30 @@ type Hello struct {
 	Signature []byte
 }
 
-type ClaimOwner struct{ Token string }
-type CreateChannel struct {
-	Name, Description string
-	Bitrate           uint32
-}
+type (
+	ClaimOwner    struct{ Token string }
+	CreateChannel struct {
+		Name, Description string
+		Bitrate           uint32
+	}
+)
+
 type UpdateChannel struct {
 	ID                uint16
 	Name, Description string
 	Bitrate           uint32
 }
-type DeleteChannel struct{ ID uint16 }
-type WatchResources struct{ AllChannels, AllMembers bool }
-type Channel struct {
-	ID          uint16
-	Name        string
-	Description string
-	Bitrate     uint32
-}
+type (
+	DeleteChannel  struct{ ID uint16 }
+	WatchResources struct{ AllChannels, AllMembers bool }
+	Channel        struct {
+		ID          uint16
+		Name        string
+		Description string
+		Bitrate     uint32
+	}
+)
+
 type Member struct {
 	ID       uint16
 	Channel  uint16
@@ -96,6 +103,7 @@ type State struct {
 
 // Zero is the legacy/unspecified value, never an explicit encoder setting.
 func ValidChannelBitrate(b uint32) bool { return b == 0 || (b >= 16000 && b <= 64000 && b%1000 == 0) }
+
 func ChannelBitrate(b uint32) uint32 {
 	if b == 0 {
 		return 48000
@@ -152,6 +160,7 @@ func Pack(kind uint8, request uint32, body any) ([]byte, error) {
 	binary.BigEndian.PutUint32(result, uint32(size))
 	return proto.MarshalOptions{}.MarshalAppend(result, frame)
 }
+
 func Write(w io.Writer, kind uint8, request uint32, body any) error {
 	data, err := Pack(kind, request, body)
 	if err != nil {
@@ -169,6 +178,7 @@ func Write(w io.Writer, kind uint8, request uint32, body any) error {
 	}
 	return nil
 }
+
 func Read(r io.Reader) (Frame, error) {
 	var header [4]byte
 	if _, err := io.ReadFull(r, header[:]); err != nil {
@@ -191,6 +201,7 @@ func Read(r io.Reader) (Frame, error) {
 	}
 	return Frame{Kind: uint8(f.Kind), Request: f.Request, Body: f.Body}, nil
 }
+
 func Decode(f Frame, value any) error {
 	if len(f.Body) > MaxFrame {
 		return ErrPacket
@@ -234,6 +245,7 @@ func EncodeVoice(v Voice, downstream bool) ([]byte, error) {
 	copy(b[header:], v.Data)
 	return b, nil
 }
+
 func DecodeVoice(b []byte, downstream bool) (Voice, error) {
 	header := ClientVoiceHeader
 	if downstream {

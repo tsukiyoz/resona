@@ -45,6 +45,7 @@ type replayWindow struct {
 func (r *replayWindow) seen(n uint32) bool {
 	return n == 0 || n >= maxCounter || (n <= r.highest && (r.highest-n >= 64 || r.bits&(uint64(1)<<(r.highest-n)) != 0))
 }
+
 func (r *replayWindow) add(n uint32) {
 	if n > r.highest {
 		r.bits <<= n - r.highest
@@ -92,10 +93,12 @@ func (c *Conn) ChannelBinding() []byte { return append([]byte(nil), c.binding[:]
 
 func newConn(tx, rx *noise.CipherState, local, remote net.Addr, send func([]byte) error, closed func()) *Conn {
 	ctx, cancel := context.WithCancel(context.Background())
-	c := &Conn{ctx: ctx, cancel: cancel, tx: tx.Cipher(), rx: rx.Cipher(), txState: tx, rxState: rx,
+	c := &Conn{
+		ctx: ctx, cancel: cancel, tx: tx.Cipher(), rx: rx.Cipher(), txState: tx, rxState: rx,
 		txConfirmed: true, keySince: time.Now(), local: local, remote: remote,
 		sendRaw: send, onClose: closed, recv: make(chan []byte, 32), voices: make(chan []byte, 4), acks: make(chan uint32, 8),
-		writeGate: make(chan struct{}, 1), changed: make(chan struct{}), done: make(chan struct{}), expected: 1}
+		writeGate: make(chan struct{}, 1), changed: make(chan struct{}), done: make(chan struct{}), expected: 1,
+	}
 	rx.Rekey()
 	c.rxNext = rx.Cipher()
 	c.lastReceive.Store(time.Now().UnixNano())
@@ -114,6 +117,7 @@ func (c *Conn) failure() error {
 	}
 	return net.ErrClosed
 }
+
 func (c *Conn) fail(err error) {
 	c.mu.Lock()
 	first := c.err == nil
@@ -126,6 +130,7 @@ func (c *Conn) fail(err error) {
 		c.onClose()
 	}
 }
+
 func (c *Conn) CloseWithError(code uint64, _ string) error {
 	if c.ctx.Err() == nil {
 		var b [8]byte
@@ -161,6 +166,7 @@ func (c *Conn) maintain() {
 		}
 	}
 }
+
 func (c *Conn) send(kind byte, body []byte) error {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
@@ -292,6 +298,7 @@ func (c *Conn) deadline(read bool) (time.Time, <-chan struct{}) {
 	}
 	return c.wd, c.changed
 }
+
 func timerFor(deadline time.Time) (*time.Timer, <-chan time.Time) {
 	if deadline.IsZero() {
 		return nil, nil
@@ -299,6 +306,7 @@ func timerFor(deadline time.Time) (*time.Timer, <-chan time.Time) {
 	t := time.NewTimer(time.Until(deadline))
 	return t, t.C
 }
+
 func (c *Conn) Read(out []byte) (int, error) {
 	if len(out) == 0 {
 		return 0, nil
@@ -328,6 +336,7 @@ func (c *Conn) Read(out []byte) (int, error) {
 	c.pending = c.pending[n:]
 	return n, nil
 }
+
 func (c *Conn) Write(data []byte) (int, error) {
 	for {
 		d, changed := c.deadline(false)
@@ -374,6 +383,7 @@ func (c *Conn) Write(data []byte) (int, error) {
 	}
 	return total, nil
 }
+
 func (c *Conn) writeChunk(body []byte, seq uint32) error {
 	limit := time.Now().Add(8 * time.Second)
 	retry := 200 * time.Millisecond
@@ -413,6 +423,7 @@ func (c *Conn) writeChunk(body []byte, seq uint32) error {
 		}
 	}
 }
+
 func (c *Conn) setDeadline(r, w *time.Time) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -430,5 +441,7 @@ func (c *Conn) SetDeadline(t time.Time) error      { return c.setDeadline(&t, &t
 func (c *Conn) SetReadDeadline(t time.Time) error  { return c.setDeadline(&t, nil) }
 func (c *Conn) SetWriteDeadline(t time.Time) error { return c.setDeadline(nil, &t) }
 
-var _ net.Conn = (*Conn)(nil)
-var _ io.ReadWriter = (*Conn)(nil)
+var (
+	_ net.Conn      = (*Conn)(nil)
+	_ io.ReadWriter = (*Conn)(nil)
+)

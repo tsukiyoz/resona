@@ -45,6 +45,7 @@ type noiseConnection struct{ *noiseudp.Conn }
 func (c noiseConnection) OpenStreamSync(ctx context.Context) (Stream, error) {
 	return c.Conn, ctx.Err()
 }
+
 func (c noiseConnection) AcceptStream(ctx context.Context) (Stream, error) { return c.Conn, ctx.Err() }
 func (c noiseConnection) SupportsDatagrams() bool                          { return true }
 

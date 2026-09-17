@@ -20,8 +20,10 @@ const prologue = "resona-noise-exp-5"
 
 var ErrServerAuthentication = errors.New("Noise server authentication failed")
 
-var suite = noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashSHA256)
-var magic = []byte{'R', 'N', '0', '5'}
+var (
+	suite = noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashSHA256)
+	magic = []byte{'R', 'N', '0', '5'}
+)
 
 func PublicKey(private []byte) ([]byte, error) {
 	k, err := ecdh.X25519().NewPrivateKey(private)
@@ -30,6 +32,7 @@ func PublicKey(private []byte) ([]byte, error) {
 	}
 	return k.PublicKey().Bytes(), nil
 }
+
 func GenerateKey() ([]byte, error) {
 	k, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
@@ -37,6 +40,7 @@ func GenerateKey() ([]byte, error) {
 	}
 	return k.Bytes(), nil
 }
+
 func handshake(initiator bool, key []byte) (*noise.HandshakeState, error) {
 	c := noise.Config{CipherSuite: suite, Pattern: noise.HandshakeNK, Initiator: initiator, Prologue: []byte(prologue)}
 	if initiator {
@@ -193,6 +197,7 @@ func (l *Listener) Accept(ctx context.Context) (*Conn, error) {
 		return c, nil
 	}
 }
+
 func (l *Listener) Close() error {
 	l.closeOnce.Do(func() {
 		deadline := time.AfterFunc(time.Second, func() { l.cancel(); _ = l.u.Close() })
@@ -213,6 +218,7 @@ func (l *Listener) Close() error {
 	<-l.done
 	return nil
 }
+
 func (l *Listener) write(b []byte, addr *net.UDPAddr) error {
 	if l.ctx.Err() != nil {
 		return net.ErrClosed
@@ -240,6 +246,7 @@ func (l *Listener) write(b []byte, addr *net.UDPAddr) error {
 	_, err := l.u.WriteToUDP(b, addr)
 	return err
 }
+
 func (l *Listener) cookie(addr string, msg []byte, slot uint32) []byte {
 	b := make([]byte, 4)
 	binary.BigEndian.PutUint32(b, slot)
@@ -250,6 +257,7 @@ func (l *Listener) cookie(addr string, msg []byte, slot uint32) []byte {
 	h.Write(msg)
 	return append(b, h.Sum(nil)[:16]...)
 }
+
 func (l *Listener) loop() {
 	defer close(l.done)
 	defer func() {

@@ -142,6 +142,7 @@ func newBroadcaster(model string, c config) *broadcaster {
 	}
 	return b
 }
+
 func (b *broadcaster) consume(target int, msg message) {
 	m := &b.members[target]
 	// Queue workers already own each member. Inline callers need mutual exclusion
@@ -198,6 +199,7 @@ func (b *broadcaster) source(id int) *source {
 	}
 	return &source{b: b, id: id}
 }
+
 func (s *source) emit(at time.Time) {
 	b := s.b
 	s.sequence++
@@ -299,6 +301,7 @@ func quantile(hist [2001]uint64, count uint64, p float64) *float64 {
 	}
 	return nil
 }
+
 func (b *broadcaster) result() (result, error) {
 	r := result{Model: b.model, Config: b.c, MinDeliveryRatio: 1}
 	var hist [2001]uint64

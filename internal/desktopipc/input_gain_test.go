@@ -2,8 +2,9 @@ package desktopipc
 
 import (
 	"encoding/json"
-	"github.com/tsukiyoz/resona/internal/client"
 	"testing"
+
+	"github.com/tsukiyoz/resona/internal/client"
 )
 
 func TestInputGainWireDefaultsAndExplicitZero(t *testing.T) {

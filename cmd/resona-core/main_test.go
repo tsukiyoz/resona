@@ -25,7 +25,7 @@ func TestDefaultConnectorCreatesPersistentIdentityOnDemand(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir = filepath.Join(dir, "resona")
-	if err = os.MkdirAll(dir, 0700); err != nil {
+	if err = os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	router := defaultConnector()

@@ -11,6 +11,7 @@ import (
 func (c *connection) CreateChannel(ctx context.Context, name, description string) error {
 	return channelResult(c.command(ctx, w.CreateChannelKind, w.CreateChannel{Name: name, Description: description}))
 }
+
 func (c *connection) UpdateChannel(ctx context.Context, id, name, description string) error {
 	n, err := strconv.ParseUint(id, 10, 16)
 	if err != nil || n == 0 {
@@ -18,6 +19,7 @@ func (c *connection) UpdateChannel(ctx context.Context, id, name, description st
 	}
 	return channelResult(c.command(ctx, w.UpdateChannelKind, w.UpdateChannel{ID: uint16(n), Name: name, Description: description}))
 }
+
 func (c *connection) DeleteChannel(ctx context.Context, id string) error {
 	n, err := strconv.ParseUint(id, 10, 16)
 	if err != nil || n == 0 {
@@ -46,6 +48,7 @@ func (c *connection) ManageChannelAudio(ctx context.Context, action, id, name, d
 		return errors.New("未知频道操作")
 	}
 }
+
 func channelResult(err error) error {
 	if err == nil {
 		return nil

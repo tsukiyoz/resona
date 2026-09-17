@@ -126,7 +126,7 @@ func TestLegacyMacAndTrim(t *testing.T) {
 func TestCLIReportAndNoOverwrite(t *testing.T) {
 	dir := t.TempDir()
 	input := filepath.Join(dir, "samples.csv")
-	if err := os.WriteFile(input, []byte(fixture()), 0600); err != nil {
+	if err := os.WriteFile(input, []byte(fixture()), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	args := []string{"analyze", "--input", input, "--out", filepath.Join(dir, "report"), "--baseline", "baseline"}
@@ -141,7 +141,7 @@ func TestCLIReportAndNoOverwrite(t *testing.T) {
 	if err := run(context.Background(), args, io.Discard); err == nil {
 		t.Fatal("overwrote output directory")
 	}
-	if err := os.WriteFile(filepath.Join(dir, "capture.json"), []byte(`{"status":"failed","error":"process exited"}`), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "capture.json"), []byte(`{"status":"failed","error":"process exited"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	args[4] = filepath.Join(dir, "failed-report")

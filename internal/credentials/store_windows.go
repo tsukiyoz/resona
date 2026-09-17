@@ -10,8 +10,10 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-const serviceName = "io.github.tsukiyoz.resona.server-password"
-const maxCredentialBytes = 2560
+const (
+	serviceName        = "io.github.tsukiyoz.resona.server-password"
+	maxCredentialBytes = 2560
+)
 
 type passwordPayload struct {
 	Version  int     `json:"version"`
@@ -115,11 +117,13 @@ type nativeCredential struct {
 	TargetAlias, UserName   *uint16
 }
 
-var credentialDLL = windows.NewLazySystemDLL("advapi32.dll")
-var credRead = credentialDLL.NewProc("CredReadW")
-var credWrite = credentialDLL.NewProc("CredWriteW")
-var credDelete = credentialDLL.NewProc("CredDeleteW")
-var credFree = credentialDLL.NewProc("CredFree")
+var (
+	credentialDLL = windows.NewLazySystemDLL("advapi32.dll")
+	credRead      = credentialDLL.NewProc("CredReadW")
+	credWrite     = credentialDLL.NewProc("CredWriteW")
+	credDelete    = credentialDLL.NewProc("CredDeleteW")
+	credFree      = credentialDLL.NewProc("CredFree")
+)
 
 func nativeRead(target string) ([]byte, error) {
 	name, err := windows.UTF16PtrFromString(target)

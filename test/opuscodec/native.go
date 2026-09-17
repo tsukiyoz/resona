@@ -66,6 +66,7 @@ func newNativeEncoder(kind, bitrate, complexity int, cbr bool) (encoder, error) 
 	}
 	return e, nil
 }
+
 func (e *nativeEncoder) Encode(pcm []float32, packet []byte) (int, error) {
 	var n C.int
 	if e.kind == 0 {
@@ -79,6 +80,7 @@ func (e *nativeEncoder) Encode(pcm []float32, packet []byte) (int, error) {
 	}
 	return int(n), nil
 }
+
 func (e *nativeEncoder) Close() {
 	if e.kind == 0 {
 		C.opus_encoder_destroy((*C.OpusEncoder)(e.ptr))
@@ -86,6 +88,7 @@ func (e *nativeEncoder) Close() {
 		C.bench_encoder_free(e.ptr)
 	}
 }
+
 func newNativeDecoder(kind int) (decoder, error) {
 	d := &nativeDecoder{kind: kind}
 	if kind == 0 {
@@ -102,6 +105,7 @@ func newNativeDecoder(kind int) (decoder, error) {
 	}
 	return d, nil
 }
+
 func (d *nativeDecoder) Decode(packet []byte, pcm []float32) (int, error) {
 	var n C.int
 	if d.kind == 0 {
@@ -115,6 +119,7 @@ func (d *nativeDecoder) Decode(packet []byte, pcm []float32) (int, error) {
 	}
 	return int(n), nil
 }
+
 func (d *nativeDecoder) Close() {
 	if d.kind == 0 {
 		C.opus_decoder_destroy((*C.OpusDecoder)(d.ptr))

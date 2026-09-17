@@ -55,6 +55,7 @@ func TestFramesAndVoiceBounds(t *testing.T) {
 		}
 	}
 }
+
 func FuzzReadFrame(f *testing.F) {
 	b, _ := Pack(HelloKind, 0, Hello{Nickname: "a"})
 	f.Add(b)

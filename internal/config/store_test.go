@@ -18,7 +18,7 @@ func TestObsoleteBookmarksRemainManageableWithoutChangingFileOnLoad(t *testing.T
 		{"id": "live", "name": "Native", "address": "localhost:9988", "nickname": "Tester", "protocol": "resona-noise", "serverPublicKey": "abababababababababababababababababababababababababababababababab"},
 	}
 	data, _ := json.Marshal(profiles)
-	if err := os.WriteFile(path, data, 0600); err != nil {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	service, err := client.New(New(path))
@@ -60,7 +60,7 @@ func TestPersistenceRoundTripAndPermissions(t *testing.T) {
 	for _, entry := range []struct {
 		path string
 		mode os.FileMode
-	}{{path, 0600}, {filepath.Dir(path), 0700}} {
+	}{{path, 0o600}, {filepath.Dir(path), 0o700}} {
 		info, err := os.Stat(entry.path)
 		if err != nil {
 			t.Fatal(err)
@@ -85,7 +85,7 @@ func TestInvalidConfigPreventsServiceStartupAndPreservesFile(t *testing.T) {
 	} {
 		t.Run(data, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "servers.json")
-			if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+			if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := client.New(New(path)); err == nil {

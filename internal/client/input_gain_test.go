@@ -2,8 +2,9 @@ package client
 
 import (
 	"errors"
-	"github.com/tsukiyoz/resona/internal/audio"
 	"testing"
+
+	"github.com/tsukiyoz/resona/internal/audio"
 )
 
 type gainEngine struct {

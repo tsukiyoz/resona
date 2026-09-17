@@ -10,8 +10,10 @@ import (
 	"strings"
 )
 
-var windowsHeader = []string{"elapsed_seconds", "group", "pid", "creation_id", "cpu_seconds", "working_set_bytes", "private_bytes", "read_bytes", "write_bytes", "other_bytes", "handles", "threads"}
-var macHeader = []string{"monotonic_seconds", "pid", "cpu_ns", "physical_bytes", "resident_bytes", "idle_wakeups", "interrupt_wakeups"}
+var (
+	windowsHeader = []string{"elapsed_seconds", "group", "pid", "creation_id", "cpu_seconds", "working_set_bytes", "private_bytes", "read_bytes", "write_bytes", "other_bytes", "handles", "threads"}
+	macHeader     = []string{"monotonic_seconds", "pid", "cpu_ns", "physical_bytes", "resident_bytes", "idle_wakeups", "interrupt_wakeups"}
+)
 
 type metric struct {
 	Name, Unit string
@@ -20,14 +22,21 @@ type metric struct {
 }
 
 var winMetrics = []metric{
-	{"cpu_one_core", "%", true, 100}, {"working_set_sum", "MiB", false, 1.0 / 1048576},
-	{"private_commit", "MiB", false, 1.0 / 1048576}, {"io_read", "KiB/s", true, 1.0 / 1024},
-	{"io_write", "KiB/s", true, 1.0 / 1024}, {"io_other", "KiB/s", true, 1.0 / 1024},
-	{"handles", "count", false, 1}, {"threads", "count", false, 1},
+	{"cpu_one_core", "%", true, 100},
+	{"working_set_sum", "MiB", false, 1.0 / 1048576},
+	{"private_commit", "MiB", false, 1.0 / 1048576},
+	{"io_read", "KiB/s", true, 1.0 / 1024},
+	{"io_write", "KiB/s", true, 1.0 / 1024},
+	{"io_other", "KiB/s", true, 1.0 / 1024},
+	{"handles", "count", false, 1},
+	{"threads", "count", false, 1},
 }
+
 var macMetrics = []metric{
-	{"cpu_one_core", "%", true, 100.0 / 1e9}, {"physical_footprint", "MiB", false, 1.0 / 1048576},
-	{"resident_sum", "MiB", false, 1.0 / 1048576}, {"package_idle_wakeups", "/s", true, 1},
+	{"cpu_one_core", "%", true, 100.0 / 1e9},
+	{"physical_footprint", "MiB", false, 1.0 / 1048576},
+	{"resident_sum", "MiB", false, 1.0 / 1048576},
+	{"package_idle_wakeups", "/s", true, 1},
 	{"interrupt_wakeups", "/s", true, 1},
 }
 

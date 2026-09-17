@@ -86,10 +86,10 @@ func TestArchitectureExperiment(t *testing.T) {
 	if out == "" {
 		t.Fatal("BROADCAST_OUTPUT directory is required")
 	}
-	if err := os.MkdirAll(out, 0700); err != nil {
+	if err := os.MkdirAll(out, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.OpenFile(filepath.Join(out, "results.jsonl"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	f, err := os.OpenFile(filepath.Join(out, "results.jsonl"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestArchitectureExperiment(t *testing.T) {
 	enc := json.NewEncoder(f)
 	meta := map[string]any{"go": runtime.Version(), "os": runtime.GOOS, "arch": runtime.GOARCH, "gomaxprocs": runtime.GOMAXPROCS(0), "seconds": seconds, "rounds": rounds, "profile": os.Getenv("BROADCAST_PROFILE") == "1"}
 	b, _ := json.MarshalIndent(meta, "", "  ")
-	if err := os.WriteFile(filepath.Join(out, "environment.json"), b, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(out, "environment.json"), b, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cases := []scenario{

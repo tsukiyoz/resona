@@ -1,8 +1,9 @@
 package server
 
 import (
-	"golang.org/x/sys/windows"
 	"os"
+
+	"golang.org/x/sys/windows"
 )
 
 func lockAccessFile(f *os.File) error {

@@ -42,6 +42,7 @@ func pair(t *testing.T) (*Conn, *Conn, chan []byte, chan []byte) {
 	t.Cleanup(func() { c1.fail(net.ErrClosed); c2.fail(net.ErrClosed); <-c1.done; <-c2.done })
 	return c1, c2, q1, q2
 }
+
 func TestDatagramsAuthenticateReorderAndReplay(t *testing.T) {
 	a, b, out, _ := pair(t)
 	_ = a.SendDatagram([]byte("first"))
@@ -75,6 +76,7 @@ func TestDatagramsAuthenticateReorderAndReplay(t *testing.T) {
 		t.Fatal("old session packet accepted")
 	}
 }
+
 func TestReliableControlRetriesWithoutDuplicateDelivery(t *testing.T) {
 	a, b, ab, ba := pair(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -130,6 +132,7 @@ func TestReliableControlRetriesWithoutDuplicateDelivery(t *testing.T) {
 		t.Fatal("duplicate control delivered")
 	}
 }
+
 func TestNonceBudgetAndReadCancellation(t *testing.T) {
 	a, _, out, _ := pair(t)
 	a.sendMu.Lock()

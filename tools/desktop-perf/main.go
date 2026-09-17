@@ -160,17 +160,17 @@ Capture/report directories must be new. Collect is Windows-only; analyze is cros
 				r.Warnings = append(r.Warnings, "capture.json missing: completion and environment cannot be verified")
 			}
 		}
-		if err = os.Mkdir(*dir, 0700); err != nil {
+		if err = os.Mkdir(*dir, 0o700); err != nil {
 			return err
 		}
 		data, err := json.MarshalIndent(r, "", "  ")
 		if err != nil {
 			return err
 		}
-		if err = os.WriteFile(filepath.Join(*dir, "report.json"), append(data, '\n'), 0600); err != nil {
+		if err = os.WriteFile(filepath.Join(*dir, "report.json"), append(data, '\n'), 0o600); err != nil {
 			return err
 		}
-		if err = os.WriteFile(filepath.Join(*dir, "report.md"), []byte(r.markdown()), 0600); err != nil {
+		if err = os.WriteFile(filepath.Join(*dir, "report.md"), []byte(r.markdown()), 0o600); err != nil {
 			return err
 		}
 		fmt.Fprint(out, r.markdown())

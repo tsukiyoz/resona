@@ -16,8 +16,10 @@ import (
 	"github.com/thesyncim/gopus"
 )
 
-const sampleRate = 48000
-const frameSamples = 960
+const (
+	sampleRate   = 48000
+	frameSamples = 960
+)
 
 func signal(channels, frame int) []float32 {
 	pcm := make([]float32, frameSamples*channels)

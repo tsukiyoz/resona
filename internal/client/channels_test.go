@@ -11,6 +11,7 @@ type channelConnection struct {
 }
 
 func (c *channelConnection) CreateChannel(context.Context, string, string) error { return c.mutate() }
+
 func (c *channelConnection) UpdateChannel(context.Context, string, string, string) error {
 	return c.mutate()
 }

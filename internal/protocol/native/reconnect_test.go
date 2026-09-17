@@ -20,8 +20,10 @@ func (s reconnectStore) Load() ([]client.ServerProfile, error) {
 }
 func (s reconnectStore) Save([]client.ServerProfile) error { return nil }
 
-type controlConnection struct{ client.RemoteConnection }
-type controlConnector struct{ Connector }
+type (
+	controlConnection struct{ client.RemoteConnection }
+	controlConnector  struct{ Connector }
+)
 
 func (c controlConnector) Connect(ctx context.Context, p client.ServerProfile, password string, update func(client.RemoteState)) (client.RemoteConnection, error) {
 	conn, err := c.Connector.Connect(ctx, p, password, update)

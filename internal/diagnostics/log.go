@@ -16,8 +16,10 @@ import (
 	"github.com/tsukiyoz/resona/internal/version"
 )
 
-const Capacity = 512
-const Window = 15 * time.Minute
+const (
+	Capacity = 512
+	Window   = 15 * time.Minute
+)
 
 type field struct {
 	key             [32]byte
@@ -48,7 +50,8 @@ type Recorder struct {
 	grouped bool
 }
 
-func New() *Recorder                                               { return &Recorder{buffer: &buffer{}} }
+func New() *Recorder { return &Recorder{buffer: &buffer{}} }
+
 func (*Recorder) Enabled(_ context.Context, level slog.Level) bool { return level >= slog.LevelInfo }
 
 // Only explicitly reviewed events and primitive fields can enter an export.
@@ -61,6 +64,7 @@ func allowedMessage(s string) bool {
 	}
 	return false
 }
+
 func allowedKey(s string) bool {
 	switch s {
 	case "operation", "operation_id", "status", "os_status":
@@ -70,6 +74,7 @@ func allowedKey(s string) bool {
 	}
 	return false
 }
+
 func (e *event) add(a slog.Attr) {
 	if !allowedKey(a.Key) || int(e.count) == len(e.fields) {
 		return
@@ -95,6 +100,7 @@ func (e *event) add(a slog.Attr) {
 	e.fields[e.count] = f
 	e.count++
 }
+
 func (r *Recorder) Handle(_ context.Context, record slog.Record) error {
 	if !allowedMessage(record.Message) {
 		return nil
@@ -124,6 +130,7 @@ func (r *Recorder) Handle(_ context.Context, record slog.Record) error {
 	b.next = (b.next + 1) % Capacity
 	return nil
 }
+
 func (r *Recorder) WithAttrs(attrs []slog.Attr) slog.Handler {
 	next := *r
 	if !r.grouped {
@@ -133,6 +140,7 @@ func (r *Recorder) WithAttrs(attrs []slog.Attr) slog.Handler {
 	}
 	return &next
 }
+
 func (r *Recorder) WithGroup(name string) slog.Handler {
 	next := *r
 	if name != "" {
@@ -209,7 +217,7 @@ func (r *Recorder) Export(ctx context.Context, directory string) (path string, e
 	if err = ctx.Err(); err != nil {
 		return "", err
 	}
-	if err = os.MkdirAll(directory, 0700); err != nil {
+	if err = os.MkdirAll(directory, 0o700); err != nil {
 		return "", errors.New("无法创建诊断导出目录")
 	}
 	f, err := os.CreateTemp(directory, "resona-diagnostics-"+snapshot.ExportedAt.Format("20060102-150405")+"-*.json")
@@ -237,6 +245,7 @@ func (r *Recorder) Export(ctx context.Context, directory string) (path string, e
 	}
 	return name, nil
 }
+
 func ExportDefault(ctx context.Context) (string, error) {
 	r, ok := slog.Default().Handler().(*Recorder)
 	if !ok {

@@ -21,6 +21,7 @@ type fixture struct {
 func sample[T, B any](name string, kind uint8, request uint32, value T, old B) fixture {
 	return fixture{name, kind, request, value, old, func() any { return new(T) }, func() any { return new(B) }}
 }
+
 func fixtures() []fixture {
 	result := []fixture{
 		sample("hello", w.HelloKind, 0, w.Hello{Nickname: "tester", Password: "secret"}, b.Hello{Nickname: "tester", Password: "secret"}),

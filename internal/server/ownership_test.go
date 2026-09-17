@@ -23,7 +23,7 @@ func TestResetClaimReplacesExpiredAndUnusedCodesButNeverOwner(t *testing.T) {
 	}
 	s.claim.Expires = time.Now().Add(-time.Hour)
 	data, _ := json.Marshal(s.claim)
-	if err = os.WriteFile(filepath.Join(dir, "claim.json"), data, 0600); err != nil {
+	if err = os.WriteFile(filepath.Join(dir, "claim.json"), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	fresh, err := ResetOwnerClaim(dir)
@@ -153,7 +153,7 @@ func TestOwnerClaimDisabledExpiredAndCorrupt(t *testing.T) {
 	if err := s.Claim(strings.Repeat("1", 64), token); err == nil {
 		t.Fatal("expired token accepted")
 	}
-	if err := os.WriteFile(filepath.Join(dir, "owner.json"), []byte("broken"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "owner.json"), []byte("broken"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := OpenOwnership(dir); err == nil {
@@ -173,7 +173,7 @@ func TestOwnerClaimPersistenceFailureDoesNotGrant(t *testing.T) {
 	}
 	// A directory at the destination deterministically prevents publication,
 	// including when tests run with privileges that bypass file mode checks.
-	if err := os.Mkdir(filepath.Join(dir, "owner.json"), 0700); err != nil {
+	if err := os.Mkdir(filepath.Join(dir, "owner.json"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	id := strings.Repeat("a", 64)

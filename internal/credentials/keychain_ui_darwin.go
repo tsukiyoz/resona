@@ -133,8 +133,10 @@ func keychainString(value C.CFStringRef) string {
 }
 
 // Use SDK constants rather than depending on the private string spellings.
-var authenticationUIKey = keychainString(C.kSecUseAuthenticationUI)
-var authenticationUIFail = keychainString(C.kSecUseAuthenticationUIFail)
+var (
+	authenticationUIKey  = keychainString(C.kSecUseAuthenticationUI)
+	authenticationUIFail = keychainString(C.kSecUseAuthenticationUIFail)
+)
 
 func disallowAuthenticationUI(item *keychain.Item) {
 	item.SetString(authenticationUIKey, authenticationUIFail)

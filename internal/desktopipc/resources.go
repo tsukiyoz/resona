@@ -2,6 +2,7 @@ package desktopipc
 
 import (
 	"context"
+
 	"github.com/tsukiyoz/resona/internal/client"
 	"github.com/tsukiyoz/resona/internal/diagnostics"
 )

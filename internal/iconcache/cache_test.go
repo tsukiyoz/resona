@@ -73,12 +73,12 @@ func TestMemoryThenDiskAvoidNetwork(t *testing.T) {
 	}
 	for _, path := range []string{filepath.Dir(dir), dir} {
 		info, err := os.Stat(path)
-		if err != nil || !info.IsDir() || (runtime.GOOS != "windows" && info.Mode().Perm() != 0700) {
+		if err != nil || !info.IsDir() || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o700) {
 			t.Fatalf("directory permission: %v, %v", info, err)
 		}
 	}
 	info, err := os.Stat(filepath.Join(dir, diskName(key.hash())))
-	if err != nil || !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm() != 0600) {
+	if err != nil || !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 		t.Fatalf("file permission: %v, %v", info, err)
 	}
 }
@@ -137,7 +137,7 @@ func TestCorruptDiskRefetches(t *testing.T) {
 			case "oversized":
 				raw = make([]byte, maxPNGBytes+diskHeaderBytes+1)
 			}
-			if err := os.WriteFile(path, raw, 0600); err != nil {
+			if err := os.WriteFile(path, raw, 0o600); err != nil {
 				t.Fatal(err)
 			}
 			calls := 0
@@ -232,7 +232,7 @@ func TestDiskEvictionBoundsAndLeavesUnownedFiles(t *testing.T) {
 		t.Fatal("oldest disk entry retained")
 	}
 	unowned := filepath.Join(dir, "keep.txt")
-	if err := os.WriteFile(unowned, []byte("keep"), 0600); err != nil {
+	if err := os.WriteFile(unowned, []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	c.diskBytes = 1
@@ -295,7 +295,7 @@ func TestErrorsCancellationAndInvalidOutputAreNotCached(t *testing.T) {
 func TestUnavailableDiskFallsBackToMemoryAndNetwork(t *testing.T) {
 	parent := t.TempDir()
 	occupied := filepath.Join(parent, "resona")
-	if err := os.WriteFile(occupied, []byte("keep"), 0600); err != nil {
+	if err := os.WriteFile(occupied, []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	c, data := New(filepath.Join(occupied, "icons")), thumbnail(t, 16)
@@ -321,10 +321,10 @@ func TestReadonlyCacheDirectoryFallsBack(t *testing.T) {
 		t.Skip("root bypasses filesystem permissions")
 	}
 	base := t.TempDir()
-	if err := os.Chmod(base, 0500); err != nil {
+	if err := os.Chmod(base, 0o500); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Chmod(base, 0700)
+	defer os.Chmod(base, 0o700)
 	c, data := New(filepath.Join(base, "resona", "icons")), thumbnail(t, 16)
 	if _, err := c.Get(context.Background(), testKey(), func(context.Context) (string, error) { return data, nil }); err != nil {
 		t.Fatal(err)
@@ -345,7 +345,7 @@ func TestSymlinkDirectoriesAndFilesAreNotFollowed(t *testing.T) {
 					t.Fatal(err)
 				}
 			} else {
-				if err := os.Mkdir(filepath.Dir(dir), 0700); err != nil {
+				if err := os.Mkdir(filepath.Dir(dir), 0o700); err != nil {
 					t.Fatal(err)
 				}
 				if kind == "directory" {
@@ -353,11 +353,11 @@ func TestSymlinkDirectoriesAndFilesAreNotFollowed(t *testing.T) {
 						t.Fatal(err)
 					}
 				} else {
-					if err := os.Mkdir(dir, 0700); err != nil {
+					if err := os.Mkdir(dir, 0o700); err != nil {
 						t.Fatal(err)
 					}
 					target := filepath.Join(outside, "keep")
-					if err := os.WriteFile(target, []byte("keep"), 0600); err != nil {
+					if err := os.WriteFile(target, []byte("keep"), 0o600); err != nil {
 						t.Fatal(err)
 					}
 					if err := os.Symlink(target, filepath.Join(dir, diskName(key.hash()))); err != nil {

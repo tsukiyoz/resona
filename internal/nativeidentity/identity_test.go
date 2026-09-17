@@ -39,7 +39,7 @@ func TestIdentityConcurrentCreationAndReload(t *testing.T) {
 
 func TestInvalidIdentityPreserved(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "identity.key")
-	if err := os.WriteFile(path, []byte("broken"), 0600); err != nil {
+	if err := os.WriteFile(path, []byte("broken"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := LoadOrCreate(path); err == nil {

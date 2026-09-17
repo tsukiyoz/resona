@@ -86,7 +86,7 @@ func TestChannelsFailedStorageAndValidationPreserveState(t *testing.T) {
 	if err := os.Rename(path, path+".backup"); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(path, 0700); err != nil {
+	if err := os.Mkdir(path, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if code := s.manageChannel(owner, w.DeleteChannelKind, 2, "", ""); code != w.StorageFailed {

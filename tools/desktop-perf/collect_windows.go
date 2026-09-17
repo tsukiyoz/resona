@@ -158,7 +158,7 @@ func waitContext(ctx context.Context, d time.Duration) error {
 }
 
 func collect(ctx context.Context, o collectOptions, out io.Writer) (resultErr error) {
-	if err := os.Mkdir(o.Output, 0700); err != nil {
+	if err := os.Mkdir(o.Output, 0o700); err != nil {
 		return err
 	}
 	v := windows.RtlGetVersion()
@@ -168,7 +168,7 @@ func collect(ctx context.Context, o collectOptions, out io.Writer) (resultErr er
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(filepath.Join(o.Output, "capture.json"), append(data, '\n'), 0600)
+		return os.WriteFile(filepath.Join(o.Output, "capture.json"), append(data, '\n'), 0o600)
 	}
 	if err := writeMeta(); err != nil {
 		return err
@@ -217,7 +217,7 @@ func collect(ctx context.Context, o collectOptions, out io.Writer) (resultErr er
 		}
 	}
 	meta.Processes = roster
-	f, err := os.OpenFile(filepath.Join(o.Output, "samples.csv"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	f, err := os.OpenFile(filepath.Join(o.Output, "samples.csv"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}

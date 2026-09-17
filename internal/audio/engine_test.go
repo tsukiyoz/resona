@@ -34,6 +34,7 @@ func (f *fakeTransport) SetVoiceMuted(_ context.Context, input, output bool) err
 	f.mu.Unlock()
 	return nil
 }
+
 func (f *fakeTransport) SendVoice(data []byte, _ Codec) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -43,6 +44,7 @@ func (f *fakeTransport) SendVoice(data []byte, _ Codec) error {
 	f.sends = append(f.sends, append([]byte(nil), data...))
 	return nil
 }
+
 func (f *fakeTransport) emit(packet Packet) {
 	f.mu.Lock()
 	h := f.handler
@@ -84,6 +86,7 @@ func (f *fakeDeviceFactory) Open(_ VoiceConfig, playback, capture bool, callback
 	f.mu.Unlock()
 	return call.session, nil
 }
+
 func (f *fakeDeviceFactory) last() *openCall {
 	f.mu.Lock()
 	defer f.mu.Unlock()
