@@ -77,7 +77,8 @@ try {
     $env:CFLAGS = "-include $NativeHeader"
     $env:CXXFLAGS = $env:CFLAGS
     $env:CXXSTDLIB = "static=stdc++"
-    $CxxLibrary = (& $env:CXX -print-file-name=libstdc++.a).Trim()
+    $CxxLibrary = (& $env:CXX '-print-file-name=libstdc++.a').Trim()
+    if ($LASTEXITCODE -ne 0) { throw "Failed to locate the static MINGW64 C++ runtime" }
     if (-not (Test-Path $CxxLibrary)) { throw "Static MINGW64 C++ runtime is missing: $CxxLibrary" }
     $CxxLibraryDirectory = [IO.Path]::GetDirectoryName($CxxLibrary)
     $env:RUSTFLAGS = "-C target-feature=+crt-static -C link-arg=-static -L native=$CxxLibraryDirectory"
