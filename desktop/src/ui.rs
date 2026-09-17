@@ -3,7 +3,8 @@ use crate::{
     model::{
         AudioDevice, Capabilities, CredentialStatus, ServerProfile, User, VoiceState, Workspace,
     },
-    preferences::Preferences,
+    preferences::{Preferences, ThemePreference},
+    theme::{self, rgb, rgba},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::{DateTime, Local, Utc};
@@ -11,7 +12,7 @@ use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState, hotkey:
 use gpui::{
     AnyElement, Context, Entity, EntityInputHandler, FocusHandle, Image, ImageFormat,
     InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, Window, div, img, prelude::*, px, rgb, svg,
+    StatefulInteractiveElement, Styled, Subscription, Window, div, img, prelude::*, px, svg,
 };
 use gpui_component::{
     Disableable, IconName, IconNamed, Selectable,
@@ -71,6 +72,8 @@ impl IconNamed for VoiceIcon {
 #[derive(Clone)]
 enum Pending {
     ExportDiagnostics,
+    Probe(Instant),
+    CoreInfo,
     ResourceInterest(u64),
     ChannelMutation {
         session: String,
@@ -178,6 +181,9 @@ enum Modal {
     },
     Settings,
     Audio,
+    Appearance,
+    Diagnostics,
+    About,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -230,6 +236,8 @@ pub struct ResonaApp {
     _settings_watch: Option<gpui::Task<()>>,
     settings_notice: String,
     settings_discard: bool,
+    probe_result: String,
+    core_info: Option<Value>,
     preference_revision: u64,
     preference_save_order: Arc<Mutex<u64>>,
     audio_settings_pending: bool,
@@ -306,6 +314,7 @@ impl ResonaApp {
                 .placeholder("发送到当前频道")
         });
         let preferences = Preferences::load();
+        theme::apply(preferences.theme, Some(window), cx);
         let playback_input = cx.new(|cx| InputState::new(window, cx).default_value("100"));
         let playback_subscription = cx.subscribe_in(
             &playback_input,
@@ -509,6 +518,8 @@ impl ResonaApp {
             _settings_watch: None,
             settings_notice: String::new(),
             settings_discard: false,
+            probe_result: String::new(),
+            core_info: None,
             preference_revision: 0,
             preference_save_order: Arc::new(Mutex::new(0)),
             audio_settings_pending: false,
@@ -558,6 +569,10 @@ impl ResonaApp {
                     playback_subscription,
                     activation_subscription,
                     quit_subscription,
+                    cx.observe_window_appearance(window, |this, window, cx| {
+                        theme::apply(this.editing_preferences().theme, Some(window), cx);
+                        cx.notify();
+                    }),
                 ])
                 .collect(),
         };
@@ -1060,6 +1075,24 @@ impl ResonaApp {
                                 self.error = "诊断导出结果无效".into();
                             }
                         }
+                    }
+                    (Some(Pending::Probe(started)), Ok(value)) => {
+                        let platform = value
+                            .get("platform")
+                            .and_then(Value::as_str)
+                            .unwrap_or("未知");
+                        self.probe_result = format!(
+                            "核心响应正常 · {} ms · {platform}",
+                            started.elapsed().as_millis()
+                        );
+                    }
+                    (Some(Pending::Probe(_)), Err(error)) => {
+                        self.probe_result = format!("核心探测失败：{error}");
+                    }
+                    (Some(Pending::CoreInfo), Ok(value)) => self.core_info = Some(value),
+                    (Some(Pending::CoreInfo), Err(error)) => {
+                        self.core_info = None;
+                        self.error = format!("无法读取核心版本：{error}");
                     }
                     (Some(Pending::Devices), Ok(value)) => match serde_json::from_value(value) {
                         Ok(devices) => self.devices = devices,
@@ -1983,7 +2016,16 @@ impl ResonaApp {
     }
 
     fn close_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if matches!(self.modal, Some(Modal::Audio | Modal::Settings)) {
+        if matches!(
+            self.modal,
+            Some(
+                Modal::Audio
+                    | Modal::Settings
+                    | Modal::Appearance
+                    | Modal::Diagnostics
+                    | Modal::About
+            )
+        ) {
             if self.settings_apply.is_some() {
                 return;
             }
@@ -2009,8 +2051,16 @@ impl ResonaApp {
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.ownership_error.clear();
         self.ownership_revision = self.ownership_revision.wrapping_add(1);
-        if matches!(self.modal, Some(Modal::Audio))
-            && (self.microphone_test.enabled || self.microphone_test.busy)
+        if matches!(
+            self.modal,
+            Some(
+                Modal::Audio
+                    | Modal::Settings
+                    | Modal::Appearance
+                    | Modal::Diagnostics
+                    | Modal::About
+            )
+        ) && (self.microphone_test.enabled || self.microphone_test.busy)
         {
             self.configure_microphone_test(false, cx);
         }
@@ -2341,18 +2391,21 @@ impl ResonaApp {
         self.settings_draft != self.settings_baseline
     }
 
+    fn settings_needs_voice_update(&self) -> bool {
+        let (Some(baseline), Some(draft)) = (&self.settings_baseline, &self.settings_draft) else {
+            return false;
+        };
+        let mut desired = self.preferences.clone();
+        desired.merge_settings(baseline, draft);
+        let mut before = VoiceState::default();
+        let mut after = VoiceState::default();
+        apply_preferences(&self.preferences, &mut before);
+        apply_preferences(&desired, &mut after);
+        voice_params(&before) != voice_params(&after)
+    }
+
     fn apply_settings(&mut self, cx: &mut Context<Self>) {
-        if !self.settings_dirty()
-            || self.global_gain_busy()
-            || self.settings_apply.is_some()
-            || self.core.is_none()
-            || self.is_busy()
-            || !self.workspace.session.switching_channel_id.is_empty()
-            || matches!(
-                self.workspace.session.mode.as_str(),
-                "connecting" | "reconnecting" | "disconnecting"
-            )
-        {
+        if !self.settings_dirty() || self.settings_apply.is_some() || self.closing {
             return;
         }
         let mut desired = self.preferences.clone();
@@ -2360,7 +2413,11 @@ impl ResonaApp {
             self.settings_baseline.as_ref().unwrap(),
             self.settings_draft.as_ref().unwrap(),
         );
-        if desired.global_push_to_talk && desired.push_to_talk_shortcut.parse::<HotKey>().is_err() {
+        if desired.global_push_to_talk
+            && (desired.global_push_to_talk != self.preferences.global_push_to_talk
+                || desired.push_to_talk_shortcut != self.preferences.push_to_talk_shortcut)
+            && desired.push_to_talk_shortcut.parse::<HotKey>().is_err()
+        {
             self.settings_notice = "快捷键格式无效，请检查后再应用".into();
             cx.notify();
             return;
@@ -2374,6 +2431,17 @@ impl ResonaApp {
         if voice_params(&before) == voice_params(&after) {
             self.commit_settings(desired, cx);
             cx.notify();
+            return;
+        }
+        if self.global_gain_busy()
+            || self.core.is_none()
+            || self.is_busy()
+            || !self.workspace.session.switching_channel_id.is_empty()
+            || matches!(
+                self.workspace.session.mode.as_str(),
+                "connecting" | "reconnecting" | "disconnecting"
+            )
+        {
             return;
         }
         self.settings_notice = "应用中".into();
@@ -2470,6 +2538,11 @@ impl ResonaApp {
     }
 
     fn commit_settings(&mut self, next: Preferences, cx: &mut Context<Self>) {
+        let hotkey_changed = self.preferences.activation_mode != next.activation_mode
+            || self.preferences.global_push_to_talk != next.global_push_to_talk
+            || self.preferences.push_to_talk_shortcut != next.push_to_talk_shortcut;
+        let stop_notifications =
+            self.preferences.notifications_enabled && !next.notifications_enabled;
         self.preferences = next;
         self.settings_apply = None;
         self.settings_operation = None;
@@ -2481,11 +2554,25 @@ impl ResonaApp {
             "已保存，下次启用语音生效"
         }
         .into();
-        self.clear_hotkey(cx);
-        if !self.preferences.notifications_enabled {
+        if hotkey_changed {
+            self.clear_hotkey(cx);
+        }
+        if stop_notifications && self.core.is_some() {
             self.request("StopNotifications", json!({}), Pending::Notification);
         }
         self.save_preferences(cx);
+    }
+
+    fn change_theme(&mut self, choice: ThemePreference, cx: &mut Context<Self>) {
+        if let Some(draft) = &mut self.settings_draft {
+            if self.settings_apply.is_some() {
+                return;
+            }
+            draft.theme = choice;
+            self.settings_notice.clear();
+            theme::apply(choice, None, cx);
+            cx.notify();
+        }
     }
 
     fn change_global_gain(&mut self, step: Option<i16>, cx: &mut Context<Self>) {
@@ -2709,7 +2796,7 @@ impl ResonaApp {
                             .gap_2()
                             .rounded(px(6.))
                             .cursor_pointer()
-                            .bg(gpui::rgba(if self.selected_server == id {
+                            .bg(rgba(if self.selected_server == id {
                                 0xffffff14
                             } else {
                                 0xffffff00
@@ -2884,7 +2971,34 @@ impl ResonaApp {
                                 .flex()
                                 .items_center()
                                 .gap_2()
-                                .child(img(self.logo.clone()).size(px(24.)))
+                                .child(if theme::is_light() {
+                                    div()
+                                        .w(px(24.))
+                                        .h(px(24.))
+                                        .rounded(px(5.))
+                                        .border_1()
+                                        .border_color(rgb(LINE))
+                                        .bg(rgb(PANEL))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .gap(px(2.))
+                                        .child(
+                                            div().w(px(2.)).h(px(9.)).rounded_full().bg(rgb(TEXT)),
+                                        )
+                                        .child(
+                                            div().w(px(2.)).h(px(17.)).rounded_full().bg(rgb(TEXT)),
+                                        )
+                                        .child(
+                                            div().w(px(2.)).h(px(13.)).rounded_full().bg(rgb(TEXT)),
+                                        )
+                                        .child(
+                                            div().w(px(2.)).h(px(7.)).rounded_full().bg(rgb(TEXT)),
+                                        )
+                                        .into_any_element()
+                                } else {
+                                    img(self.logo.clone()).size(px(24.)).into_any_element()
+                                })
                                 .child(
                                     div()
                                         .text_sm()
@@ -3193,7 +3307,7 @@ impl ResonaApp {
                                     .tab_index(0)
                                     .cursor_pointer()
                                     .border_l_2()
-                                    .border_color(gpui::rgba(if inspecting_user {
+                                    .border_color(rgba(if inspecting_user {
                                         0x9dbdafaa
                                     } else {
                                         0x00000000
@@ -3351,11 +3465,7 @@ impl ResonaApp {
                             .rounded(px(5.))
                             .cursor_pointer()
                             .border_l_2()
-                            .border_color(gpui::rgba(if inspecting {
-                                0x9dbdafaa
-                            } else {
-                                0x00000000
-                            }))
+                            .border_color(rgba(if inspecting { 0x9dbdafaa } else { 0x00000000 }))
                             .bg(rgb(if selected { 0x2a2f31 } else { PANEL }))
                             .hover(|s| s.bg(rgb(HOVER)))
                             .flex()
@@ -3532,7 +3642,7 @@ impl ResonaApp {
                     .border_t_1()
                     .border_color(rgb(LINE))
                     .cursor_row_resize()
-                    .hover(|s| s.bg(gpui::rgba(0xffffff20)))
+                    .hover(|s| s.bg(rgba(0xffffff20)))
                     .on_mouse_down(gpui::MouseButton::Left, move |event, _, cx| {
                         drag.update(cx, |this, cx| {
                             this.chat_collapsed = false;
@@ -3792,7 +3902,7 @@ impl ResonaApp {
                             .rounded(px(6.))
                             .border_1()
                             .border_color(rgb(LINE))
-                            .bg(gpui::rgba(0xffffff06))
+                            .bg(rgba(0xffffff06))
                             .child(
                                 Input::new(&self.chat_input)
                                     .appearance(false)
@@ -3809,8 +3919,8 @@ impl ResonaApp {
                                     .size(px(28.))
                                     .rounded(px(5.))
                                     .border_1()
-                                    .border_color(gpui::rgba(0xffffff00))
-                                    .hover(|s| s.border_color(gpui::rgba(0xffffff40)))
+                                    .border_color(rgba(0xffffff00))
+                                    .hover(|s| s.border_color(rgba(0xffffff40)))
                                     .child(
                                         Button::new("send-message")
                                             .icon(IconName::ArrowUp)
@@ -3835,9 +3945,9 @@ impl ResonaApp {
             .w(px(280.))
             .h_full()
             .flex_shrink_0()
-            .bg(gpui::rgba(0x16181bed))
+            .bg(rgba(0x16181bed))
             .border_l_1()
-            .border_color(gpui::rgba(0xffffff22))
+            .border_color(rgba(0xffffff22))
             .px_4()
             .child(self.render_selected_details(view))
             .overflow_y_scrollbar()
@@ -3895,9 +4005,9 @@ impl ResonaApp {
             .flex()
             .items_center()
             .gap_3()
-            .bg(gpui::rgba(0x141619f5))
+            .bg(rgba(0x141619f5))
             .border_t_1()
-            .border_color(gpui::rgba(0xffffff24))
+            .border_color(rgba(0xffffff24))
             .child(
                 div()
                     .size(px(32.))
@@ -4596,91 +4706,6 @@ impl ResonaApp {
             .flex()
             .flex_col()
             .gap_4()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .child(div().flex_1().child(modal_title("语音与设备")))
-                    .child(div().w(px(72.)).text_xs().text_color(rgb(MUTED)).child(
-                        if self.audio_settings_pending || self.voice.busy {
-                            "应用中"
-                        } else {
-                            ""
-                        },
-                    ))
-                    .child(
-                        Button::new("export-diagnostics")
-                            .icon(IconName::ArrowDown)
-                            .ghost()
-                            .disabled(
-                                self.closing
-                                    || self.core.is_none()
-                                    || self
-                                        .pending
-                                        .values()
-                                        .any(|p| matches!(p, Pending::ExportDiagnostics)),
-                            )
-                            .tooltip(
-                                if self
-                                    .pending
-                                    .values()
-                                    .any(|p| matches!(p, Pending::ExportDiagnostics))
-                                {
-                                    "正在导出诊断"
-                                } else {
-                                    "导出诊断"
-                                },
-                            )
-                            .on_click({
-                                let entity = entity.clone();
-                                move |_, _, cx| {
-                                    entity.update(cx, |this, cx| {
-                                        if !this
-                                            .pending
-                                            .values()
-                                            .any(|p| matches!(p, Pending::ExportDiagnostics))
-                                        {
-                                            this.request(
-                                                "ExportDiagnostics",
-                                                json!({}),
-                                                Pending::ExportDiagnostics,
-                                            );
-                                            cx.notify();
-                                        }
-                                    });
-                                }
-                            }),
-                    )
-                    .child(
-                        Button::new("open-notification-settings")
-                            .label("提示音")
-                            .ghost()
-                            .disabled(self.microphone_test.enabled || self.microphone_test.busy)
-                            .on_click({
-                                let entity = entity.clone();
-                                move |_, _, cx| {
-                                    entity.update(cx, |this, cx| {
-                                        this.modal = Some(Modal::Settings);
-                                        this.device_menu = None;
-                                        cx.notify();
-                                    });
-                                }
-                            }),
-                    )
-                    .child(
-                        Button::new("close-audio-settings")
-                            .icon(IconName::Close)
-                            .ghost()
-                            .tooltip("关闭设置")
-                            .on_click({
-                                let entity = entity.clone();
-                                move |_, window, cx| {
-                                    entity.update(cx, |this, cx| this.close_modal(window, cx));
-                                }
-                            }),
-                    ),
-            )
             .when(!self.capabilities.voice, |s| {
                 s.child(
                     div()
@@ -5236,11 +5261,17 @@ impl ResonaApp {
         div()
             .w_full()
             .min_w_0()
-            .h(px(480.))
-            .p_5()
+            .h(px(420.))
             .flex()
             .flex_col()
-            .child(content.flex_1().min_h_0().overflow_y_scrollbar())
+            .child(
+                content
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scrollbar()
+                    .p_5()
+                    .pr_6(),
+            )
     }
 
     fn audio_toggle(
@@ -5478,10 +5509,13 @@ impl ResonaApp {
 
     fn render_modal(&self, view: &Entity<Self>) -> Option<AnyElement> {
         let modal = self.modal.clone()?;
-        let settings_page = matches!(modal, Modal::Audio | Modal::Settings);
+        let settings_page = matches!(
+            modal,
+            Modal::Audio | Modal::Settings | Modal::Appearance | Modal::Diagnostics | Modal::About
+        );
         let audio_page = matches!(modal, Modal::Audio);
         let entity = view.clone();
-        let card = match modal {
+        let card = match modal.clone() {
             Modal::Channel { id, delete, .. } => {
                 let pending = self.channel_pending();
                 let audio_entity = entity.clone();
@@ -6075,12 +6109,11 @@ impl ResonaApp {
                 div()
                     .w_full()
                     .min_w_0()
-                    .h(px(480.))
+                    .h(px(420.))
                     .p_5()
                     .flex()
                     .flex_col()
                     .gap_4()
-                    .child(modal_title("提示音"))
                     .child(
                         Checkbox::new("notifications-enabled")
                             .label("播放连接与成员提示音")
@@ -6172,6 +6205,206 @@ impl ResonaApp {
                     )
                     .child(div().flex().flex_wrap().gap_2().children(previews))
             }
+            Modal::Appearance => {
+                let choices = [
+                    (ThemePreference::System, "跟随系统", "theme-system"),
+                    (ThemePreference::Dark, "深色", "theme-dark"),
+                    (ThemePreference::Light, "浅色", "theme-light"),
+                ];
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .h(px(420.))
+                    .p_5()
+                    .flex()
+                    .flex_col()
+                    .gap_4()
+                    .child(div().text_sm().text_color(rgb(MUTED)).child("界面主题"))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap_2()
+                            .children(choices.into_iter().map(|(choice, label, id)| {
+                                let entity = entity.clone();
+                                Button::new(id)
+                                    .label(label)
+                                    .outline()
+                                    .selected(self.editing_preferences().theme == choice)
+                                    .disabled(self.settings_apply.is_some())
+                                    .on_click(move |_, _, cx| {
+                                        entity.update(cx, |this, cx| this.change_theme(choice, cx));
+                                    })
+                            })),
+                    )
+            }
+            Modal::Diagnostics => {
+                let probing = self
+                    .pending
+                    .values()
+                    .any(|p| matches!(p, Pending::Probe(_)));
+                let exporting = self
+                    .pending
+                    .values()
+                    .any(|p| matches!(p, Pending::ExportDiagnostics));
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .h(px(420.))
+                    .p_5()
+                    .flex()
+                    .flex_col()
+                    .gap_5()
+                    .child(div().text_sm().text_color(rgb(MUTED)).child("核心状态"))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(rgb(TEXT))
+                            .child(if self.core.is_some() {
+                                "核心进程运行中"
+                            } else {
+                                "核心进程不可用"
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(
+                                Button::new("probe-core")
+                                    .label(if probing { "探测中" } else { "探测 Core" })
+                                    .icon(IconName::CircleCheck)
+                                    .outline()
+                                    .disabled(self.core.is_none() || probing)
+                                    .on_click({
+                                        let entity = entity.clone();
+                                        move |_, _, cx| {
+                                            entity.update(cx, |this, cx| {
+                                                this.probe_result = "正在等待核心响应".into();
+                                                this.request(
+                                                    "GetCapabilities",
+                                                    json!({}),
+                                                    Pending::Probe(Instant::now()),
+                                                );
+                                                cx.notify();
+                                            });
+                                        }
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(MUTED))
+                                    .child(self.probe_result.clone()),
+                            ),
+                    )
+                    .child(div().w_full().h(px(1.)).bg(rgb(LINE)))
+                    .child(div().text_sm().text_color(rgb(MUTED)).child("本机诊断"))
+                    .child(
+                        Button::new("export-diagnostics")
+                            .label(if exporting {
+                                "正在导出"
+                            } else {
+                                "导出诊断"
+                            })
+                            .icon(IconName::ArrowDown)
+                            .outline()
+                            .disabled(self.core.is_none() || exporting || self.closing)
+                            .on_click({
+                                let entity = entity.clone();
+                                move |_, _, cx| {
+                                    entity.update(cx, |this, cx| {
+                                        this.request(
+                                            "ExportDiagnostics",
+                                            json!({}),
+                                            Pending::ExportDiagnostics,
+                                        );
+                                        cx.notify();
+                                    });
+                                }
+                            }),
+                    )
+            }
+            Modal::About => {
+                let info = self.core_info.as_ref();
+                let value = |key: &str| {
+                    info.and_then(|v| v.get(key))
+                        .and_then(Value::as_str)
+                        .unwrap_or("--")
+                        .to_string()
+                };
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .h(px(420.))
+                    .p_5()
+                    .flex()
+                    .flex_col()
+                    .gap_4()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child("Resona"),
+                    )
+                    .child(div().w_full().h(px(1.)).bg(rgb(LINE)))
+                    .child(
+                        div()
+                            .flex()
+                            .gap_6()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_4()
+                                    .child(field(
+                                        "桌面版本",
+                                        div().text_sm().child(env!("CARGO_PKG_VERSION")),
+                                    ))
+                                    .child(field(
+                                        "桌面平台",
+                                        div().text_sm().child(format!(
+                                            "{}/{}",
+                                            std::env::consts::OS,
+                                            std::env::consts::ARCH
+                                        )),
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_4()
+                                    .child(field(
+                                        "Core 版本",
+                                        div().text_sm().child(value("version")),
+                                    ))
+                                    .child(field(
+                                        "提交版本",
+                                        div().text_sm().child(
+                                            value("commit").chars().take(12).collect::<String>(),
+                                        ),
+                                    ))
+                                    .child(field(
+                                        "构建时间",
+                                        div().text_sm().child(value("buildTime")),
+                                    ))
+                                    .child(field(
+                                        "Go 运行时",
+                                        div().text_sm().child(value("goVersion")),
+                                    ))
+                                    .child(field(
+                                        "Core 平台",
+                                        div().text_sm().child(value("platform")),
+                                    )),
+                            ),
+                    )
+            }
         };
         let card = if settings_page {
             let change_disabled = self.microphone_test.enabled || self.microphone_test.busy;
@@ -6183,8 +6416,8 @@ impl ResonaApp {
                 .rounded(px(8.))
                 .overflow_hidden()
                 .border_1()
-                .border_color(gpui::rgba(0xffffff38))
-                .bg(gpui::rgba(0x17191df5))
+                .border_color(rgba(0xffffff38))
+                .bg(rgba(0x17191df5))
                 .shadow_lg()
                 .child(
                     div()
@@ -6195,9 +6428,9 @@ impl ResonaApp {
                         .flex()
                         .flex_col()
                         .gap_3()
-                        .bg(gpui::rgba(0x080a0d55))
+                        .bg(rgba(0x080a0d55))
                         .border_r_1()
-                        .border_color(gpui::rgba(0xffffff14))
+                        .border_color(rgba(0xffffff14))
                         .child(
                             div()
                                 .py_3()
@@ -6229,7 +6462,7 @@ impl ResonaApp {
                                 .label("提示音")
                                 .icon(VoiceIcon::Volume)
                                 .ghost()
-                                .selected(!audio_page)
+                                .selected(matches!(modal, Modal::Settings))
                                 .w_full()
                                 .disabled(change_disabled)
                                 .on_click({
@@ -6242,6 +6475,71 @@ impl ResonaApp {
                                         });
                                     }
                                 }),
+                        )
+                        .child(
+                            Button::new("settings-nav-appearance")
+                                .label("外观")
+                                .icon(IconName::Palette)
+                                .ghost()
+                                .selected(matches!(modal, Modal::Appearance))
+                                .w_full()
+                                .disabled(change_disabled)
+                                .on_click({
+                                    let entity = view.clone();
+                                    move |_, _, cx| {
+                                        entity.update(cx, |this, cx| {
+                                            this.device_menu = None;
+                                            this.modal = Some(Modal::Appearance);
+                                            cx.notify();
+                                        });
+                                    }
+                                }),
+                        )
+                        .child(div().flex_1())
+                        .child(
+                            Button::new("settings-nav-diagnostics")
+                                .label("诊断")
+                                .icon(IconName::CircleCheck)
+                                .ghost()
+                                .selected(matches!(modal, Modal::Diagnostics))
+                                .w_full()
+                                .disabled(change_disabled)
+                                .on_click({
+                                    let entity = view.clone();
+                                    move |_, _, cx| {
+                                        entity.update(cx, |this, cx| {
+                                            this.device_menu = None;
+                                            this.modal = Some(Modal::Diagnostics);
+                                            cx.notify();
+                                        });
+                                    }
+                                }),
+                        )
+                        .child(
+                            Button::new("settings-nav-about")
+                                .label("关于")
+                                .icon(IconName::Info)
+                                .ghost()
+                                .selected(matches!(modal, Modal::About))
+                                .w_full()
+                                .disabled(change_disabled)
+                                .on_click({
+                                    let entity = view.clone();
+                                    move |_, _, cx| {
+                                        entity.update(cx, |this, cx| {
+                                            this.device_menu = None;
+                                            this.modal = Some(Modal::About);
+                                            if this.core_info.is_none() && this.core.is_some() {
+                                                this.request(
+                                                    "GetCoreInfo",
+                                                    json!({}),
+                                                    Pending::CoreInfo,
+                                                );
+                                            }
+                                            cx.notify();
+                                        });
+                                    }
+                                }),
                         ),
                 )
                 .child(
@@ -6250,6 +6548,46 @@ impl ResonaApp {
                         .min_w_0()
                         .flex()
                         .flex_col()
+                        .child(
+                            div()
+                                .h(px(60.))
+                                .flex_shrink_0()
+                                .px_5()
+                                .border_b_1()
+                                .border_color(rgb(LINE))
+                                .flex()
+                                .items_center()
+                                .gap_3()
+                                .child(div().flex_1().min_w_0().child(modal_title(match modal {
+                                    Modal::Audio => "语音与设备",
+                                    Modal::Settings => "提示音",
+                                    Modal::Appearance => "外观",
+                                    Modal::Diagnostics => "诊断",
+                                    _ => "关于",
+                                })))
+                                .when(
+                                    audio_page && (self.audio_settings_pending || self.voice.busy),
+                                    |s| {
+                                        s.child(
+                                            div().text_xs().text_color(rgb(MUTED)).child("应用中"),
+                                        )
+                                    },
+                                )
+                                .child(
+                                    Button::new("close-settings")
+                                        .icon(IconName::Close)
+                                        .ghost()
+                                        .tooltip("关闭设置")
+                                        .on_click({
+                                            let entity = view.clone();
+                                            move |_, window, cx| {
+                                                entity.update(cx, |this, cx| {
+                                                    this.close_modal(window, cx)
+                                                });
+                                            }
+                                        }),
+                                ),
+                        )
                         .child(card)
                         .child(
                             div()
@@ -6288,6 +6626,11 @@ impl ResonaApp {
                                                 entity.update(cx, |this, cx| {
                                                     this.settings_draft =
                                                         this.settings_baseline.clone();
+                                                    theme::apply(
+                                                        this.preferences.theme,
+                                                        Some(window),
+                                                        cx,
+                                                    );
                                                     this.close_modal(window, cx);
                                                 });
                                             }
@@ -6304,15 +6647,19 @@ impl ResonaApp {
                                         .disabled(
                                             !self.settings_discard
                                                 && (!self.settings_dirty()
-                                                    || self.global_gain_busy()
-                                                    || self.is_busy()
                                                     || self.settings_apply.is_some()
-                                                    || matches!(
-                                                        self.workspace.session.mode.as_str(),
-                                                        "connecting"
-                                                            | "reconnecting"
-                                                            | "disconnecting"
-                                                    )),
+                                                    || (self.settings_needs_voice_update()
+                                                        && (self.global_gain_busy()
+                                                            || self.is_busy()
+                                                            || matches!(
+                                                                self.workspace
+                                                                    .session
+                                                                    .mode
+                                                                    .as_str(),
+                                                                "connecting"
+                                                                    | "reconnecting"
+                                                                    | "disconnecting"
+                                                            )))),
                                         )
                                         .on_click({
                                             let entity = view.clone();
@@ -6339,7 +6686,7 @@ impl ResonaApp {
                 .id("modal-scrim")
                 .absolute()
                 .inset_0()
-                .bg(gpui::rgba(0x00000066))
+                .bg(rgba(0x00000066))
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_mouse_down(gpui::MouseButton::Right, |_, _, cx| cx.stop_propagation())
                 .on_click(|_, _, cx| cx.stop_propagation())
@@ -6396,8 +6743,16 @@ impl ResonaApp {
 
 impl Render for ResonaApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if matches!(self.modal, Some(Modal::Audio | Modal::Settings))
-            && self.settings_draft.is_none()
+        if matches!(
+            self.modal,
+            Some(
+                Modal::Audio
+                    | Modal::Settings
+                    | Modal::Appearance
+                    | Modal::Diagnostics
+                    | Modal::About
+            )
+        ) && self.settings_draft.is_none()
         {
             self.settings_draft = Some(self.preferences.clone());
             self.settings_baseline = self.settings_draft.clone();
@@ -6564,7 +6919,7 @@ impl Render for ResonaApp {
                             .left_0()
                             .right_0()
                             .bottom(px(72.))
-                            .bg(gpui::rgba(0x08090bdd))
+                            .bg(rgba(0x08090bdd))
                             .flex()
                             .items_center()
                             .justify_center()
@@ -6620,7 +6975,7 @@ impl Render for ResonaApp {
                     div()
                         .absolute()
                         .inset_0()
-                        .bg(gpui::rgba(0x101214ed))
+                        .bg(rgba(0x101214ed))
                         .flex()
                         .items_center()
                         .justify_center()

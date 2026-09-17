@@ -6,9 +6,20 @@ use std::{
     sync::Mutex,
 };
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemePreference {
+    Dark,
+    Light,
+    #[default]
+    #[serde(other)]
+    System,
+}
+
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Preferences {
+    pub theme: ThemePreference,
     pub server_sidebar_collapsed: bool,
     pub notifications_enabled: bool,
     pub notification_volume: u8,
@@ -35,6 +46,7 @@ pub struct Preferences {
 impl Default for Preferences {
     fn default() -> Self {
         Self {
+            theme: ThemePreference::System,
             server_sidebar_collapsed: false,
             notifications_enabled: true,
             notification_volume: 35,
@@ -91,6 +103,7 @@ impl Preferences {
             )* };
         }
         merge!(
+            theme,
             notifications_enabled,
             notification_volume,
             activation_mode,
@@ -176,6 +189,25 @@ mod tests {
                 .get("channel_sidebar_collapsed")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn theme_defaults_to_system_and_merges_without_overwriting_quick_controls() {
+        use super::ThemePreference;
+        let old: super::Preferences = serde_json::from_str(r#"{"playback_volume":200}"#).unwrap();
+        assert_eq!(old.theme, ThemePreference::System);
+        let unknown: super::Preferences = serde_json::from_str(r#"{"theme":"old_theme"}"#).unwrap();
+        assert_eq!(unknown.theme, ThemePreference::System);
+        let mut draft = old.clone();
+        draft.theme = ThemePreference::Light;
+        let mut current = old.clone();
+        current.playback_volume = 250;
+        current.merge_settings(&old, &draft);
+        assert_eq!(current.theme, ThemePreference::Light);
+        assert_eq!(current.playback_volume, 250);
+        let restored: super::Preferences =
+            serde_json::from_slice(&serde_json::to_vec(&current).unwrap()).unwrap();
+        assert_eq!(restored.theme, ThemePreference::Light);
     }
 
     #[test]
