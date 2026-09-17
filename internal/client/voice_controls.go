@@ -22,7 +22,8 @@ func (s *Service) SetVoicePreferences(config audio.VoiceConfig) (VoiceState, err
 		return VoiceState{}, errors.New("请在离线状态保存语音偏好")
 	}
 	config.Enabled, config.Muted, config.Deafened = false, true, false
-	s.voiceState = VoiceState{VoiceConfig: config, InputLevelDB: -60}
+	s.voiceOperation++
+	s.voiceState = VoiceState{VoiceConfig: config, InputLevelDB: -60, Operation: s.voiceOperation, AppliedOperation: s.voiceOperation, Generation: s.generation}
 	s.notifyChangedLocked()
 	return s.voiceState, nil
 }

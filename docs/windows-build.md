@@ -14,7 +14,7 @@
 .\build-windows.cmd
 ```
 
-脚本自动初始化 VS 环境、选择 MSVC Rust、设置 CGO/GCC、执行 Go/Rust 测试、构建两个 exe 并生成 `desktop/dist/Resona-win-x64.zip`。不必手动打开 Developer PowerShell、设置 CC 或切换工具链。MSYS2 自定义路径可用 `build-windows.cmd -Msys2Root D:\msys64`；本地快速构建可加 `-SkipTests`，CI 默认执行测试。缺少工具时会报告具体项目；脚本不会擅自安装 Visual Studio 或修改系统环境。
+脚本自动初始化 VS 环境、选择 MSVC 与 MINGW64 Rust、设置 CGO/GCC、执行 Go/Rust 测试、构建桌面/Core/可选 WebRTC 音频库并生成 `desktop/dist/Resona-win-x64.zip`。不必手动打开 Developer PowerShell、设置 CC 或切换工具链。MSYS2 自定义路径可用 `build-windows.cmd -Msys2Root D:\msys64`；本地快速构建可加 `-SkipTests`，CI 默认执行测试。缺少工具时会报告具体项目；脚本不会擅自安装 Visual Studio 或修改系统环境。
 
 Windows 图标由 `desktop/build.rs` 编译资源 ID 1，GPUI 原生窗口和 EXE 使用同一资源。打包时验证 GUI 子系统及 16/32/48/256 像素图标可加载。原图为 `build/appicon.png`；修改后从仓库根目录运行 `go run ./tools/appicon build/appicon.png desktop/assets/resona.ico` 更新各尺寸，不需在 Windows 安装图像工具。
 
@@ -28,53 +28,31 @@ CI 另启用 `RESONA_CREDENTIAL_INTEGRATION=1`，对随机生成的独立 Creden
 
 1. 安装 Git 与 Go 1.26 或更新版本（go.mod 要求 1.26.0）。
 2. 安装 Visual Studio 2022 或更新版本的 Build Tools，选择“使用 C++ 的桌面开发”、MSVC x64/x86 工具、Windows SDK 和 CMake 工具。Rust 官方 MSVC 工具链使用这套编译/链接环境，见 [Microsoft Rust 环境说明](https://learn.microsoft.com/en-us/windows/dev-environment/rust/setup)。
-3. 用 rustup 安装当前 stable Rust，使用 `stable-x86_64-pc-windows-msvc`，不要选 GNU Rust 工具链。
-4. 安装 [MSYS2](https://www.msys2.org/)，在 **MSYS2 UCRT64** 终端安装用于 Go CGO 的 GCC：
+3. 用 rustup 安装当前 stable Rust；脚本自行准备桌面所需 MSVC 及可选音频库所需 GNU 工具链。
+4. 安装 [MSYS2](https://www.msys2.org/)，在 **MSYS2 UCRT64** 终端安装 Go CGO 的 GCC 和 WebRTC 音频库所需 MINGW64 工具：
 
 ```sh
 pacman -Syu
 # 若升级要求关闭终端，重新打开 UCRT64 后继续。
-pacman -S --needed mingw-w64-ucrt-x86_64-gcc
+pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-x86_64-gcc mingw-w64-x86_64-clang mingw-w64-x86_64-meson mingw-w64-x86_64-ninja mingw-w64-x86_64-pkgconf mingw-w64-x86_64-python
 ```
 
-GCC 包与 UCRT64 用法见 [MinGW-w64 官方说明](https://www.mingw-w64.org/getting-started/msys2/)。这里同时需要 MSVC 和 GCC，是因为 GUI 与核心为两个独立进程；不在同一进程混用两套 C ABI。
+GCC 包与 UCRT64 用法见 [MinGW-w64 官方说明](https://www.mingw-w64.org/getting-started/msys2/)。桌面为 MSVC Rust，Go Core 使用 UCRT64 CGO，可选 WebRTC 音频库使用 MINGW64 Rust 并只通过 C ABI 与 Core 交互。
 
 ## 拉取与构建
 
-打开 **Developer PowerShell for VS 2022**（或所装版本的对应终端），进入已有仓库。切分支前保留你在 Windows 上的本地修改。
+在 PowerShell 进入已有仓库。切分支前保留你在 Windows 上的本地修改；构建直接运行上方一键脚本。
 
 ```powershell
 git switch main
 git pull --ff-only origin main
-rustup toolchain install stable-x86_64-pc-windows-msvc
-rustup override set stable-x86_64-pc-windows-msvc
-
-# 默认安装路径；自定义安装 MSYS2 时修改此处。
-$env:Path = "C:\msys64\ucrt64\bin;" + $env:Path
-$env:CGO_ENABLED = "1"
-$env:GOOS = "windows"
-$env:GOARCH = "amd64"
-$env:CC = "C:\msys64\ucrt64\bin\gcc.exe"
-$env:CXX = "C:\msys64\ucrt64\bin\g++.exe"
-
-go version
-& $env:CC --version
-go test ./internal/...
-if ($LASTEXITCODE -ne 0) { throw "Go tests failed" }
-New-Item -ItemType Directory -Force build\bin | Out-Null
-go build -o build\bin\resona-core.exe ./cmd/resona-core
-if ($LASTEXITCODE -ne 0) { throw "Go core build failed" }
-
-# Rust 的 C 依赖需使用 MSVC，清除刚才的 GCC 覆盖。
-Remove-Item Env:CC, Env:CXX -ErrorAction SilentlyContinue
-powershell -NoProfile -ExecutionPolicy Bypass -File .\desktop\scripts\package-windows.ps1
-if ($LASTEXITCODE -ne 0) { throw "Desktop packaging failed" }
+.\build-windows.cmd
 .\desktop\dist\Resona-win-x64\resona-desktop.exe
 ```
 
 仅对上述本次脚本进程使用 ExecutionPolicy Bypass，不修改系统执行策略。若企业策略禁止执行脚本，按组织允许的方式运行，不修改企业策略。
 
-输出目录：`desktop/dist/Resona-win-x64/`。保留 `resona-desktop.exe` 和 `resona-core.exe` 在同一目录；GUI 自动启动核心。首次 Rust 构建需要下载和编译较多依赖。
+输出目录：`desktop/dist/Resona-win-x64/`。保留 `resona-desktop.exe`、`resona-core.exe` 和 `resona_webrtc_apm.dll` 在同一目录；GUI 自动启动核心。首次 Rust 构建需要下载和编译较多依赖。
 
 ## 运行与问题定位
 

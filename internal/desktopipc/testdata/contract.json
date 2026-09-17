@@ -80,6 +80,9 @@
     ]
   },
   "voice": {
+    "operation": 0,
+    "appliedOperation": 0,
+    "generation": 0,
     "enabled": true,
     "muted": true,
     "deafened": false,
@@ -97,9 +100,15 @@
     "localSpeaking": false,
     "activationMode": "",
     "vadThresholdDB": 0,
-    "noiseSuppression": "",
-    "echoCancellation": false,
-    "echoSuppression": false,
+    "processing": {
+      "preprocess": [
+        {"name":"","backend":"","params":{}},
+        {"name":"","backend":"","params":{}}
+      ],
+      "postprocess": [
+        {"name":"agc","backend":"speex","params":{}}
+      ]
+    },
     "ducking": false,
     "pushToTalkPressed": false,
     "inputLevelDB": 0

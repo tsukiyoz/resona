@@ -1,8 +1,10 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod app_icon;
 mod core;
 mod model;
 mod preferences;
+mod theme;
 mod ui;
 
 use anyhow::Result;
@@ -10,7 +12,7 @@ use gpui::{
     AppContext, Application, AssetSource, Bounds, KeyBinding, SharedString, WindowBounds,
     WindowOptions, px, size,
 };
-use gpui_component::{Root, Theme, ThemeMode, input::Enter};
+use gpui_component::{Root, input::Enter};
 use std::borrow::Cow;
 
 struct Assets;
@@ -81,29 +83,6 @@ fn main() -> Result<()> {
                 ..Default::default()
             },
             |window, cx| {
-                Theme::change(ThemeMode::Dark, Some(window), cx);
-                let theme = Theme::global_mut(cx);
-                theme.font_size = px(14.);
-                theme.radius = px(6.);
-                theme.radius_lg = px(8.);
-                theme.background = gpui::rgb(0x101113).into();
-                theme.foreground = gpui::rgb(0xe8ecef).into();
-                theme.border = gpui::rgb(0x35393e).into();
-                theme.input = gpui::rgb(0x3b4046).into();
-                theme.primary = gpui::rgb(0xdce6ec).into();
-                theme.primary_foreground = gpui::rgb(0x14191d).into();
-                theme.primary_hover = gpui::rgb(0xf0f5f7).into();
-                theme.primary_active = gpui::rgb(0xb8c7d1).into();
-                theme.secondary = gpui::rgb(0x202428).into();
-                theme.secondary_hover = gpui::rgb(0x2d3237).into();
-                theme.secondary_active = gpui::rgb(0x353c42).into();
-                theme.secondary_foreground = gpui::rgb(0xd2dae0).into();
-                theme.accent = gpui::rgb(0x293632).into();
-                theme.accent_foreground = gpui::rgb(0xb0d6c8).into();
-                theme.muted = gpui::rgb(0x22262a).into();
-                theme.muted_foreground = gpui::rgb(0x929ca7).into();
-                theme.ring = gpui::rgb(0x8bada0).into();
-                theme.popover = gpui::rgb(0x191c20).into();
                 let view = cx.new(|cx| ui::ResonaApp::new(window, cx));
                 let close_view = view.downgrade();
                 window.on_window_should_close(cx, move |_, cx| {

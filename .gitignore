@@ -4,6 +4,7 @@
 /build/deploy-*/
 /build/deploy/
 /desktop/target/
+/native/webrtc-apm/target/
 /desktop/dist/
 /docs/ui-prototype/node_modules/
 /docs/ui-prototype/*.html

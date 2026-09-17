@@ -37,8 +37,13 @@ func TestLiveDSPReplacementDuringCaptureAndPlayback(t *testing.T) {
 	}()
 	defer func() { close(done); wg.Wait() }()
 	for i := range 30 {
-		config.NoiseSuppression = []string{"off", "low", "medium", "high"}[i%4]
-		config.EchoCancellation, config.EchoSuppression = i%2 == 0, i%3 == 0
+		config.Processing.Preprocess = [2]ProcessorSpec{}
+		if i%2 == 0 {
+			config.Processing.Preprocess[0] = ProcessorSpec{Name: "aec", Backend: "speex", Params: ProcessorParams{Residual: i%3 == 0}}
+		}
+		if i%4 != 0 {
+			config.Processing.Preprocess[1] = ProcessorSpec{Name: "ans", Backend: "speex", Params: ProcessorParams{Level: i%3 + 1}}
+		}
 		if err := e.Configure(context.Background(), config); err != nil {
 			t.Fatal(err)
 		}
@@ -59,7 +64,7 @@ func BenchmarkIdlePlaybackCallback(b *testing.B) {
 }
 
 func BenchmarkSpeechProcessing(b *testing.B) {
-	processor, err := newSpeechProcessor(VoiceConfig{NoiseSuppression: "high", EchoCancellation: true, EchoSuppression: true})
+	processor, err := newSpeechProcessor(VoiceConfig{Processing: ProcessingConfig{Preprocess: [2]ProcessorSpec{{Name: "aec", Backend: "speex", Params: ProcessorParams{Residual: true}}, {Name: "ans", Backend: "speex", Params: ProcessorParams{Level: 3}}}}})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -80,10 +85,10 @@ func BenchmarkSpeechProcessing(b *testing.B) {
 func TestSpeexSuppressesStationaryNoiseAndEcho(t *testing.T) {
 	for _, echo := range []bool{false, true} {
 		name := "stationary noise"
-		config := VoiceConfig{NoiseSuppression: "high"}
+		config := VoiceConfig{Processing: ProcessingConfig{Preprocess: [2]ProcessorSpec{{}, {Name: "ans", Backend: "speex", Params: ProcessorParams{Level: 3}}}}}
 		if echo {
 			name = "delayed echo"
-			config = VoiceConfig{EchoCancellation: true, EchoSuppression: true}
+			config = VoiceConfig{Processing: ProcessingConfig{Preprocess: [2]ProcessorSpec{{Name: "aec", Backend: "speex", Params: ProcessorParams{Residual: true}}}}}
 		}
 		t.Run(name, func(t *testing.T) {
 			processor, err := newSpeechProcessor(config)

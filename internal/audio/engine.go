@@ -91,12 +91,25 @@ func liveConfigCompatible(a, b VoiceConfig) bool {
 func (e *Engine) updateLiveConfig(ctx context.Context, run *engineRun, config VoiceConfig) error {
 	previous := run.currentConfig()
 	var replacement speechProcessor
-	rebuild := previous.NoiseSuppression != config.NoiseSuppression || previous.EchoCancellation != config.EchoCancellation || previous.EchoSuppression != config.EchoSuppression
+	rebuild := previous.Processing.Preprocess != config.Processing.Preprocess
+	postChanged := previous.Processing.Postprocess != config.Processing.Postprocess
 	if rebuild {
 		var err error
 		replacement, err = newSpeechProcessor(config)
 		if err != nil {
 			return err
+		}
+	}
+	if postChanged {
+		probe, err := newReceiveProcessor(config.Processing)
+		if err != nil {
+			if replacement != nil {
+				replacement.Close()
+			}
+			return err
+		}
+		if probe != nil {
+			probe.Close()
 		}
 	}
 	if err := ctx.Err(); err != nil {
@@ -105,16 +118,42 @@ func (e *Engine) updateLiveConfig(ctx context.Context, run *engineRun, config Vo
 		}
 		return err
 	}
-	run.processingMu.Lock()
-	if rebuild {
-		if run.processor != nil {
-			run.processor.Close()
+	if postChanged && !run.engine.monitor {
+		ack := make(chan struct{}, 1)
+		select {
+		case run.mixControl <- mixUpdate{specs: config.Processing.Postprocess, ack: ack}:
+		case <-run.ctx.Done():
+			if replacement != nil {
+				replacement.Close()
+			}
+			return run.ctx.Err()
 		}
-		run.processor = replacement
-		run.referencePCM.Reset()
+		select {
+		case <-ack:
+		case <-run.ctx.Done():
+			if replacement != nil {
+				replacement.Close()
+			}
+			return run.ctx.Err()
+		}
+	}
+	if rebuild {
+		ack := make(chan struct{}, 1)
+		select {
+		case run.encodeControl <- encodeUpdate{processor: replacement, ack: ack}:
+		case <-run.ctx.Done():
+			if replacement != nil {
+				replacement.Close()
+			}
+			return run.ctx.Err()
+		}
+		select {
+		case <-ack:
+		case <-run.ctx.Done():
+			return run.ctx.Err()
+		}
 	}
 	run.liveConfig.Store(&config)
-	run.processingMu.Unlock()
 	e.mu.Lock()
 	state := e.state
 	state.Config = config
@@ -482,7 +521,8 @@ type engineRun struct {
 	decodeFailures         map[uint16]decodeFailure
 	config                 VoiceConfig
 	liveConfig             atomic.Pointer[VoiceConfig]
-	processingMu           sync.Mutex
+	encodeControl          chan encodeUpdate
+	mixControl             chan mixUpdate
 	processor              speechProcessor
 	referencePCM           *sampleRing
 	ptt                    atomic.Bool
@@ -495,11 +535,22 @@ type engineRun struct {
 	vadUntil               time.Time
 }
 
+type encodeUpdate struct {
+	processor speechProcessor
+	ack       chan struct{}
+}
+
+type mixUpdate struct {
+	specs [1]ProcessorSpec
+	ack   chan struct{}
+}
+
 func newEngineRun(engine *Engine, codec Codec, volume int) (*engineRun, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &engineRun{
 		engine: engine, ctx: ctx, cancel: cancel, codec: codec, volume: float32(volume) / 100,
 		incoming: make(chan Packet, incomingQueueSize), captureWake: make(chan struct{}, 1),
+		encodeControl: make(chan encodeUpdate), mixControl: make(chan mixUpdate),
 		capturePCM: newSampleRing(FrameSamples * pcmBufferFrames), playbackPCM: newSampleRing(FrameSamples * 2 * pcmBufferFrames),
 		remoteUntil:    make(map[uint16]time.Time),
 		decodeFailures: make(map[uint16]decodeFailure),
@@ -642,7 +693,7 @@ func (r *engineRun) playback(samples []float32) {
 		r.monitorPCM.MixInto(samples)
 	}
 	config := r.currentConfig()
-	if config.EchoCancellation || config.EchoSuppression {
+	if backend := config.Processing.Preprocess[0].Backend; backend == "speex" || backend == "webrtc" {
 		r.referencePCM.Push(samples)
 	}
 }
@@ -681,6 +732,14 @@ func (r *engineRun) encodeLoop() {
 		select {
 		case <-r.ctx.Done():
 			return
+		case update := <-r.encodeControl:
+			old := r.processor
+			r.processor = update.processor
+			r.referencePCM.Reset()
+			if old != nil {
+				old.Close()
+			}
+			update.ack <- struct{}{}
 		case <-r.captureWake:
 		}
 		for r.capturePCM.Available() >= FrameSamples {
@@ -698,7 +757,6 @@ func (r *engineRun) encodeLoop() {
 			epoch := r.captureEpoch.Load()
 			r.capturePCM.Pop(mono)
 			r.captureMu.Unlock()
-			r.processingMu.Lock()
 			if r.processor != nil {
 				clear(referenceStereo)
 				r.referencePCM.Pop(referenceStereo)
@@ -707,7 +765,6 @@ func (r *engineRun) encodeLoop() {
 				}
 				r.processor.Process(mono, reference)
 			}
-			r.processingMu.Unlock()
 			now := time.Now()
 			level := inputLevelDB(mono)
 			applyInputGain(mono, r.currentConfig().InputGain)
@@ -768,6 +825,9 @@ func (r *engineRun) encodeLoop() {
 }
 
 func (r *engineRun) mixLoop() {
+	receive := receiveChain{}
+	defer receive.close()
+	postprocess := r.config.Processing.Postprocess
 	diagnostics := voiceDiagnostics{last: time.Now(), peers: make(map[uint16]*peerCounters, maxSpeakers)}
 	defer func() { diagnostics.report(&r.diagnostics, time.Now(), true) }()
 	ticker := time.NewTicker(20 * time.Millisecond)
@@ -778,6 +838,10 @@ func (r *engineRun) mixLoop() {
 		select {
 		case <-r.ctx.Done():
 			return
+		case update := <-r.mixControl:
+			receive.close()
+			postprocess = update.specs
+			update.ack <- struct{}{}
 		case packet := <-r.incoming:
 			stats := diagnostics.peer(packet.SenderID)
 			if stats != nil {
@@ -840,7 +904,16 @@ func (r *engineRun) mixLoop() {
 			clear(mix)
 			mixed := false
 			peers := r.engine.peers.Load()
-			volume := float32(r.currentConfig().Volume) / 100
+			config := r.currentConfig()
+			if postprocess[0].Backend == "none" || postprocess[0].Backend == "" {
+				receive.close()
+			} else {
+				receive.prune(now, func(id uint16, instance string) bool {
+					_, current := peerGain(peers, id, instance)
+					return current
+				})
+			}
+			volume := float32(config.Volume) / 100
 			for id, speaker := range speakers {
 				gain, current := peerGain(peers, id, speaker.instance)
 				if !current {
@@ -851,6 +924,14 @@ func (r *engineRun) mixLoop() {
 				if now.Sub(speaker.lastReceived) > speakerIdle {
 					delete(speakers, id)
 					continue
+				}
+				speaker.receive = nil
+				if postprocess[0].Backend != "none" && postprocess[0].Backend != "" && speaker.codec == CodecOpusVoice && gain != 0 && volume != 0 {
+					var err error
+					speaker.receive, err = receive.peer(id, speaker.instance, ProcessingConfig{Postprocess: postprocess}, now)
+					if err != nil {
+						r.fail(fmt.Errorf("无法初始化收听自动增益: %w", err), false)
+					}
 				}
 				ok, decoded, active, finished, err := speaker.render(mix, volume*gain, now)
 				stats := diagnostics.peer(id)
@@ -1007,6 +1088,7 @@ func (r *engineRun) fail(err error, fatal bool) {
 }
 
 type speaker struct {
+	receive         *receiveProcessor
 	instance        string
 	codec           Codec
 	channels        int
@@ -1060,11 +1142,12 @@ func (s *speaker) render(mix []float32, volume float32, now time.Time) (mixed, d
 			return false, decoded, active, false, err
 		}
 		decodedSamples := s.decodeBuffer[:n*s.channels]
-		s.pcm = append(s.pcm, decodedSamples...)
 		if !lost {
 			decoded = true
 			active = active || pcmHasActivity(decodedSamples)
 		}
+		s.receive.process(decodedSamples, lost)
+		s.pcm = append(s.pcm, decodedSamples...)
 	}
 	if len(s.pcm) < needed {
 		if !s.ended || len(s.pcm) == 0 {

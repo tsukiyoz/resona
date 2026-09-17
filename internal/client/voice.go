@@ -11,6 +11,9 @@ import (
 
 type VoiceState struct {
 	audio.VoiceConfig
+	Operation         uint64      `json:"operation"`
+	AppliedOperation  uint64      `json:"appliedOperation"`
+	Generation        uint64      `json:"generation"`
 	Active            bool        `json:"active"`
 	ChannelCodec      audio.Codec `json:"channelCodec"`
 	Error             string      `json:"error"`
@@ -29,13 +32,14 @@ type voiceEngine interface {
 }
 
 func defaultVoiceConfig() audio.VoiceConfig {
-	return audio.VoiceConfig{Muted: true, Volume: 100, InputGain: 100, ActivationMode: "continuous", VADThresholdDB: -40, NoiseSuppression: "off"}
+	return audio.VoiceConfig{Muted: true, Volume: 100, InputGain: 100, ActivationMode: "continuous", VADThresholdDB: -40}
 }
 
 func (s *Service) GetVoiceState() VoiceState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	state := s.voiceState
+	state.Generation = s.generation
 	state.SpeakingClientIDs = []string{}
 	if s.state.Session.Mode != "connected" || s.state.Session.SwitchingChannelID != "" || state.Busy || !state.Enabled || !state.Active || state.Deafened {
 		state.LocalSpeaking = false
@@ -128,6 +132,9 @@ func (s *Service) configureVoice(config audio.VoiceConfig, expectedGeneration *u
 		engine := s.detachVoiceLocked()
 		config.Muted = true
 		s.voiceState.VoiceConfig = config
+		s.voiceState.Operation = s.voiceOperation
+		s.voiceState.AppliedOperation = s.voiceOperation
+		s.voiceState.Generation = s.generation
 		state := s.voiceState
 		if engine != nil {
 			s.cleanupWG.Add(1)
@@ -166,6 +173,7 @@ func (s *Service) configureVoice(config audio.VoiceConfig, expectedGeneration *u
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	s.voiceCancel = cancel
 	s.voiceState.VoiceConfig, s.voiceState.Busy, s.voiceState.Error = config, true, ""
+	s.voiceState.Operation, s.voiceState.Generation = operation, generation
 	s.notifyChangedLocked()
 	state := s.voiceState
 	s.cleanupWG.Add(1)
@@ -243,6 +251,10 @@ func (s *Service) configureVoice(config audio.VoiceConfig, expectedGeneration *u
 		}
 		s.voiceCancel = nil
 		s.voiceState = voiceSnapshot(next)
+		s.voiceState.Operation, s.voiceState.Generation = operation, generation
+		if err == nil {
+			s.voiceState.AppliedOperation = operation
+		}
 		if monitorAction == 2 || (monitorAction == 1 && err != nil) {
 			s.onlineTestRestore = nil
 			s.onlineTestStopping = false
@@ -280,7 +292,15 @@ func (s *Service) applyVoiceState(epoch, generation uint64, _ audio.VoiceState) 
 	}
 	// Engine notifications are asynchronous; read the current state so a queued
 	// earlier configuration cannot overwrite a newer completed operation.
+	applied := s.voiceState.AppliedOperation
+	previousError := s.voiceState.Error
 	s.voiceState = voiceSnapshot(s.voice.Status())
+	if previousError != "" && s.voiceState.Error == "" {
+		s.voiceState.Error = previousError
+	}
+	s.voiceState.Operation = s.voiceOperation
+	s.voiceState.AppliedOperation = applied
+	s.voiceState.Generation = s.generation
 	s.voiceState.Busy = busy
 	s.notifyChangedLocked()
 }
@@ -304,6 +324,7 @@ func (s *Service) detachVoiceLocked() voiceEngine {
 	config := s.voiceState.VoiceConfig
 	config.Enabled, config.Muted, config.Deafened, config.LocalMonitor = false, true, false, false
 	s.voiceState = VoiceState{VoiceConfig: config}
+	s.voiceState.Operation, s.voiceState.AppliedOperation, s.voiceState.Generation = s.voiceOperation, s.voiceOperation, s.generation
 	s.notifyChangedLocked()
 	return engine
 }
@@ -352,6 +373,7 @@ func (s *Service) voiceChannelChangedLocked() {
 	}
 	s.voiceOperation++
 	operation := s.voiceOperation
+	s.voiceState.Operation, s.voiceState.Generation = operation, generation
 	if s.voiceCancel != nil {
 		s.voiceCancel()
 	}
@@ -372,10 +394,11 @@ func (s *Service) voiceChannelChangedLocked() {
 			s.mu.Unlock()
 			return
 		}
+		var err error
 		if restore != nil {
-			_ = engine.Configure(ctx, *restore)
+			err = engine.Configure(ctx, *restore)
 		} else {
-			_ = engine.ChannelChanged(ctx)
+			err = engine.ChannelChanged(ctx)
 		}
 		next := engine.Status()
 		s.mu.Lock()
@@ -383,7 +406,12 @@ func (s *Service) voiceChannelChangedLocked() {
 		if epoch != s.voiceEpoch || generation != s.generation || operation != s.voiceOperation {
 			return
 		}
+		applied := s.voiceState.AppliedOperation
 		s.voiceState = voiceSnapshot(next)
+		s.voiceState.Operation, s.voiceState.AppliedOperation, s.voiceState.Generation = operation, applied, generation
+		if err == nil {
+			s.voiceState.AppliedOperation = operation
+		}
 		s.voiceCancel = nil
 		s.notifyChangedLocked()
 	}()

@@ -74,6 +74,15 @@ func TestPipeCommandsEventsAndShutdown(t *testing.T) {
 	if len(r["error"]) == 0 {
 		t.Fatal("preview opened audio transport")
 	}
+	r = call(6, "GetCapabilities", nil)
+	var capabilities struct {
+		AudioProcessors []struct {
+			Phase, Name, ID, DisplayName, Description string
+		} `json:"audioProcessors"`
+	}
+	if err := json.Unmarshal(r["result"], &capabilities); err != nil || len(capabilities.AudioProcessors) < 3 {
+		t.Fatalf("missing processor metadata: %s (%v)", r["result"], err)
+	}
 	call(5, "Shutdown", nil)
 	select {
 	case err := <-done:

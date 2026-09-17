@@ -16,7 +16,9 @@ func TestVoicePreferencesPrepareOnlyOneMutedConnectionStart(t *testing.T) {
 	engine := &fakeVoiceEngine{}
 	created := 0
 	service.newVoice = func(audio.Transport, func(audio.VoiceState)) voiceEngine { created++; return engine }
-	config := audio.VoiceConfig{Enabled: true, Deafened: true, InputDeviceID: "chosen-input", OutputDeviceID: "chosen-output", Volume: 65, ActivationMode: "vad", VADThresholdDB: -35, NoiseSuppression: "medium", EchoCancellation: true, EchoSuppression: true, Ducking: true}
+	config := audio.VoiceConfig{Enabled: true, Deafened: true, InputDeviceID: "chosen-input", OutputDeviceID: "chosen-output", Volume: 65, ActivationMode: "vad", VADThresholdDB: -35, Ducking: true}
+	config.Processing.Preprocess[0] = audio.ProcessorSpec{Name: "aec", Backend: "speex", Params: audio.ProcessorParams{Residual: true}}
+	config.Processing.Preprocess[1] = audio.ProcessorSpec{Name: "ans", Backend: "speex", Params: audio.ProcessorParams{Level: 2}}
 	state, err := service.SetVoicePreferences(config)
 	if err != nil {
 		t.Fatal(err)
@@ -40,6 +42,44 @@ func TestVoicePreferencesPrepareOnlyOneMutedConnectionStart(t *testing.T) {
 	config.Enabled = false
 	if got := service.GetVoiceState().VoiceConfig; got != config {
 		t.Fatalf("disconnect lost preferences: %+v", got)
+	}
+}
+
+func TestVoiceOperationDistinguishesAcceptanceApplicationAndFailure(t *testing.T) {
+	engine := &fakeVoiceEngine{}
+	service := voiceService(t, engine)
+	before := service.GetVoiceState()
+	started, release := make(chan struct{}), make(chan struct{})
+	engine.configure = func(_ context.Context, config audio.VoiceConfig) error {
+		close(started)
+		<-release
+		return nil
+	}
+	config := before.VoiceConfig
+	config.Processing.Preprocess[1] = audio.ProcessorSpec{Name: "ans", Backend: "speex", Params: audio.ProcessorParams{Level: 2}}
+	pending, err := service.ConfigureVoice(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	if !pending.Busy || pending.Operation <= before.Operation || pending.AppliedOperation != before.AppliedOperation || pending.Generation != before.Generation {
+		t.Fatalf("acceptance falsely confirmed application: before=%+v pending=%+v", before, pending)
+	}
+	close(release)
+	applied := waitVoice(t, service, func(v VoiceState) bool { return !v.Busy && v.Operation == pending.Operation })
+	if applied.AppliedOperation != pending.Operation || applied.Processing != config.Processing {
+		t.Fatalf("application not confirmed: %+v", applied)
+	}
+	engine.configure = func(context.Context, audio.VoiceConfig) error { return errors.New("processor unavailable") }
+	failedConfig := config
+	failedConfig.Processing.Preprocess[1].Params.Level = 3
+	rejected, err := service.ConfigureVoice(failedConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := waitVoice(t, service, func(v VoiceState) bool { return !v.Busy && v.Operation == rejected.Operation })
+	if failed.AppliedOperation == rejected.Operation || failed.Processing != config.Processing || failed.Error == "" {
+		t.Fatalf("failed replacement changed applied state: %+v", failed)
 	}
 }
 

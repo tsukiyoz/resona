@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -130,9 +130,105 @@ pub struct Workspace {
     pub notifications: Vec<Notification>,
 }
 
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ProcessorParams {
+    pub level: i32,
+    pub tail_ms: i32,
+    pub residual: bool,
+    pub target: i32,
+    pub max_gain_db: i32,
+    pub headroom_db: i32,
+}
+
+impl Default for ProcessorParams {
+    fn default() -> Self {
+        Self {
+            level: 0,
+            tail_ms: 0,
+            residual: false,
+            target: 0,
+            max_gain_db: 0,
+            headroom_db: 0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ProcessorSpec {
+    pub name: String,
+    pub backend: String,
+    pub params: ProcessorParams,
+}
+
+impl ProcessorSpec {
+    pub fn disabled(name: &str) -> Self {
+        Self {
+            name: name.into(),
+            backend: "none".into(),
+            params: ProcessorParams::default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ProcessingConfig {
+    pub preprocess: [ProcessorSpec; 2],
+    pub postprocess: [ProcessorSpec; 1],
+}
+
+impl Default for ProcessingConfig {
+    fn default() -> Self {
+        Self {
+            preprocess: [
+                ProcessorSpec::disabled("aec"),
+                ProcessorSpec::disabled("ans"),
+            ],
+            postprocess: [ProcessorSpec::disabled("agc")],
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ProcessingConfig {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Current {
+                preprocess: [ProcessorSpec; 2],
+                postprocess: [ProcessorSpec; 1],
+            },
+            Previous {
+                preprocess: [ProcessorSpec; 3],
+                postprocess: [ProcessorSpec; 2],
+            },
+        }
+        Ok(match Wire::deserialize(deserializer)? {
+            Wire::Current {
+                preprocess,
+                postprocess,
+            } => Self {
+                preprocess,
+                postprocess,
+            },
+            Wire::Previous {
+                preprocess,
+                postprocess,
+            } => Self {
+                preprocess: [preprocess[0].clone(), preprocess[1].clone()],
+                postprocess: [postprocess[1].clone()],
+            },
+        })
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct VoiceState {
+    pub operation: u64,
+    pub applied_operation: u64,
+    pub generation: u64,
     pub enabled: bool,
     pub muted: bool,
     pub deafened: bool,
@@ -152,9 +248,7 @@ pub struct VoiceState {
     pub activation_mode: String,
     #[serde(rename = "vadThresholdDB")]
     pub vad_threshold_db: i32,
-    pub noise_suppression: String,
-    pub echo_cancellation: bool,
-    pub echo_suppression: bool,
+    pub processing: ProcessingConfig,
     pub ducking: bool,
     pub push_to_talk_pressed: bool,
     #[serde(rename = "inputLevelDB")]
@@ -164,6 +258,9 @@ pub struct VoiceState {
 impl Default for VoiceState {
     fn default() -> Self {
         Self {
+            operation: 0,
+            applied_operation: 0,
+            generation: 0,
             enabled: false,
             muted: true,
             deafened: false,
@@ -179,9 +276,7 @@ impl Default for VoiceState {
             local_speaking: false,
             activation_mode: "continuous".into(),
             vad_threshold_db: -40,
-            noise_suppression: "off".into(),
-            echo_cancellation: false,
-            echo_suppression: false,
+            processing: ProcessingConfig::default(),
             ducking: false,
             push_to_talk_pressed: false,
             input_level_db: -60,
@@ -213,6 +308,17 @@ pub struct Capabilities {
     pub platform: String,
     pub secure_password_storage: bool,
     pub voice: bool,
+    pub audio_processors: Vec<ProcessorOption>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessorOption {
+    pub phase: String,
+    pub name: String,
+    pub id: String,
+    pub display_name: String,
+    pub description: String,
 }
 
 impl Default for Capabilities {
@@ -222,6 +328,7 @@ impl Default for Capabilities {
             platform: String::new(),
             secure_password_storage: false,
             voice: false,
+            audio_processors: Vec::new(),
         }
     }
 }
@@ -268,6 +375,7 @@ mod tests {
         assert_eq!(workspace.notifications[0].channel_id, "channel-1");
         assert_eq!(contract.voice.input_device_id, "input-1");
         assert_eq!(contract.voice.input_gain, 150);
+        assert_eq!(contract.voice.processing.postprocess[0].backend, "speex");
         assert_eq!(contract.voice.output_device_id, "output-1");
         assert_eq!(contract.voice.channel_codec, serde_json::json!(4));
         assert_eq!(contract.voice.speaking_client_ids, ["42"]);
@@ -279,6 +387,22 @@ mod tests {
         let voice: VoiceState = serde_json::from_str("{}").unwrap();
         assert!(voice.speaking_client_ids.is_empty());
         assert!(!voice.local_speaking);
+    }
+
+    #[test]
+    fn processor_capability_and_agc2_parameters_round_trip() {
+        let capabilities: Capabilities = serde_json::from_str(r#"{"audioProcessors":[{"phase":"postprocess","name":"agc","id":"webrtc","displayName":"WebRTC AGC2","description":"每成员自动增益"}]}"#).unwrap();
+        assert_eq!(capabilities.audio_processors[0].id, "webrtc");
+        let mut config = ProcessingConfig::default();
+        config.postprocess[0].backend = "webrtc".into();
+        config.postprocess[0].params.headroom_db = 5;
+        config.postprocess[0].params.max_gain_db = 18;
+        let wire = serde_json::to_value(&config).unwrap();
+        assert_eq!(wire["postprocess"][0]["params"]["headroomDb"], 5);
+        assert_eq!(
+            serde_json::from_value::<ProcessingConfig>(wire).unwrap(),
+            config
+        );
     }
 
     #[test]

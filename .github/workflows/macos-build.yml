@@ -12,6 +12,7 @@ on:
       - 'desktop/**'
       - 'cmd/resona-core/**'
       - 'internal/**'
+      - 'native/**'
       - 'third_party/**'
       - 'go.mod'
       - 'go.sum'
@@ -25,6 +26,7 @@ on:
       - 'desktop/**'
       - 'cmd/resona-core/**'
       - 'internal/**'
+      - 'native/**'
       - 'third_party/**'
       - 'go.mod'
       - 'go.sum'
@@ -69,6 +71,8 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
+      - name: Set up WebRTC build tools
+        run: brew install meson ninja
       - name: Resolve build version
         id: version
         env:
@@ -123,6 +127,9 @@ jobs:
         env:
           RESONA_BUILD_VERSION: ${{ steps.version.outputs.version }}
         run: make build-desktop VERSION="$RESONA_BUILD_VERSION"
+      - name: Verify WebRTC processors with packaged library
+        run: |
+          RESONA_WEBRTC_PLUGIN_DIR="$PWD/desktop/dist/Resona.app/Contents/Frameworks" go test ./internal/audio ./internal/desktopipc
       - name: Verify and archive app
         env:
           CERTIFICATE_SIGNED: ${{ steps.signing.outputs.signed }}
@@ -136,6 +143,10 @@ jobs:
             test "$(lipo -archs "$app/Contents/MacOS/$binary")" = "$EXPECTED_MACHINE"
             codesign --verify --strict "$app/Contents/MacOS/$binary"
           done
+          library="$app/Contents/Frameworks/libresona_webrtc_apm.dylib"
+          test -f "$library"
+          test "$(lipo -archs "$library")" = "$EXPECTED_MACHINE"
+          codesign --verify --strict "$library"
           codesign --verify --deep --strict "$app"
           "$app/Contents/MacOS/resona-core" --version
           ditto -c -k --sequesterRsrc --keepParent "$app" "desktop/dist/Resona-macos-${PACKAGE_ARCH}.zip"

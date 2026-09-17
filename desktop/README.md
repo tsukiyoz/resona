@@ -52,7 +52,17 @@ executables in `build/bin/`; Windows keeps the dedicated build entry below.
 
 The bundle includes a multi-resolution `Resona.icns` generated from
 `build/appicon.png` with macOS `sips` and `iconutil`. `CFBundleIconFile` supplies
-the Finder and Dock icon; launch the `.app`, not the bare Rust executable.
+the fixed white Finder icon and initial Dock icon; launch the `.app`, not the bare
+Rust executable. While running, the in-app logo and macOS Dock icon follow the
+effective theme: white with dark bars for light mode, dark with light bars for
+dark mode. Windows sets both native window icon sizes; the taskbar may retain a
+cached pinned-shortcut icon. EXE and shortcut defaults remain white. Theme preview
+and cancellation update runtime icons without rewriting the signed package.
+
+From the repository root, `go run ./tools/appicon` regenerates both runtime PNGs,
+both Windows ICO resources and the white `build/appicon.png` from the original
+`desktop/assets/resona-source.png`. Runtime PNGs are 256px and cached; icon updates
+only run when the theme changes, without an idle timer.
 
 The **macOS build** GitHub Action builds separate Apple Silicon (`macos-arm64`)
 and Intel (`macos-x64`) packages on main pushes, matching pull requests and version
