@@ -12,6 +12,7 @@ on:
       - 'desktop/**'
       - 'cmd/resona-core/**'
       - 'internal/**'
+      - 'native/**'
       - 'third_party/**'
       - 'go.mod'
       - 'go.sum'
@@ -24,6 +25,7 @@ on:
       - 'desktop/**'
       - 'cmd/resona-core/**'
       - 'internal/**'
+      - 'native/**'
       - 'third_party/**'
       - 'go.mod'
       - 'go.sum'
@@ -39,7 +41,7 @@ concurrency:
 jobs:
   build:
     runs-on: windows-2022
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -71,7 +73,14 @@ jobs:
         uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
-          install: mingw-w64-ucrt-x86_64-gcc
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-clang
+            mingw-w64-x86_64-meson
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-python
       - name: Test native Windows credential storage
         shell: pwsh
         env:

@@ -408,7 +408,7 @@ func dispatchWithContext(ctx context.Context, s *client.Service, req request) (a
 		return s.ConfigureVoice(config)
 	}
 	if req.Method == "ConfigureMicrophoneTest" {
-		config := audio.VoiceConfig{Volume: 35, InputGain: 100, ActivationMode: "continuous", VADThresholdDB: -40, NoiseSuppression: "off"}
+		config := audio.VoiceConfig{Volume: 35, InputGain: 100, ActivationMode: "continuous", VADThresholdDB: -40}
 		if err := decodeParams(req.Params, &config); err != nil {
 			return nil, err
 		}
@@ -456,7 +456,8 @@ func dispatchWithContext(ctx context.Context, s *client.Service, req request) (a
 	}
 	switch req.Method {
 	case "GetCapabilities":
-		return map[string]any{"protocolVersion": 1, "platform": runtime.GOOS, "securePasswordStorage": runtime.GOOS == "windows" || (nativeCGO && runtime.GOOS == "darwin"), "voice": nativeCGO && (runtime.GOOS == "darwin" || runtime.GOOS == "windows")}, nil
+		voiceAvailable := nativeCGO && (runtime.GOOS == "darwin" || runtime.GOOS == "windows")
+		return map[string]any{"protocolVersion": 1, "platform": runtime.GOOS, "securePasswordStorage": runtime.GOOS == "windows" || (nativeCGO && runtime.GOOS == "darwin"), "voice": voiceAvailable, "webRtcAudio": voiceAvailable && audio.AvailableWebRTC()}, nil
 	case "GetWorkspace":
 		return s.GetWorkspace()
 	case "GetVoiceState":

@@ -67,8 +67,21 @@ mkdir -p "$bundle_dir/Contents/MacOS" "$bundle_dir/Contents/Resources"
 touch "$bundle_dir/Contents/Resources/.resona-bundle"
 cp "$desktop_dir/target/$profile/resona-desktop" "$bundle_dir/Contents/MacOS/resona-desktop"
 cp "$core_binary" "$bundle_dir/Contents/MacOS/resona-core"
+apm_binary="$repo_dir/build/bin/libresona_webrtc_apm.dylib"
+if [ ! -f "$apm_binary" ]; then
+  echo "WebRTC audio library is missing: $apm_binary" >&2
+  exit 1
+fi
+mkdir -p "$bundle_dir/Contents/Frameworks"
+cp "$apm_binary" "$bundle_dir/Contents/Frameworks/"
+if otool -L "$bundle_dir/Contents/Frameworks/libresona_webrtc_apm.dylib" | tail -n +2 | grep -E '/opt/homebrew|/usr/local|/Users/'; then
+  echo 'WebRTC library has non-system dynamic dependencies; rebuild with bundled Abseil' >&2
+  exit 1
+fi
 cp "$icon_tmp/Resona.icns" "$bundle_dir/Contents/Resources/Resona.icns"
 cp "$repo_dir/docs/noise-license.txt" "$bundle_dir/Contents/Resources/noise-license.txt"
+python3 "$repo_dir/native/webrtc-apm/licenses.py" "$repo_dir/native/webrtc-apm/Cargo.toml" \
+  "$bundle_dir/Contents/Resources/licenses" "$repo_dir/native/webrtc-apm/target"
 chmod 755 "$bundle_dir/Contents/MacOS/resona-desktop" "$bundle_dir/Contents/MacOS/resona-core"
 
 cat > "$bundle_dir/Contents/Info.plist" <<'PLIST'
@@ -97,6 +110,7 @@ test -s "$bundle_dir/Contents/Resources/Resona.icns"
 
 if [ -n "$sign_identity" ]; then
   # Sign nested code first; let codesign derive certificate-bound requirements.
+  codesign --force --sign "$sign_identity" "$bundle_dir/Contents/Frameworks/libresona_webrtc_apm.dylib"
   codesign --force --sign "$sign_identity" --identifier dev.resona.core \
     "$bundle_dir/Contents/MacOS/resona-core"
   codesign --force --sign "$sign_identity" "$bundle_dir"
@@ -105,6 +119,7 @@ if [ -n "$sign_identity" ]; then
 else
   # Seal the completed bundle even for local/CI builds. Ad-hoc identity still
   # changes with the code hash and does not solve persistent Keychain access.
+  codesign --force --sign - "$bundle_dir/Contents/Frameworks/libresona_webrtc_apm.dylib"
   codesign --force --sign - --identifier dev.resona.core "$bundle_dir/Contents/MacOS/resona-core"
   codesign --force --sign - "$bundle_dir"
   codesign --verify --deep --strict --verbose=2 "$bundle_dir"

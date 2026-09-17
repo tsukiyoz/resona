@@ -25,6 +25,7 @@ func TestSharedNativeContractMatchesGoJSON(t *testing.T) {
 		Messages:      []client.Message{{AuthorID: "user-1", Status: "sending", ID: "message-1", ChannelID: "channel-1", Author: "Tester", Text: "Contract message", CreatedAt: "2026-09-08T00:00:00Z"}},
 		Notifications: []client.Notification{{ID: "notification-1", Kind: "connected", ChannelID: "channel-1", CreatedAt: "2026-09-08T00:00:00Z"}},
 	}, Voice: client.VoiceState{VoiceConfig: audio.VoiceConfig{Enabled: true, Muted: true, InputDeviceID: "input-1", OutputDeviceID: "output-1", Volume: 75, InputGain: 150}, Active: true, ChannelCodec: audio.CodecOpusVoice, SpeakingClientIDs: []string{"42"}, LocalSpeaking: false}}
+	value.Voice.Processing.Postprocess[0] = audio.ProcessorSpec{Name: "agc", Backend: "speex"}
 	actual, err := json.Marshal(value)
 	if err != nil {
 		t.Fatal(err)

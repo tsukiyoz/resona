@@ -87,8 +87,8 @@ enum Pending {
     Credential(String, u64),
     Connect(String, bool),
     Voice,
-    SettingsApply(String),
-    SettingsStatus(String),
+    SettingsApply(String, u64),
+    SettingsStatus(String, u64),
     VoicePreferences {
         connect: Option<String>,
         session: String,
@@ -225,6 +225,9 @@ pub struct ResonaApp {
     settings_draft: Option<Preferences>,
     settings_baseline: Option<Preferences>,
     settings_apply: Option<(Preferences, String, bool)>,
+    settings_operation: Option<(u64, u64)>,
+    settings_revision: u64,
+    _settings_watch: Option<gpui::Task<()>>,
     settings_notice: String,
     settings_discard: bool,
     preference_revision: u64,
@@ -501,6 +504,9 @@ impl ResonaApp {
             settings_draft: None,
             settings_baseline: None,
             settings_apply: None,
+            settings_operation: None,
+            settings_revision: 0,
+            _settings_watch: None,
             settings_notice: String::new(),
             settings_discard: false,
             preference_revision: 0,
@@ -651,9 +657,17 @@ impl ResonaApp {
 
     fn request_failed(&mut self, pending: Pending, error: String) {
         match pending {
-            Pending::SettingsApply(_) | Pending::SettingsStatus(_) => {
-                self.settings_apply = None;
-                self.settings_notice = format!("未应用：{error}");
+            Pending::SettingsApply(session, revision)
+            | Pending::SettingsStatus(session, revision) => {
+                if revision == self.settings_revision
+                    && self
+                        .settings_apply
+                        .as_ref()
+                        .is_some_and(|(_, current, _)| *current == session)
+                {
+                    self.settings_apply = None;
+                    self.settings_notice = format!("尚未确认：{error}");
+                }
             }
             Pending::ChannelMutation { session, revision } => {
                 if self.channel_matches(&session, revision) {
@@ -698,7 +712,9 @@ impl ResonaApp {
                 }
             }
             Incoming::ResourceSync(value) => {
-                if value.get("generation").and_then(Value::as_u64) == Some(self.resource_generation)
+                if self.core.is_some()
+                    && value.get("generation").and_then(Value::as_u64)
+                        == Some(self.resource_generation)
                 {
                     self.apply_workspace(value["workspace"].clone(), window, cx);
                     self.apply_voice(value["voice"].clone());
@@ -710,7 +726,11 @@ impl ResonaApp {
                 }
             }
             Incoming::Workspace(value) => self.apply_workspace(value, window, cx),
-            Incoming::Voice(value) => self.apply_voice(value),
+            Incoming::Voice(value) => {
+                if self.core.is_some() {
+                    self.apply_voice(value);
+                }
+            }
             Incoming::MicrophoneTest(value) => self.apply_microphone_test(value),
             Incoming::ProtocolError(error) => self.error = error,
             Incoming::Exited(error) => {
@@ -743,6 +763,9 @@ impl ResonaApp {
                 self.voice.enabled = false;
                 self.voice.active = false;
                 self.voice.busy = false;
+                self.voice.operation = 0;
+                self.voice.applied_operation = 0;
+                self.voice.generation = 0;
                 self.voice.speaking_client_ids.clear();
                 self.voice.local_speaking = false;
                 self.microphone_test = VoiceState::default();
@@ -879,35 +902,49 @@ impl ResonaApp {
                         self.connect_error.clear();
                     }
                     (Some(Pending::Voice), Ok(value)) => self.apply_voice(value),
-                    (Some(Pending::SettingsApply(session)), result)
+                    (Some(Pending::SettingsApply(session, revision)), result)
                         if self.settings_apply.as_ref().is_some_and(|(_, current, _)| {
-                            *current == session && session == self.workspace.session.id
+                            *current == session
+                                && session == self.workspace.session.id
+                                && revision == self.settings_revision
                         }) =>
                     {
                         match result {
-                            Ok(_) => {
-                                self.request(
-                                    "GetVoiceState",
-                                    json!({}),
-                                    Pending::SettingsStatus(session),
-                                );
-                            }
+                            Ok(value) => match serde_json::from_value::<VoiceState>(value) {
+                                Ok(voice) => {
+                                    self.settings_operation =
+                                        Some((voice.generation, voice.operation));
+                                    self.request(
+                                        "GetVoiceState",
+                                        json!({}),
+                                        Pending::SettingsStatus(session, revision),
+                                    );
+                                }
+                                Err(error) => {
+                                    self.settings_apply = None;
+                                    self.settings_notice = format!("无法读取操作编号：{error}");
+                                }
+                            },
                             Err(error) => {
                                 self.settings_apply = None;
                                 self.settings_notice = format!("未应用：{error}");
                             }
                         }
                     }
-                    (Some(Pending::SettingsStatus(session)), result)
+                    (Some(Pending::SettingsStatus(session, revision)), result)
                         if self.settings_apply.as_ref().is_some_and(|(_, current, _)| {
-                            *current == session && session == self.workspace.session.id
+                            *current == session
+                                && session == self.workspace.session.id
+                                && revision == self.settings_revision
                         }) =>
                     {
                         match result.and_then(|value| {
                             serde_json::from_value::<VoiceState>(value).map_err(|e| e.to_string())
                         }) {
                             Ok(voice) => {
-                                self.voice = voice;
+                                if voice_state_current(&voice, &self.voice) {
+                                    self.voice = voice;
+                                }
                                 if let Some((_, _, ready)) = &mut self.settings_apply {
                                     *ready = true;
                                 }
@@ -918,7 +955,7 @@ impl ResonaApp {
                             }
                         }
                     }
-                    (Some(Pending::SettingsApply(_) | Pending::SettingsStatus(_)), _) => {}
+                    (Some(Pending::SettingsApply(_, _) | Pending::SettingsStatus(_, _)), _) => {}
                     (Some(Pending::OutputGain(session)), result) => {
                         if session == self.workspace.session.id {
                             match result.and_then(|v| {
@@ -1266,6 +1303,9 @@ impl ResonaApp {
     fn apply_voice(&mut self, value: Value) {
         match serde_json::from_value::<VoiceState>(value) {
             Ok(voice) => {
+                if !voice_state_current(&voice, &self.voice) {
+                    return;
+                }
                 if !voice.enabled || voice.muted || voice.deafened || voice.activation_mode != "ptt"
                 {
                     self.ptt_pressed = false;
@@ -2051,6 +2091,9 @@ impl ResonaApp {
     }
 
     fn begin_connect(&mut self, server_id: String, cx: &mut Context<Self>) {
+        if navigation_blocked(self.modal.as_ref(), self.closing) {
+            return;
+        }
         if !self.check_connection_profile(&server_id) {
             cx.notify();
             return;
@@ -2334,6 +2377,9 @@ impl ResonaApp {
             return;
         }
         self.settings_notice = "应用中".into();
+        self.settings_revision = self.settings_revision.wrapping_add(1);
+        let revision = self.settings_revision;
+        self.settings_operation = None;
         self.settings_apply = Some((desired, self.workspace.session.id.clone(), false));
         self.set_push_to_talk(false, cx);
         self.request(
@@ -2343,8 +2389,36 @@ impl ResonaApp {
                 "SetVoicePreferences"
             },
             voice_params(&next),
-            Pending::SettingsApply(self.workspace.session.id.clone()),
+            Pending::SettingsApply(self.workspace.session.id.clone(), revision),
         );
+        let session = self.workspace.session.id.clone();
+        self._settings_watch = Some(cx.spawn(async move |view, cx| {
+            for _ in 0..20 {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let pending = view.update(cx, |this, _| {
+                    if this.settings_revision != revision
+                        || this.settings_apply.as_ref().is_none_or(|(_, current, _)| *current != session)
+                        || this.core.is_none() || this.closing
+                    {
+                        return false;
+                    }
+                    if this.settings_operation.is_some()
+                        && !this.pending.values().any(|p| matches!(p, Pending::SettingsStatus(_, pending_revision) if *pending_revision == revision))
+                    {
+                        this.request("GetVoiceState", json!({}), Pending::SettingsStatus(session.clone(), revision));
+                    }
+                    true
+                }).unwrap_or(false);
+                if !pending { return; }
+            }
+            let _ = view.update(cx, |this, cx| {
+                if this.settings_revision == revision && this.settings_apply.as_ref().is_some_and(|(_, current, _)| *current == session) {
+                    this.settings_apply = None;
+                    this.settings_notice = "应用结果尚未确认，请查看当前语音状态后重试".into();
+                    cx.notify();
+                }
+            });
+        }));
         cx.notify();
     }
 
@@ -2366,9 +2440,21 @@ impl ResonaApp {
         if !ready || self.voice.busy {
             return;
         }
+        let Some((generation, operation)) = self.settings_operation else {
+            return;
+        };
+        if self.voice.generation != generation || self.voice.operation != operation {
+            self.settings_apply = None;
+            self.settings_notice = "语音配置已被其他操作替代，请重新应用".into();
+            return;
+        }
         if !self.voice.error.is_empty() {
             self.settings_notice = format!("未应用：{}", self.voice.error);
             self.settings_apply = None;
+            return;
+        }
+        if !voice_operation_applied(&self.voice, generation, operation) {
+            self.settings_notice = "等待核心确认应用".into();
             return;
         }
         let mut expected = self.voice.clone();
@@ -2386,9 +2472,15 @@ impl ResonaApp {
     fn commit_settings(&mut self, next: Preferences, cx: &mut Context<Self>) {
         self.preferences = next;
         self.settings_apply = None;
+        self.settings_operation = None;
         self.settings_draft = Some(self.preferences.clone());
         self.settings_baseline = self.settings_draft.clone();
-        self.settings_notice = "已应用".into();
+        self.settings_notice = if self.workspace.connected() {
+            "已应用"
+        } else {
+            "已保存，下次启用语音生效"
+        }
+        .into();
         self.clear_hotkey(cx);
         if !self.preferences.notifications_enabled {
             self.request("StopNotifications", json!({}), Pending::Notification);
@@ -2629,6 +2721,9 @@ impl ResonaApp {
                             .on_key_down(move |event, window, cx| {
                                 if event.keystroke.key == "f2" {
                                     keyboard_entity.update(cx, |this, cx| {
+                                        if navigation_blocked(this.modal.as_ref(), this.closing) {
+                                            return;
+                                        }
                                         let profile = this
                                             .workspace
                                             .servers
@@ -2644,6 +2739,9 @@ impl ResonaApp {
                             })
                             .on_click(move |event, _, cx| {
                                 entity.update(cx, |this, cx| {
+                                    if navigation_blocked(this.modal.as_ref(), this.closing) {
+                                        return;
+                                    }
                                     this.selected_server = id.clone();
                                     if (event.is_keyboard() || event.click_count() >= 2)
                                         && !this.is_busy()
@@ -3265,6 +3363,9 @@ impl ResonaApp {
                             .gap_2()
                             .on_click(move |event, _, cx| {
                                 entity.update(cx, |this, cx| {
+                                    if navigation_blocked(this.modal.as_ref(), this.closing) {
+                                        return;
+                                    }
                                     this.select_details(DetailSelection::Channel(id.clone()), cx);
                                     if !locked && (event.is_keyboard() || event.click_count() >= 2)
                                     {
@@ -4908,26 +5009,6 @@ impl ResonaApp {
                             ),
                     )
                 });
-        let suppress_buttons = [
-            ("off", "关闭"),
-            ("low", "低"),
-            ("medium", "中"),
-            ("high", "高"),
-        ]
-        .into_iter()
-        .map(|(level, label)| {
-            let entity = view.clone();
-            Button::new(SharedString::from(format!("noise-{level}")))
-                .label(label)
-                .selected(self.editing_preferences().noise_suppression == level)
-                .disabled(preferences_disabled)
-                .on_click(move |_, _, cx| {
-                    entity.update(cx, |this, cx| {
-                        this.update_audio_preferences(|p| p.noise_suppression = level.into(), cx)
-                    });
-                })
-        })
-        .collect::<Vec<_>>();
         content = content.child(
             div()
                 .border_t_1()
@@ -4936,22 +5017,108 @@ impl ResonaApp {
                 .flex()
                 .flex_col()
                 .gap_3()
-                .child(div().text_xs().text_color(rgb(MUTED)).child("背景噪声抑制"))
-                .child(div().flex().gap_2().children(suppress_buttons))
-                .child(self.audio_toggle(
-                    "echo-cancellation",
+                .child(div().text_sm().child("麦克风处理"))
+                .child(self.processor_selector(
+                    "pre-aec",
                     "回声消除",
-                    self.editing_preferences().echo_cancellation,
+                    false,
+                    0,
                     preferences_disabled,
-                    |p, v| p.echo_cancellation = v,
                     view,
                 ))
-                .child(self.audio_toggle(
-                    "echo-suppression",
-                    "残余回声抑制",
-                    self.editing_preferences().echo_suppression,
+                .child(
+                    self.audio_toggle(
+                        "pre-aec-residual",
+                        "残余回声抑制",
+                        self.editing_preferences().processing.preprocess[0]
+                            .params
+                            .residual,
+                        preferences_disabled
+                            || self.editing_preferences().processing.preprocess[0].backend
+                                != "speex",
+                        |p, v| p.processing.preprocess[0].params.residual = v,
+                        view,
+                    ),
+                )
+                .child(self.processor_stepper(
+                    "pre-aec-tail",
+                    "AEC 尾长",
+                    false,
+                    0,
+                    "tail",
+                    200,
+                    40,
+                    500,
+                    20,
+                    "ms",
                     preferences_disabled,
-                    |p, v| p.echo_suppression = v,
+                    view,
+                ))
+                .child(self.processor_selector(
+                    "pre-ans",
+                    "背景噪声抑制",
+                    false,
+                    1,
+                    preferences_disabled,
+                    view,
+                ))
+                .child(self.ans_level_selector("pre-ans-level", preferences_disabled, view))
+                .child(
+                    div()
+                        .border_t_1()
+                        .border_color(rgb(LINE))
+                        .pt_3()
+                        .text_sm()
+                        .child("收听处理"),
+                )
+                .child(self.processor_selector(
+                    "post-agc",
+                    "自动均衡每个人的语音音量",
+                    true,
+                    0,
+                    preferences_disabled,
+                    view,
+                ))
+                .child(self.processor_stepper(
+                    "post-agc-target",
+                    "增益目标 · 每人",
+                    true,
+                    0,
+                    "target",
+                    8192,
+                    2048,
+                    16384,
+                    1024,
+                    "",
+                    preferences_disabled,
+                    view,
+                ))
+                .child(self.processor_stepper(
+                    "post-agc-max",
+                    "最大自动增益 · 每人",
+                    true,
+                    0,
+                    "max",
+                    18,
+                    1,
+                    24,
+                    1,
+                    "dB",
+                    preferences_disabled,
+                    view,
+                ))
+                .child(self.processor_stepper(
+                    "post-agc-headroom",
+                    "目标余量 · 每人",
+                    true,
+                    0,
+                    "headroom",
+                    5,
+                    1,
+                    20,
+                    1,
+                    "dB",
+                    preferences_disabled,
                     view,
                 ))
                 .child(self.audio_toggle(
@@ -5096,6 +5263,217 @@ impl ResonaApp {
                 });
             })
             .into_any_element()
+    }
+
+    fn processor_selector(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        receive: bool,
+        index: usize,
+        disabled: bool,
+        view: &Entity<Self>,
+    ) -> AnyElement {
+        let selected = if receive {
+            &self.editing_preferences().processing.postprocess[index]
+        } else {
+            &self.editing_preferences().processing.preprocess[index]
+        };
+        let webrtc_available = self.capabilities.web_rtc_audio;
+        let webrtc_label = match (receive, index) {
+            (false, 0) => "WebRTC AEC3",
+            (false, _) => "WebRTC NS",
+            (true, _) => "WebRTC AGC2",
+        };
+        let entity = view.clone();
+        field(
+            label,
+            Button::new(id)
+                .label(match selected.backend.as_str() {
+                    "speex" => "SpeexDSP",
+                    "webrtc" if webrtc_available => webrtc_label,
+                    "webrtc" => "WebRTC（当前不可用）",
+                    _ => "关闭",
+                })
+                .icon(IconName::ChevronDown)
+                .disabled(disabled)
+                .dropdown_menu(move |mut menu, _, _| {
+                    let mut options = vec![("关闭", "none"), ("SpeexDSP", "speex")];
+                    if webrtc_available {
+                        options.push((webrtc_label, "webrtc"));
+                    }
+                    for (option, backend) in options {
+                        let entity = entity.clone();
+                        menu = menu.item(PopupMenuItem::new(option).on_click(move |_, _, cx| {
+                            entity.update(cx, |this, cx| {
+                                if this.settings_apply.is_some() || this.settings_draft.is_none() {
+                                    return;
+                                }
+                                this.update_audio_preferences(
+                                    |p| {
+                                        let spec = if receive {
+                                            &mut p.processing.postprocess[index]
+                                        } else {
+                                            &mut p.processing.preprocess[index]
+                                        };
+                                        spec.backend = backend.into();
+                                        spec.params = Default::default();
+                                    },
+                                    cx,
+                                );
+                            });
+                        }));
+                    }
+                    menu
+                }),
+        )
+        .into_any_element()
+    }
+
+    fn ans_level_selector(
+        &self,
+        id: &'static str,
+        disabled: bool,
+        view: &Entity<Self>,
+    ) -> AnyElement {
+        let spec = &self.editing_preferences().processing.preprocess[1];
+        if spec.backend != "speex" && spec.backend != "webrtc" {
+            return div().into_any_element();
+        }
+        let current = if spec.params.level == 0 {
+            2
+        } else {
+            spec.params.level
+        };
+        let is_webrtc = spec.backend == "webrtc";
+        let entity = view.clone();
+        field(
+            "降噪等级",
+            Button::new(id)
+                .label(match current {
+                    1 => "低",
+                    3 => "高",
+                    4 => "极高",
+                    _ => "中",
+                })
+                .icon(IconName::ChevronDown)
+                .disabled(disabled)
+                .dropdown_menu(move |mut menu, _, _| {
+                    let mut levels = vec![("低", 1), ("中", 2), ("高", 3)];
+                    if is_webrtc {
+                        levels.push(("极高", 4));
+                    }
+                    for (label, level) in levels {
+                        let entity = entity.clone();
+                        menu = menu.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
+                            entity.update(cx, |this, cx| {
+                                if this.settings_apply.is_some() || this.settings_draft.is_none() {
+                                    return;
+                                }
+                                this.update_audio_preferences(
+                                    |p| {
+                                        let spec = &mut p.processing.preprocess[1];
+                                        spec.params.level = level;
+                                    },
+                                    cx,
+                                );
+                            });
+                        }));
+                    }
+                    menu
+                }),
+        )
+        .into_any_element()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn processor_stepper(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        receive: bool,
+        index: usize,
+        parameter: &'static str,
+        default: i32,
+        minimum: i32,
+        maximum: i32,
+        step: i32,
+        unit: &'static str,
+        disabled: bool,
+        view: &Entity<Self>,
+    ) -> AnyElement {
+        let spec = if receive {
+            &self.editing_preferences().processing.postprocess[index]
+        } else {
+            &self.editing_preferences().processing.preprocess[index]
+        };
+        if !matches!(
+            (spec.backend.as_str(), parameter),
+            ("speex", "tail" | "target" | "max") | ("webrtc", "max" | "headroom")
+        ) {
+            return div().into_any_element();
+        }
+        let value = match parameter {
+            "tail" => spec.params.tail_ms,
+            "target" => spec.params.target,
+            "headroom" => spec.params.headroom_db,
+            _ => spec.params.max_gain_db,
+        };
+        let value = if value == 0 { default } else { value };
+        let controls = div().flex().items_center().gap_2();
+        let controls = [-1, 1].into_iter().fold(controls, |controls, direction| {
+            let entity = view.clone();
+            let button = Button::new(SharedString::from(format!("{id}-{direction}")))
+                .icon(if direction < 0 {
+                    IconName::Minus
+                } else {
+                    IconName::Plus
+                })
+                .ghost()
+                .disabled(
+                    disabled
+                        || (direction < 0 && value <= minimum)
+                        || (direction > 0 && value >= maximum),
+                )
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |this, cx| {
+                        if this.settings_apply.is_some() || this.settings_draft.is_none() {
+                            return;
+                        }
+                        this.update_audio_preferences(
+                            |p| {
+                                let spec = if receive {
+                                    &mut p.processing.postprocess[index]
+                                } else {
+                                    &mut p.processing.preprocess[index]
+                                };
+                                let field = match parameter {
+                                    "tail" => &mut spec.params.tail_ms,
+                                    "target" => &mut spec.params.target,
+                                    "headroom" => &mut spec.params.headroom_db,
+                                    _ => &mut spec.params.max_gain_db,
+                                };
+                                *field = (if *field == 0 { default } else { *field }
+                                    + direction * step)
+                                    .clamp(minimum, maximum);
+                            },
+                            cx,
+                        );
+                    });
+                });
+            if direction < 0 {
+                controls.child(button).child(
+                    div()
+                        .w(px(80.))
+                        .text_xs()
+                        .text_center()
+                        .child(format!("{value} {unit}")),
+                )
+            } else {
+                controls.child(button)
+            }
+        });
+        field(label, controls).into_any_element()
     }
 
     fn render_modal(&self, view: &Entity<Self>) -> Option<AnyElement> {
@@ -5958,9 +6336,13 @@ impl ResonaApp {
         };
         Some(
             div()
+                .id("modal-scrim")
                 .absolute()
                 .inset_0()
                 .bg(gpui::rgba(0x00000066))
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_mouse_down(gpui::MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                .on_click(|_, _, cx| cx.stop_propagation())
                 .flex()
                 .items_center()
                 .justify_center()
@@ -6340,10 +6722,25 @@ fn voice_params(voice: &VoiceState) -> Value {
         "enabled": voice.enabled, "muted": voice.muted, "deafened": voice.deafened,
         "inputDeviceID": voice.input_device_id, "outputDeviceID": voice.output_device_id,
         "volume": voice.volume, "inputGain": voice.input_gain, "activationMode": voice.activation_mode,
-        "vadThresholdDB": voice.vad_threshold_db, "noiseSuppression": voice.noise_suppression,
-        "echoCancellation": voice.echo_cancellation, "echoSuppression": voice.echo_suppression,
+        "vadThresholdDB": voice.vad_threshold_db, "processing": voice.processing,
         "ducking": voice.ducking,
     })
+}
+
+fn voice_state_current(next: &VoiceState, current: &VoiceState) -> bool {
+    (next.generation, next.operation) >= (current.generation, current.operation)
+}
+
+fn navigation_blocked(modal: Option<&Modal>, closing: bool) -> bool {
+    modal.is_some() || closing
+}
+
+fn voice_operation_applied(voice: &VoiceState, generation: u64, operation: u64) -> bool {
+    !voice.busy
+        && voice.error.is_empty()
+        && voice.generation == generation
+        && voice.operation == operation
+        && voice.applied_operation == operation
 }
 
 fn can_prepare_voice_preferences(mode: &str) -> bool {
@@ -6462,9 +6859,7 @@ fn apply_preferences(preferences: &Preferences, voice: &mut VoiceState) {
     voice.input_gain = preferences.input_gain.min(200);
     voice.activation_mode = preferences.activation_mode.clone();
     voice.vad_threshold_db = preferences.vad_threshold_db;
-    voice.noise_suppression = preferences.noise_suppression.clone();
-    voice.echo_cancellation = preferences.echo_cancellation;
-    voice.echo_suppression = preferences.echo_suppression;
+    voice.processing = preferences.processing.clone();
     voice.ducking = preferences.ducking;
     voice.input_device_id = preferences.input_device_id.clone();
     voice.output_device_id = preferences.output_device_id.clone();
@@ -6885,7 +7280,8 @@ mod tests {
     use super::{
         DetailChange, DetailSelection, can_prepare_voice_preferences, can_show_session_channels,
         detail_selection_change, detail_text, ptt_can_send, remove_inserted_newline,
-        user_is_speaking, visible_text_channel, voice_params,
+        user_is_speaking, visible_text_channel, voice_operation_applied, voice_params,
+        voice_state_current,
     };
     use crate::model::{User, VoiceState, Workspace};
 
@@ -7149,9 +7545,15 @@ mod tests {
         let voice = VoiceState {
             activation_mode: "vad".into(),
             vad_threshold_db: -32,
-            noise_suppression: "high".into(),
-            echo_cancellation: true,
-            echo_suppression: true,
+            processing: {
+                let mut p = crate::model::ProcessingConfig::default();
+                p.preprocess[0].backend = "speex".into();
+                p.preprocess[0].params.residual = true;
+                p.preprocess[1].backend = "speex".into();
+                p.preprocess[1].params.level = 3;
+                p.postprocess[0].backend = "speex".into();
+                p
+            },
             ducking: true,
             ..VoiceState::default()
         };
@@ -7160,10 +7562,47 @@ mod tests {
         assert_eq!(params["enabled"], false);
         assert_eq!(params["vadThresholdDB"], -32);
         assert_eq!(params["activationMode"], "vad");
-        assert_eq!(params["noiseSuppression"], "high");
-        assert_eq!(params["echoCancellation"], true);
-        assert_eq!(params["echoSuppression"], true);
+        assert_eq!(params["processing"]["preprocess"][1]["params"]["level"], 3);
+        assert_eq!(
+            params["processing"]["preprocess"][0]["params"]["residual"],
+            true
+        );
         assert_eq!(params["ducking"], true);
+        assert_eq!(params["processing"]["postprocess"][0]["backend"], "speex");
+        let echoed: VoiceState = serde_json::from_value(params).unwrap();
+        assert_eq!(echoed.processing.postprocess[0].backend, "speex");
+    }
+
+    #[test]
+    fn settings_wait_for_matching_applied_operation_and_ignore_old_voice_events() {
+        let current = VoiceState {
+            generation: 4,
+            operation: 12,
+            applied_operation: 11,
+            busy: true,
+            ..VoiceState::default()
+        };
+        let stale = VoiceState {
+            generation: 4,
+            operation: 11,
+            applied_operation: 11,
+            ..VoiceState::default()
+        };
+        assert!(!voice_state_current(&stale, &current));
+        assert!(!voice_operation_applied(&current, 4, 12));
+        let querying_early = VoiceState {
+            busy: false,
+            ..current.clone()
+        };
+        assert!(!voice_operation_applied(&querying_early, 4, 12));
+        let confirmed = VoiceState {
+            applied_operation: 12,
+            ..querying_early
+        };
+        assert!(voice_operation_applied(&confirmed, 4, 12));
+        assert!(!voice_operation_applied(&confirmed, 3, 12));
+        assert!(!voice_operation_applied(&confirmed, 4, 11));
+        assert!(!voice_state_current(&stale, &current));
     }
 
     #[test]

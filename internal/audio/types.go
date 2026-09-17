@@ -73,6 +73,27 @@ type Device struct {
 	Default bool       `json:"default"`
 }
 
+type ProcessorParams struct {
+	Level      int  `json:"level,omitempty"`
+	TailMS     int  `json:"tailMs,omitempty"`
+	Residual   bool `json:"residual,omitempty"`
+	Target     int  `json:"target,omitempty"`
+	MaxGainDB  int  `json:"maxGainDb,omitempty"`
+	HeadroomDB int  `json:"headroomDb,omitempty"`
+}
+
+type ProcessorSpec struct {
+	Name    string          `json:"name"`
+	Backend string          `json:"backend"`
+	Params  ProcessorParams `json:"params"`
+}
+
+// Fixed slots preserve the validated execution order and keep VoiceConfig comparable.
+type ProcessingConfig struct {
+	Preprocess  [2]ProcessorSpec `json:"preprocess"`
+	Postprocess [1]ProcessorSpec `json:"postprocess"`
+}
+
 type VoiceConfig struct {
 	// LocalMonitor is controlled by the service, never deserialized from GUI preferences.
 	LocalMonitor   bool   `json:"-"`
@@ -83,13 +104,11 @@ type VoiceConfig struct {
 	OutputDeviceID string `json:"outputDeviceID"`
 	Volume         int    `json:"volume"`
 	// InputGain is explicit: 0 silences input; constructors and IPC default to 100.
-	InputGain        int    `json:"inputGain"`
-	ActivationMode   string `json:"activationMode"`
-	VADThresholdDB   int    `json:"vadThresholdDB"`
-	NoiseSuppression string `json:"noiseSuppression"`
-	EchoCancellation bool   `json:"echoCancellation"`
-	EchoSuppression  bool   `json:"echoSuppression"`
-	Ducking          bool   `json:"ducking"`
+	InputGain      int              `json:"inputGain"`
+	ActivationMode string           `json:"activationMode"`
+	VADThresholdDB int              `json:"vadThresholdDB"`
+	Processing     ProcessingConfig `json:"processing"`
+	Ducking        bool             `json:"ducking"`
 }
 
 type VoiceState struct {
@@ -109,6 +128,9 @@ var (
 )
 
 func validateConfig(config VoiceConfig) error {
+	if err := validateProcessing(config.Processing); err != nil {
+		return err
+	}
 	if config.InputGain < 0 || config.InputGain > 200 {
 		return errors.New("麦克风输入增益必须在 0 到 200 之间")
 	}
@@ -120,9 +142,6 @@ func validateConfig(config VoiceConfig) error {
 	}
 	if config.VADThresholdDB < -60 || config.VADThresholdDB > 0 {
 		return errors.New("语音阈值必须在 -60 到 0 dB 之间")
-	}
-	if config.NoiseSuppression != "" && config.NoiseSuppression != "off" && config.NoiseSuppression != "low" && config.NoiseSuppression != "medium" && config.NoiseSuppression != "high" {
-		return errors.New("未知的降噪级别")
 	}
 	return nil
 }
