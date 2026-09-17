@@ -718,6 +718,17 @@ func (e *Engine) SuspendCapture() {
 	}
 }
 
+// The encoder owns both processing and replacement, including destruction.
+func (r *engineRun) replaceProcessor(update encodeUpdate) {
+	old := r.processor
+	r.processor = update.processor
+	r.referencePCM.Reset()
+	if old != nil {
+		old.Close()
+	}
+	update.ack <- struct{}{}
+}
+
 func (r *engineRun) encodeLoop() {
 	channels := 1
 	if r.codec == CodecOpusMusic {
@@ -733,16 +744,16 @@ func (r *engineRun) encodeLoop() {
 		case <-r.ctx.Done():
 			return
 		case update := <-r.encodeControl:
-			old := r.processor
-			r.processor = update.processor
-			r.referencePCM.Reset()
-			if old != nil {
-				old.Close()
-			}
-			update.ack <- struct{}{}
+			r.replaceProcessor(update)
 		case <-r.captureWake:
 		}
 		for r.capturePCM.Available() >= FrameSamples {
+			// A busy capture queue must not starve control until it becomes empty.
+			select {
+			case update := <-r.encodeControl:
+				r.replaceProcessor(update)
+			default:
+			}
 			if r.ctx.Err() != nil || !r.allowSend.Load() {
 				r.captureMu.Lock()
 				r.capturePCM.Reset()
