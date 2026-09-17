@@ -36,3 +36,23 @@ func TestProcessingRejectsWrongSlotAndDisabledParameters(t *testing.T) {
 		}
 	}
 }
+
+func TestProcessorOptionsMatchAvailableBackends(t *testing.T) {
+	options := ProcessorOptions()
+	for _, slot := range []struct{ phase, name string }{
+		{"preprocess", "aec"}, {"preprocess", "ans"}, {"postprocess", "agc"},
+	} {
+		found := map[string]bool{}
+		for _, option := range options {
+			if option.Phase == slot.phase && option.Name == slot.name {
+				if option.DisplayName == "" || option.Description == "" || found[option.ID] {
+					t.Fatalf("invalid option: %+v", option)
+				}
+				found[option.ID] = true
+			}
+		}
+		if !found["none"] || found["speex"] != speexAvailable || found["webrtc"] != AvailableWebRTC() {
+			t.Fatalf("wrong available options for %s/%s: %v", slot.phase, slot.name, found)
+		}
+	}
+}

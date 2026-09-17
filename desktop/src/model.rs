@@ -308,7 +308,17 @@ pub struct Capabilities {
     pub platform: String,
     pub secure_password_storage: bool,
     pub voice: bool,
-    pub web_rtc_audio: bool,
+    pub audio_processors: Vec<ProcessorOption>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessorOption {
+    pub phase: String,
+    pub name: String,
+    pub id: String,
+    pub display_name: String,
+    pub description: String,
 }
 
 impl Default for Capabilities {
@@ -318,7 +328,7 @@ impl Default for Capabilities {
             platform: String::new(),
             secure_password_storage: false,
             voice: false,
-            web_rtc_audio: false,
+            audio_processors: Vec::new(),
         }
     }
 }
@@ -380,9 +390,9 @@ mod tests {
     }
 
     #[test]
-    fn optional_webrtc_capability_and_agc2_parameters_round_trip() {
-        let capabilities: Capabilities = serde_json::from_str(r#"{"webRtcAudio":true}"#).unwrap();
-        assert!(capabilities.web_rtc_audio);
+    fn processor_capability_and_agc2_parameters_round_trip() {
+        let capabilities: Capabilities = serde_json::from_str(r#"{"audioProcessors":[{"phase":"postprocess","name":"agc","id":"webrtc","displayName":"WebRTC AGC2","description":"每成员自动增益"}]}"#).unwrap();
+        assert_eq!(capabilities.audio_processors[0].id, "webrtc");
         let mut config = ProcessingConfig::default();
         config.postprocess[0].backend = "webrtc".into();
         config.postprocess[0].params.headroom_db = 5;

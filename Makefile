@@ -1,9 +1,10 @@
 .DEFAULT_GOAL := build
-.PHONY: help dev build build-core build-apm build-desktop build-server deploy core clean clean-all test test-native test-build test-deploy generate
+.PHONY: help dev build build-core build-apm build-desktop build-server deploy core clean clean-all test test-native test-build test-deploy generate format
 
 HOST_OS := $(shell uname -s)
 GOEXE = $(shell go env GOEXE)
 CORE_BINARY = $(CURDIR)/build/bin/resona-core$(GOEXE)
+GOFUMPT ?= go run mvdan.cc/gofumpt@v0.10.0
 
 # Cleaning and building in the same invocation can race under make -j.
 ifneq ($(filter clean clean-all,$(MAKECMDGOALS)),)
@@ -30,11 +31,17 @@ help:
 	@echo 'make test           Run Go and locked Rust tests'
 	@echo 'make test-build     Check cleanup boundaries in a temporary directory'
 	@echo 'make test-deploy    Check deployment scripts without a real server'
+	@echo 'make format         Format Go (gofumpt v0.10.0) and Rust sources'
 	@echo 'VERSION=vX.Y.Z      Override Go metadata (default: v + root VERSION file)'
 	@echo 'Windows desktop: use build-windows.cmd (MSVC + UCRT64 setup)'
 
 generate:
 	go generate ./internal/nativewire/pb
+
+format:
+	$(GOFUMPT) -w cmd internal deploy tools test
+	cargo fmt --manifest-path desktop/Cargo.toml
+	cargo fmt --manifest-path native/webrtc-apm/Cargo.toml
 
 dev: build-core
 	RESONA_CORE="$(CORE_BINARY)" cargo run --locked --manifest-path desktop/Cargo.toml

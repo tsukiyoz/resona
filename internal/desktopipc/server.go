@@ -458,7 +458,7 @@ func dispatchWithContext(ctx context.Context, s *client.Service, req request) (a
 	switch req.Method {
 	case "GetCapabilities":
 		voiceAvailable := nativeCGO && (runtime.GOOS == "darwin" || runtime.GOOS == "windows")
-		return map[string]any{"protocolVersion": 1, "platform": runtime.GOOS, "securePasswordStorage": runtime.GOOS == "windows" || (nativeCGO && runtime.GOOS == "darwin"), "voice": voiceAvailable, "webRtcAudio": voiceAvailable && audio.AvailableWebRTC()}, nil
+		return map[string]any{"protocolVersion": 1, "platform": runtime.GOOS, "securePasswordStorage": runtime.GOOS == "windows" || (nativeCGO && runtime.GOOS == "darwin"), "voice": voiceAvailable, "audioProcessors": audio.ProcessorOptions()}, nil
 	case "GetCoreInfo":
 		info := version.Current()
 		return map[string]string{"version": info.Version, "commit": info.Commit, "buildTime": info.BuildTime, "dirty": info.Dirty, "goVersion": info.GoVersion, "platform": info.Platform}, nil

@@ -54,7 +54,11 @@ impl Default for Preferences {
             vad_threshold_db: -40,
             input_gain: 100,
             playback_volume: 200,
-            processing: ProcessingConfig::default(),
+            processing: {
+                let mut config = ProcessingConfig::default();
+                config.postprocess[0].backend = "speex".into();
+                config
+            },
             noise_suppression: "off".into(),
             playback_agc: "off".into(),
             echo_cancellation: false,
@@ -71,6 +75,8 @@ impl Default for Preferences {
 impl Preferences {
     fn normalize_audio(mut self, migrate_legacy: bool) -> Self {
         if migrate_legacy {
+            // Older saved preferences had an explicit playback_agc field.
+            self.processing.postprocess[0].backend = "none".into();
             if self.echo_cancellation {
                 let spec = &mut self.processing.preprocess[0];
                 spec.backend = "speex".into();
@@ -239,7 +245,7 @@ mod tests {
         let old: Preferences = serde_json::from_str("{}").unwrap();
         assert_eq!(old.input_gain, 100);
         assert_eq!(old.playback_volume, 200);
-        assert_eq!(old.processing.postprocess[0].backend, "none");
+        assert_eq!(old.processing.postprocess[0].backend, "speex");
         let zero = Preferences {
             input_gain: 0,
             playback_volume: 10,
@@ -258,6 +264,34 @@ mod tests {
         let normalized = loaded.normalize_audio(true);
         assert_eq!(normalized.processing.preprocess[0].backend, "none");
         assert!(!normalized.processing.preprocess[0].params.residual);
+        assert_eq!(normalized.processing.postprocess[0].backend, "none");
+    }
+
+    #[test]
+    fn saved_disabled_agc_stays_off_and_new_install_defaults_on() {
+        let directory =
+            std::env::temp_dir().join(format!("resona-agc-default-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("preferences.json");
+        fs::write(&path, r#"{"playback_agc":"off"}"#).unwrap();
+        assert_eq!(
+            Preferences::load_at(&path).processing.postprocess[0].backend,
+            "none"
+        );
+        let saved = serde_json::to_vec(&Preferences::load_at(&path)).unwrap();
+        fs::write(&path, saved).unwrap();
+        assert_eq!(
+            Preferences::load_at(&path).processing.postprocess[0].backend,
+            "none"
+        );
+        fs::remove_file(path).unwrap();
+        assert_eq!(
+            Preferences::load_at(&directory.join("missing.json"))
+                .processing
+                .postprocess[0]
+                .backend,
+            "speex"
+        );
     }
 
     #[test]

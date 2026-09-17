@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
+	"log/slog"
 	"net"
 	"reflect"
 	"sort"
@@ -73,6 +74,7 @@ func (b *bucket) take(rate, burst float64) bool {
 	b.tokens--
 	return true
 }
+
 func Listen(address string, cfg Config) (*Server, error) {
 	if cfg.ChannelStore != nil {
 		cfg.Channels = cfg.ChannelStore.record.Channels
@@ -130,6 +132,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		go func() { defer s.wg.Done(); defer func() { <-slots }(); s.servePeer(ctx, c) }()
 	}
 }
+
 func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 	stop := context.AfterFunc(ctx, func() { _ = c.CloseWithError(0, "server stopping") })
 	defer stop()
@@ -173,7 +176,19 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 	s.peers[p.member.ID] = p
 	s.sendStateLocked(p, w.WelcomeKind, true)
 	s.broadcastLocked(p)
+	member := p.member
 	s.mu.Unlock()
+	remoteAddr, remoteIP := "unknown", "unknown"
+	if remote, ok := c.(interface{ RemoteAddr() net.Addr }); ok && remote.RemoteAddr() != nil {
+		remoteAddr = remote.RemoteAddr().String()
+		if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
+			remoteIP = host
+		}
+	}
+	logger := slog.With("remote_addr", remoteAddr, "remote_ip", remoteIP,
+		"name", member.Nickname, "member_id", member.ID, "session", member.Instance)
+	connectedAt := time.Now()
+	logger.Info("client connected")
 	var workers sync.WaitGroup
 	workers.Add(3)
 	go func() { defer workers.Done(); s.writeLoop(p) }()
@@ -188,6 +203,7 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 		delete(s.peers, p.member.ID)
 		s.broadcastLocked(nil)
 		s.mu.Unlock()
+		logger.Info("client disconnected", "duration_ms", time.Since(connectedAt).Milliseconds())
 	}()
 	for {
 		f, err := w.Read(stream)
@@ -298,6 +314,7 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 		s.mu.Unlock()
 	}
 }
+
 func (s *Server) stateLocked(p *peer) w.State {
 	members := make([]w.Member, 0, len(s.peers))
 	for _, v := range s.peers {
@@ -334,6 +351,7 @@ func (s *Server) sendStateLocked(p *peer, kind uint8, force bool) {
 	copy.Revision = 0
 	p.lastState = &copy
 }
+
 func (s *Server) broadcastLocked(except *peer) {
 	for _, p := range s.peers {
 		if p != except {
@@ -341,6 +359,7 @@ func (s *Server) broadcastLocked(except *peer) {
 		}
 	}
 }
+
 func (s *Server) enqueueLocked(p *peer, kind uint8, id uint32, value any) {
 	b, err := w.Pack(kind, id, value)
 	if err != nil {
@@ -353,6 +372,7 @@ func (s *Server) enqueueLocked(p *peer, kind uint8, id uint32, value any) {
 		_ = p.conn.CloseWithError(1, "slow control consumer")
 	}
 }
+
 func (s *Server) writeLoop(p *peer) {
 	for {
 		select {
@@ -373,6 +393,7 @@ func (s *Server) writeLoop(p *peer) {
 		}
 	}
 }
+
 func (s *Server) voiceLoop(p *peer) {
 	type target struct {
 		queue *w.VoiceRing
@@ -412,6 +433,7 @@ func (s *Server) voiceLoop(p *peer) {
 		}
 	}
 }
+
 func validName(s string, maxRunes int) bool {
 	return utf8.ValidString(s) && strings.TrimSpace(s) != "" && utf8.RuneCountInString(s) <= maxRunes && !strings.ContainsFunc(s, unicode.IsControl)
 }

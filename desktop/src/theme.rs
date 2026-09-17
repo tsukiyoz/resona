@@ -20,6 +20,7 @@ pub fn apply(preference: ThemePreference, window: Option<&mut Window>, cx: &mut 
         ),
     };
     LIGHT.store(mode == ThemeMode::Light, Ordering::Relaxed);
+    crate::app_icon::apply(mode == ThemeMode::Light, window.as_deref());
     Theme::change(mode, window, cx);
     let theme = Theme::global_mut(cx);
     theme.font_size = gpui::px(14.);

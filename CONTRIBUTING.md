@@ -17,6 +17,11 @@ needed; never force-push shared main.
 
 ## Checks
 
+- Formatting: `make format` uses pinned `gofumpt` v0.10.0 for Go and `cargo fmt`
+  for both Rust applications. The first run may download the Go formatter; an
+  installed matching version can be used with `make format GOFUMPT=gofumpt`.
+  Generated and vendored Go files are skipped by gofumpt's directory traversal.
+
 - Core: `go test ./internal/...`; use `go test -race` for affected concurrency and
   lifecycle packages.
 - Desktop: `cargo test --locked --manifest-path desktop/Cargo.toml`, native build

@@ -18,6 +18,37 @@ type ProcessorChain struct {
 
 type ProcessorFactory func(ProcessorSpec) (speechProcessor, error)
 
+// ProcessorOption describes an available backend for one processing slot.
+type ProcessorOption struct {
+	Phase       string `json:"phase"`
+	Name        string `json:"name"`
+	ID          string `json:"id"`
+	DisplayName string `json:"displayName"`
+	Description string `json:"description"`
+}
+
+func ProcessorOptions() []ProcessorOption {
+	slots := []struct {
+		phase, name, speex, webRTC, speexDesc, webRTCDesc string
+	}{
+		{"preprocess", "aec", "SpeexDSP", "WebRTC AEC3", "轻量回声消除，适合日常语音。", "更复杂的回声消除，资源开销通常较高。"},
+		{"preprocess", "ans", "SpeexDSP", "WebRTC NS", "轻量背景噪声抑制。", "WebRTC 背景噪声抑制，提供更细的强度调节。"},
+		{"postprocess", "agc", "SpeexDSP", "WebRTC AGC2", "对每位成员独立均衡收听响度。", "对每位成员独立均衡收听响度，可调目标余量。"},
+	}
+	options := make([]ProcessorOption, 0, len(slots)*3)
+	webRTC := AvailableWebRTC()
+	for _, slot := range slots {
+		options = append(options, ProcessorOption{slot.phase, slot.name, "none", "关闭", "不进行此项处理。"})
+		if speexAvailable {
+			options = append(options, ProcessorOption{slot.phase, slot.name, "speex", slot.speex, slot.speexDesc})
+		}
+		if webRTC {
+			options = append(options, ProcessorOption{slot.phase, slot.name, "webrtc", slot.webRTC, slot.webRTCDesc})
+		}
+	}
+	return options
+}
+
 func BuildChain(specs []ProcessorSpec, factory ProcessorFactory) (*ProcessorChain, error) {
 	chain := &ProcessorChain{}
 	for _, spec := range specs {
