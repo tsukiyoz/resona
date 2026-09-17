@@ -147,6 +147,9 @@ actionlint v1.7.12、shell 语法及 diff 检查通过。本机 arm64 独立测�
 用户重新授权提交、合并主分支并发布新标签。VERSION、Cargo.toml/Cargo.lock 与发布说明同步为 0.1.2。完整 `go test -race ./internal/...`、Rust 30 项测试、cargo fmt 检查、shell 语法、Windows/macOS actionlint 与 diff 检查均通过；独立 macOS v0.1.2 release 包构建及严格签名验证通过。沿用本轮已记录的产品流程复审与实窗验证，不将远端 Actions 或 Windows/Intel 实机状态记作已通过。
 # 2026-09-17 Windows build follow-up
 
+- Final remote validation: Windows run 35219519290 at 0afad0f passed credential tests, core/audio tests, native WebRTC tests, packaged-library smoke checks, desktop compilation and artifact upload. macOS run 35218751010 at 1935d38 passed both arm64 and x64 tests, bundle creation, packaged-library checks and upload. The later 0afad0f change adds only a Windows linker argument; macOS behavior is unchanged. Fix-branch macOS packages are ad-hoc signed, not the trusted main/tag certificate path.
+- Windows run 35218579097 reached linking after the path fix and exposed missing winmm for WebRTC timeGetTime. The native crate now uses the same trailing Windows system-library link argument as the passing 3A benchmark.
+
 - Fix-branch run 35217174221 passed the Windows Go audio tests in 2.195 seconds and the GCC runtime query, then hit MinGW archive path limits under the user TEMP directory. Native builds now prefer RUNNER_TEMP and reject overlong local build paths with an explicit override option.
 - macOS tag jobs completed core/desktop tests and native compilation, but license collection requested uncached cross-platform crates while forcing offline mode. License metadata now permits downloads while retaining the locked dependency graph. Fresh remote packaging checks are required for both platforms.
 
