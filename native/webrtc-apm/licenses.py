@@ -11,7 +11,8 @@ def main() -> None:
     manifest, output, target = map(Path, sys.argv[1:])
     metadata = json.loads(
         subprocess.check_output(
-            ["cargo", "metadata", "--locked", "--offline", "--format-version", "1", "--manifest-path", str(manifest)]
+            # Metadata includes target-specific crates a host build may not cache.
+            ["cargo", "metadata", "--locked", "--format-version", "1", "--manifest-path", str(manifest)]
         )
     )
     output.mkdir(parents=True, exist_ok=True)

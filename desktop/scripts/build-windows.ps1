@@ -2,6 +2,7 @@ param(
     [string]$Msys2Root = "C:\msys64",
     [ValidatePattern('^[A-Za-z0-9.+_-]+$')]
     [string]$Version,
+    [string]$NativeTargetDirectory,
     [switch]$SkipTests
 )
 
@@ -85,7 +86,17 @@ try {
     $env:PKG_CONFIG_LIBDIR = Join-Path $env:TEMP "resona-empty-pkg-config"
     New-Item -ItemType Directory -Force $env:PKG_CONFIG_LIBDIR | Out-Null
     # MinGW's archive tools need short object paths for the bundled Abseil build.
-    $ApmTarget = Join-Path $env:TEMP "3a"
+    if (-not $NativeTargetDirectory) {
+        if ($env:RUNNER_TEMP) {
+            $NativeTargetDirectory = Join-Path $env:RUNNER_TEMP "3a"
+        } else {
+            $NativeTargetDirectory = Join-Path $RepoDirectory "build\3a"
+        }
+    }
+    $ApmTarget = [IO.Path]::GetFullPath($NativeTargetDirectory)
+    if ($ApmTarget.Length -gt 30 -or $ApmTarget -match '\s') {
+        throw "WebRTC requires a short build path without spaces. Pass -NativeTargetDirectory with a writable path such as C:\resona-3a (at most 30 characters): $ApmTarget"
+    }
     $env:CARGO_TARGET_DIR = $ApmTarget
     Invoke-Checked cargo @("test", "--locked", "--release", "--manifest-path", "native/webrtc-apm/Cargo.toml")
     Invoke-Checked cargo @("build", "--locked", "--release", "--manifest-path", "native/webrtc-apm/Cargo.toml")

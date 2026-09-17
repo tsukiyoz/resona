@@ -147,6 +147,9 @@ actionlint v1.7.12、shell 语法及 diff 检查通过。本机 arm64 独立测�
 用户重新授权提交、合并主分支并发布新标签。VERSION、Cargo.toml/Cargo.lock 与发布说明同步为 0.1.2。完整 `go test -race ./internal/...`、Rust 30 项测试、cargo fmt 检查、shell 语法、Windows/macOS actionlint 与 diff 检查均通过；独立 macOS v0.1.2 release 包构建及严格签名验证通过。沿用本轮已记录的产品流程复审与实窗验证，不将远端 Actions 或 Windows/Intel 实机状态记作已通过。
 # 2026-09-17 Windows build follow-up
 
+- Fix-branch run 35217174221 passed the Windows Go audio tests in 2.195 seconds and the GCC runtime query, then hit MinGW archive path limits under the user TEMP directory. Native builds now prefer RUNNER_TEMP and reject overlong local build paths with an explicit override option.
+- macOS tag jobs completed core/desktop tests and native compilation, but license collection requested uncached cross-platform crates while forcing offline mode. License metadata now permits downloads while retaining the locked dependency graph. Fresh remote packaging checks are required for both platforms.
+
 - v0.1.4 Windows tag run 35214797720 timed out in the live DSP replacement test; main run 35214797706 also exposed a truncated unquoted PowerShell GCC library query.
 - Encoder control is now checked between queued frames. A deterministic test keeps capture nonempty and verifies replacement and old-processor destruction at the next frame boundary.
 - The new regression and existing live DSP replacement test passed 10 repetitions under the Go race detector locally. Windows packaging validation remains pending on the fix branch; v0.1.4 is immutable.
