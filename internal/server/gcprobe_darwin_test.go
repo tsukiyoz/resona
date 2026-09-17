@@ -45,6 +45,7 @@ func atomicMax(dst *atomic.Int64, n int64) {
 		}
 	}
 }
+
 func (h *probeHistogram) add(d time.Duration) {
 	if d < 0 {
 		return
@@ -54,6 +55,7 @@ func (h *probeHistogram) add(d time.Duration) {
 	atomicMax(&h.max, int64(d))
 	atomicMax(&h.windowMax, int64(d))
 }
+
 func (h *probeHistogram) summary() map[string]any {
 	n := h.count.Load()
 	r := map[string]any{"count": n, "max_ms": float64(h.max.Load()) / 1e6, "over_50ms_count": h.bins[5000].Load()}
@@ -91,6 +93,7 @@ func (c probeConnection) ReceiveDatagram(ctx context.Context) ([]byte, error) {
 	}
 	return b, e
 }
+
 func (c probeConnection) SendDatagram(b []byte) error {
 	e := c.Connection.SendDatagram(b)
 	if e == nil && c.enabled.Load() && len(b) == w.ServerVoiceHeader+80 {
@@ -113,6 +116,7 @@ func (l probeListener) Accept(ctx context.Context) (w.Connection, error) {
 	}
 	return probeConnection{c, l.origin, l.h, l.enabled}, nil
 }
+
 func probeCPU(t *testing.T) float64 {
 	t.Helper()
 	var r syscall.Rusage
@@ -121,6 +125,7 @@ func probeCPU(t *testing.T) float64 {
 	}
 	return float64(r.Utime.Sec+r.Stime.Sec) + float64(r.Utime.Usec+r.Stime.Usec)/1e6
 }
+
 func probeMetrics() map[string]float64 {
 	names := []string{"/gc/cycles/total:gc-cycles", "/gc/heap/allocs:bytes", "/memory/classes/heap/objects:bytes", "/cpu/classes/gc/mark/assist:cpu-seconds", "/cpu/classes/gc/total:cpu-seconds"}
 	s := make([]metrics.Sample, len(names))
@@ -345,7 +350,7 @@ func TestServerGCProbe(t *testing.T) {
 	if dir == "" {
 		t.Fatal("set RESONA_GC_OUTPUT to an artifact directory")
 	}
-	if e := os.MkdirAll(dir, 0700); e != nil {
+	if e := os.MkdirAll(dir, 0o700); e != nil {
 		t.Fatal(e)
 	}
 	self, e := os.Executable()
@@ -542,7 +547,7 @@ func TestServerGCProbe(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if e = os.WriteFile(filepath.Join(dir, "result.json"), b, 0600); e != nil {
+	if e = os.WriteFile(filepath.Join(dir, "result.json"), b, 0o600); e != nil {
 		t.Fatal(e)
 	}
 	delete(result, "windows")

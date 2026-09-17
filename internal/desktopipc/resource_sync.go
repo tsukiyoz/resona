@@ -26,11 +26,13 @@ type resourceSync struct {
 func newResourceSync() *resourceSync {
 	return &resourceSync{interest: resourceInterest{ResourceInterest: client.ResourceInterest{Active: true, AllChannels: true, AllMembers: true}}, changed: make(chan struct{}, 1)}
 }
+
 func (r *resourceSync) current() resourceInterest {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.interest
 }
+
 func (r *resourceSync) set(next resourceInterest) {
 	r.mu.Lock()
 	r.interest = next

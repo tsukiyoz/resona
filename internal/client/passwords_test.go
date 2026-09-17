@@ -24,6 +24,7 @@ func (p *memoryPasswords) Has(key string) (bool, error) {
 	_, found := p.values[key]
 	return found, nil
 }
+
 func (p *memoryPasswords) Get(key string) (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -37,6 +38,7 @@ func (p *memoryPasswords) Get(key string) (string, error) {
 	}
 	return value, nil
 }
+
 func (p *memoryPasswords) Set(key, value string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -46,6 +48,7 @@ func (p *memoryPasswords) Set(key, value string) error {
 	p.values[key] = value
 	return nil
 }
+
 func (p *memoryPasswords) Delete(key string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()

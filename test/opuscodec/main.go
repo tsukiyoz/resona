@@ -19,10 +19,12 @@ import (
 	"github.com/thesyncim/gopus"
 )
 
-const rate = 48000
-const frameSize = 960
-const warmFrames = 50
-const maxPacket = 1275
+const (
+	rate       = 48000
+	frameSize  = 960
+	warmFrames = 50
+	maxPacket  = 1275
+)
 
 type encoder interface {
 	Encode([]float32, []byte) (int, error)
@@ -70,6 +72,7 @@ func (c codec) encoder(bitrate, complexity int, cbr bool) (encoder, error) {
 	}
 	return &goEncoder{e}, nil
 }
+
 func (c codec) decoder() (decoder, error) {
 	if c.kind >= 0 {
 		return newNativeDecoder(c.kind)
@@ -131,6 +134,7 @@ func fixture(frames int) []float32 {
 	}
 	return pcm
 }
+
 func loadPCM(path string, frames int) ([]float32, string, error) {
 	if path == "" {
 		return fixture(frames), "synthetic-harmonics-noise-quiet-v1 (not speech quality evidence)", nil
@@ -151,6 +155,7 @@ func loadPCM(path string, frames int) ([]float32, string, error) {
 	}
 	return pcm, "external-f32le-48k-mono", nil
 }
+
 func pcmHash(pcm []float32) string {
 	data := make([]byte, len(pcm)*4)
 	for i, x := range pcm {
@@ -183,6 +188,7 @@ func packets(c codec, pcm []float32, bitrate, complexity int, cbr bool) ([][]byt
 	}
 	return out, nil
 }
+
 func decodeAll(c codec, packets [][]byte) ([]float32, error) {
 	d, err := c.decoder()
 	if err != nil {
@@ -211,6 +217,7 @@ func decodeAll(c codec, packets [][]byte) ([]float32, error) {
 	}
 	return pcm, nil
 }
+
 func nrmse(pcm, reference []float32) float64 {
 	var errorSum, energy float64
 	for i, v := range pcm {
@@ -327,8 +334,9 @@ func writeJSON(path string, value any) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(data, '\n'), 0644)
+	return os.WriteFile(path, append(data, '\n'), 0o644)
 }
+
 func save(out string, results []result, checks []interop, qualities []quality) error {
 	if err := writeJSON(filepath.Join(out, "results.json"), results); err != nil {
 		return err
@@ -417,7 +425,7 @@ func save(out string, results []result, checks []interop, qualities []quality) e
 	}
 	report.WriteString(qualityReport(qualities))
 	report.WriteString("\n## Limits\n\n- Default fixture is deterministic synthetic audio, not human speech. Supply real normalized PCM before choosing a codec.\n- Native codecs include one cgo call per frame; the bridge row measures an empty cgo call. Rust adapters also catch panics. These results assess codec replacement from Go, not a full Rust core.\n- Go allocation counts omit native/Rust allocations and are not comparable total-memory figures.\n- Construction, warmup, PCM generation, validation and report I/O are outside timing. GC remains enabled. No concurrent benchmark processes should run.\n- p99/p999 are observed tick times during a throughput loop, not network latency or a paced audio deadline test. Small samples cannot establish rare tails.\n- CBR is the default common rate-control setting; VBR is exploratory because internal mode/quality decisions can differ. Check byte rates and interoperability before interpreting speed.\n- No FEC/PLC/DTX, malformed-packet, mobile power or perceptual-quality qualification is implied.\n")
-	return os.WriteFile(filepath.Join(out, "report.md"), []byte(report.String()), 0644)
+	return os.WriteFile(filepath.Join(out, "report.md"), []byte(report.String()), 0o644)
 }
 
 func run() error {
@@ -431,7 +439,7 @@ func run() error {
 	if *seconds < 1 || *seconds > 600 || *repeats < 1 || *repeats > 100 || *complexity < 0 || *complexity > 10 {
 		return fmt.Errorf("invalid benchmark bounds")
 	}
-	if err := os.MkdirAll(*out, 0755); err != nil {
+	if err := os.MkdirAll(*out, 0o755); err != nil {
 		return err
 	}
 	pcm, source, err := loadPCM(*input, (*seconds+1)*50)
@@ -501,6 +509,7 @@ func run() error {
 	}
 	return nil
 }
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

@@ -41,6 +41,7 @@ func alignedSNR(input, decoded []float32) (float64, int) {
 	}
 	return 10 * math.Log10(math.Max(signal, 1e-30)/math.Max(noise, 1e-30)), bestDelay
 }
+
 func inspectQuality(c codec, bitrate int, input, decoded []float32, packets [][]byte) quality {
 	q := quality{Codec: c.name, Bitrate: bitrate, Modes: map[string]int{}}
 	q.AlignedSNRDB, q.DelaySamples = alignedSNR(input, decoded)
@@ -59,6 +60,7 @@ func inspectQuality(c codec, bitrate int, input, decoded []float32, packets [][]
 	q.ActualKbps = float64(bytes) * 8 / (float64(len(packets)) * .02) / 1000
 	return q
 }
+
 func qualityReport(values []quality) string {
 	var out strings.Builder
 	out.WriteString("\n## Encoder output checks\n\nDecoded with libopus; alignment searches 0..960 samples without gain fitting. SNR is only a waveform diagnostic, not perceptual quality. Includes warmup frames.\n\n| Codec | Target kbps | Actual kbps | Aligned SNR dB | Delay samples | SILK / hybrid / CELT frames |\n|---|---:|---:|---:|---:|---|\n")

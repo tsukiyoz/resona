@@ -2,8 +2,9 @@ package desktopipc
 
 import (
 	"context"
-	"github.com/tsukiyoz/resona/internal/client"
 	"time"
+
+	"github.com/tsukiyoz/resona/internal/client"
 )
 
 type shutdownStatus struct {

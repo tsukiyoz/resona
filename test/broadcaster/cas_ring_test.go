@@ -62,6 +62,7 @@ func (q *casMemberRing) publish(entry *casEntry) {
 		return
 	}
 }
+
 func (q *casMemberRing) take() (message, bool) {
 	for {
 		head := q.head.value.Load()
@@ -81,6 +82,7 @@ func (q *casMemberRing) take() (message, bool) {
 		return entry.msg, true
 	}
 }
+
 func (q *casMemberRing) push(msg message) {
 	if q.closed.Load() {
 		panic("push after CAS ring closed")
@@ -109,6 +111,7 @@ func (q *casMemberRing) push(msg message) {
 	q.publish(&casEntry{msg: msg})
 	q.notify()
 }
+
 func (q *casMemberRing) notify() {
 	select {
 	case q.wake <- struct{}{}:
@@ -116,6 +119,7 @@ func (q *casMemberRing) notify() {
 	default:
 	}
 }
+
 func (q *casMemberRing) pop() (message, bool, bool) {
 	msg, ok := q.take()
 	return msg, ok, q.closed.Load()

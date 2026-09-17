@@ -67,9 +67,11 @@ type Cache struct {
 }
 
 func New(dir string) *Cache {
-	return &Cache{items: make(map[string]*list.Element), flights: make(map[string]*flight), dir: dir,
+	return &Cache{
+		items: make(map[string]*list.Element), flights: make(map[string]*flight), dir: dir,
 		now: time.Now, ttl: defaultTTL, memoryBytes: 8 << 20, memoryEntries: 128,
-		diskBytes: 64 << 20, diskEntries: 512}
+		diskBytes: 64 << 20, diskEntries: 512,
+	}
 }
 
 // NewDefault keeps memory caching available when the OS cache path fails.

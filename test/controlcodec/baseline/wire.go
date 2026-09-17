@@ -21,6 +21,7 @@ const (
 	ServerVoiceHeader    = 13
 	AuthenticationFailed = 2
 )
+
 const (
 	HelloKind uint8 = iota + 1
 	WelcomeKind
@@ -103,6 +104,7 @@ var enc = func() cbor.EncMode {
 	}
 	return m
 }()
+
 var dec = func() cbor.DecMode {
 	m, err := (cbor.DecOptions{MaxNestedLevels: 8, MaxArrayElements: 256, MaxMapPairs: 16, IndefLength: cbor.IndefLengthForbidden, TagsMd: cbor.TagsForbidden, DupMapKey: cbor.DupMapKeyEnforcedAPF}).DecMode()
 	if err != nil {
@@ -128,6 +130,7 @@ func Pack(kind uint8, request uint32, body any) ([]byte, error) {
 	copy(result[4:], data)
 	return result, nil
 }
+
 func Write(w io.Writer, kind uint8, request uint32, body any) error {
 	data, err := Pack(kind, request, body)
 	if err != nil {
@@ -145,6 +148,7 @@ func Write(w io.Writer, kind uint8, request uint32, body any) error {
 	}
 	return nil
 }
+
 func Read(r io.Reader) (Frame, error) {
 	var header [4]byte
 	if _, err := io.ReadFull(r, header[:]); err != nil {

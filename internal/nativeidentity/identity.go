@@ -47,7 +47,7 @@ func ReadPrivate(path string, limit int64) ([]byte, error) {
 	if !info.Mode().IsRegular() || info.Size() > limit {
 		return nil, errors.New("invalid private file; original preserved")
 	}
-	if err = os.Chmod(path, 0600); err != nil {
+	if err = os.Chmod(path, 0o600); err != nil {
 		return nil, err
 	}
 	f, err := os.Open(path)
@@ -74,7 +74,7 @@ func ReplacePrivate(path string, data []byte) error {
 
 func writePrivate(path string, data []byte, replace bool) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	f, err := os.CreateTemp(dir, ".resona-private-*")

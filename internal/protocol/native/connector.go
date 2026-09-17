@@ -132,6 +132,7 @@ func (connector Connector) Connect(ctx context.Context, profile client.ServerPro
 	success = true
 	return c, nil
 }
+
 func validState(s w.State) bool {
 	if s.Self == 0 || s.Epoch == 0 || len(s.Channels) == 0 || len(s.Channels) > w.MaxChannels || len(s.Members) > w.MaxMembers {
 		return false
@@ -181,6 +182,7 @@ func (c *connection) remote(s w.State, messages []client.RemoteMessage) client.R
 	}
 	return r
 }
+
 func (c *connection) readLoop() {
 	retryable := false
 	closeReason := "invalid_control"
@@ -273,6 +275,7 @@ func (c *connection) SetResourceInterest(ctx context.Context, allChannels, allMe
 	}
 	return c.command(ctx, w.WatchResourcesKind, w.WatchResources{AllChannels: allChannels, AllMembers: allMembers})
 }
+
 func (c *connection) ClaimOwner(ctx context.Context, token string) error {
 	if len(token) != 64 {
 		return errors.New("认领码格式无效")
@@ -364,6 +367,7 @@ func (c *connection) command(ctx context.Context, kind uint8, cmd any) error {
 		return context.Canceled
 	}
 }
+
 func (c *connection) MoveChannel(ctx context.Context, channel string) error {
 	n, err := strconv.ParseUint(channel, 10, 16)
 	if err != nil {
@@ -371,6 +375,7 @@ func (c *connection) MoveChannel(ctx context.Context, channel string) error {
 	}
 	return c.command(ctx, w.MoveKind, w.Command{Channel: uint16(n)})
 }
+
 func (c *connection) SendChannelMessage(ctx context.Context, channel, text string) error {
 	n, err := strconv.ParseUint(channel, 10, 16)
 	if err != nil {
@@ -378,17 +383,20 @@ func (c *connection) SendChannelMessage(ctx context.Context, channel, text strin
 	}
 	return c.command(ctx, w.ChatKind, w.Command{Channel: uint16(n), Text: text})
 }
+
 func (c *connection) Close() error {
 	_ = c.conn.CloseWithError(0, "client disconnect")
 	c.workers.Wait()
 	c.SetVoiceHandler(nil)
 	return nil
 }
+
 func (c *connection) SetVoiceHandler(fn func(audio.Packet)) {
 	c.voiceMu.Lock()
 	c.voiceHandler = fn
 	c.voiceMu.Unlock()
 }
+
 func (c *connection) VoiceCodec() (audio.Codec, error) {
 	if c.conn.Context().Err() != nil {
 		return 0, context.Canceled
@@ -412,9 +420,11 @@ func stateVoiceBitrate(s w.State) uint32 {
 	}
 	return 48000
 }
+
 func (c *connection) SetVoiceMuted(ctx context.Context, muted, deafened bool) error {
 	return c.command(ctx, w.VoiceStateKind, w.Command{Muted: muted, Deafened: deafened})
 }
+
 func (c *connection) SendVoice(data []byte, codec audio.Codec) error {
 	if codec != audio.CodecOpusVoice {
 		return audio.ErrUnsupportedCodec
@@ -436,6 +446,7 @@ func (c *connection) SendVoice(data []byte, codec audio.Codec) error {
 	}
 	return nil
 }
+
 func (c *connection) voiceLoop() {
 	var received, malformed, stale, noHandler, delivered uint64
 	lastReport := time.Now()
@@ -493,6 +504,7 @@ func (c *connection) voiceLoop() {
 		c.voiceMu.RUnlock()
 	}
 }
+
 func (c *connection) ReadChannelDetails(ctx context.Context, channel string) (client.ChannelDetails, error) {
 	if ctx.Err() != nil {
 		return client.ChannelDetails{}, ctx.Err()
@@ -509,6 +521,7 @@ func (c *connection) ReadChannelDetails(ctx context.Context, channel string) (cl
 	}
 	return client.ChannelDetails{}, errors.New("频道不存在")
 }
+
 func (c *connection) ReadUserDetails(ctx context.Context, user string) (client.UserDetails, error) {
 	if ctx.Err() != nil {
 		return client.UserDetails{}, ctx.Err()

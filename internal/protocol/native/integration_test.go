@@ -58,7 +58,9 @@ func (o *observer) update(s client.RemoteState) {
 	o.events = append(o.events, s.Events...)
 	o.mu.Unlock()
 }
+
 func (o *observer) snapshot() client.RemoteState { o.mu.Lock(); defer o.mu.Unlock(); return o.state }
+
 func connectTest(t *testing.T, p client.ServerProfile) (*connection, *observer) {
 	t.Helper()
 	o := &observer{}
@@ -75,6 +77,7 @@ func connectTest(t *testing.T, p client.ServerProfile) (*connection, *observer) 
 	}
 	return c, o
 }
+
 func eventually(t *testing.T, predicate func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
@@ -86,6 +89,7 @@ func eventually(t *testing.T, predicate func() bool) {
 	}
 	t.Fatal("condition did not become true")
 }
+
 func TestNativeChatVoiceIsolationAndShutdown(t *testing.T) {
 	p, stop, done := startServer(t)
 	a, ao := connectTest(t, p)
@@ -251,6 +255,7 @@ func TestNativeChatVoiceIsolationAndShutdown(t *testing.T) {
 	}
 	eventually(t, func() bool { return ao.snapshot().Closed })
 }
+
 func TestNativeTrustPasswordAndCancelledSetup(t *testing.T) {
 	p, stop, done := startServer(t)
 	defer func() { stop(); <-done }()

@@ -23,7 +23,7 @@ func TestActivationRollback(t *testing.T) {
 			root := t.TempDir()
 			bin := filepath.Join(root, "bin")
 			for _, dir := range []string{"bin", "data", "access", "state"} {
-				if err := os.Mkdir(filepath.Join(root, dir), 0700); err != nil {
+				if err := os.Mkdir(filepath.Join(root, dir), 0o700); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -33,10 +33,10 @@ func TestActivationRollback(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			write("activate.sh", string(source), 0700)
-			write("data/noise.key", "test-only-identity", 0600)
-			write("bin/docker", fakeDocker, 0700)
-			write("bin/tar", "#!/bin/sh\nif [ \"$FAULT\" = backup ]; then exit 1; fi\nexec /usr/bin/tar \"$@\"\n", 0700)
+			write("activate.sh", string(source), 0o700)
+			write("data/noise.key", "test-only-identity", 0o600)
+			write("bin/docker", fakeDocker, 0o700)
+			write("bin/tar", "#!/bin/sh\nif [ \"$FAULT\" = backup ]; then exit 1; fi\nexec /usr/bin/tar \"$@\"\n", 0o700)
 			cmd := exec.Command("sh", filepath.Join(root, "activate.sh"), "resona-test:local")
 			cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "RESONA_ROOT="+root,
 				"RESONA_CONTAINER=resona-test", "RESONA_START_WAIT=0", "RESONA_BIND_IP=127.0.0.1", "RESONA_PORT=19988", "FAULT="+fault, "FAKE_STATE="+filepath.Join(root, "state"))
@@ -63,7 +63,7 @@ func TestActivationRollback(t *testing.T) {
 				t.Fatal("missing environment backup", err)
 			}
 			info, err := os.Stat(backups[0])
-			if err != nil || info.Mode().Perm() != 0600 {
+			if err != nil || info.Mode().Perm() != 0o600 {
 				t.Fatal("environment permissions", err)
 			}
 			key, _ := os.ReadFile(filepath.Join(root, "data/noise.key"))
@@ -99,18 +99,18 @@ func TestPackagePreservesUnknownOutputAndGenerationLock(t *testing.T) {
 	root := t.TempDir()
 	base := filepath.Join(root, "build/deploy")
 	output := filepath.Join(base, "resona-server-test-linux-amd64")
-	if err := os.MkdirAll(output, 0700); err != nil {
+	if err := os.MkdirAll(output, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(filepath.Join(root, "deploy"), 0700); err != nil {
+	if err := os.Mkdir(filepath.Join(root, "deploy"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	script := filepath.Join(root, "deploy/package.sh")
-	if err := os.WriteFile(script, source, 0700); err != nil {
+	if err := os.WriteFile(script, source, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	sentinel := filepath.Join(output, "private-data")
-	if err := os.WriteFile(sentinel, []byte("keep"), 0600); err != nil {
+	if err := os.WriteFile(sentinel, []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	run := func(want string) {
@@ -128,7 +128,7 @@ func TestPackagePreservesUnknownOutputAndGenerationLock(t *testing.T) {
 		t.Fatal("unknown output modified", err)
 	}
 	lock := filepath.Join(base, ".resona-server-test-linux-amd64.lock")
-	if err := os.Mkdir(lock, 0700); err != nil {
+	if err := os.Mkdir(lock, 0o700); err != nil {
 		t.Fatal("failed generation retained lock", err)
 	}
 	run("already being generated")

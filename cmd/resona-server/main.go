@@ -27,6 +27,7 @@ func main() {
 		os.Exit(1)
 	}
 }
+
 func run() error {
 	if version.Requested(os.Args[1:]) {
 		fmt.Println("resona-server", version.Current())
@@ -131,11 +132,12 @@ func run() error {
 	defer cancel()
 	return s.Serve(ctx)
 }
+
 func writeNew(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}

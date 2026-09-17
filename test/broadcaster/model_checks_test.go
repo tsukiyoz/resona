@@ -87,6 +87,7 @@ func TestDeliveryAndDrain(t *testing.T) {
 		}
 	}
 }
+
 func TestBoundedAdmission(t *testing.T) {
 	for _, model := range models {
 		t.Run(model, func(t *testing.T) {
@@ -113,6 +114,7 @@ func TestBoundedAdmission(t *testing.T) {
 		})
 	}
 }
+
 func TestSlowMemberIsolation(t *testing.T) {
 	b := newBroadcaster("member-queue", config{Members: 3, Speakers: 1, Capacity: 2, SlowMember: -1})
 	blocked, release, fast := make(chan struct{}), make(chan struct{}), make(chan struct{})

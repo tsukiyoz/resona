@@ -133,9 +133,13 @@ func TestChannelMessageRejectsStaleDestinationAndInvalidText(t *testing.T) {
 	service, update := connectedMessageService(t, &fakeMessageConnection{send: func(context.Context, string, string) error { sends.Add(1); return nil }})
 	state, _ := service.GetWorkspace()
 	for _, tc := range []struct{ session, channel, text string }{
-		{"", "1", "message"}, {"old-session", "1", "message"}, {state.Session.ID, "2", "message"},
-		{state.Session.ID, "1", " \n\t "}, {state.Session.ID, "1", "a\x00b"},
-		{state.Session.ID, "1", string([]byte{0xff})}, {state.Session.ID, "1", strings.Repeat("中", MaxChannelMessageBytes/3+1)},
+		{"", "1", "message"},
+		{"old-session", "1", "message"},
+		{state.Session.ID, "2", "message"},
+		{state.Session.ID, "1", " \n\t "},
+		{state.Session.ID, "1", "a\x00b"},
+		{state.Session.ID, "1", string([]byte{0xff})},
+		{state.Session.ID, "1", strings.Repeat("中", MaxChannelMessageBytes/3+1)},
 	} {
 		if _, err := service.SendChannelMessage(tc.session, tc.channel, tc.text); err == nil {
 			t.Fatal("invalid message request accepted")

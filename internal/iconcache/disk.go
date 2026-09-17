@@ -17,8 +17,10 @@ import (
 	"time"
 )
 
-const diskMagic = "RICON001"
-const diskHeaderBytes = 8 + 8 + sha256.Size
+const (
+	diskMagic       = "RICON001"
+	diskHeaderBytes = 8 + 8 + sha256.Size
+)
 
 func diskName(hash string) string { return "icon-" + hash + ".bin" }
 
@@ -30,7 +32,7 @@ func (c *Cache) openDisk() (*os.Root, error) {
 	}
 	parent := filepath.Dir(c.dir)
 	base := filepath.Dir(parent)
-	if err := os.MkdirAll(base, 0700); err != nil {
+	if err := os.MkdirAll(base, 0o700); err != nil {
 		return nil, err
 	}
 	root, err := os.OpenRoot(base)
@@ -47,7 +49,7 @@ func (c *Cache) openDisk() (*os.Root, error) {
 }
 
 func privateDirectory(parent *os.Root, name string) (*os.Root, error) {
-	if err := parent.Mkdir(name, 0700); err != nil && !os.IsExist(err) {
+	if err := parent.Mkdir(name, 0o700); err != nil && !os.IsExist(err) {
 		return nil, err
 	}
 	before, err := parent.Lstat(name)
@@ -69,7 +71,7 @@ func privateDirectory(parent *os.Root, name string) (*os.Root, error) {
 		root.Close()
 		return nil, errors.New("icon cache directory changed")
 	}
-	if err := dir.Chmod(0700); err != nil {
+	if err := dir.Chmod(0o700); err != nil {
 		root.Close()
 		return nil, err
 	}
@@ -130,7 +132,7 @@ func (c *Cache) writeDisk(ctx context.Context, hash string, raw []byte, created 
 		return
 	}
 	temp := ".icon-tmp-" + hex.EncodeToString(random)
-	file, err := root.OpenFile(temp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	file, err := root.OpenFile(temp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return
 	}

@@ -9,9 +9,11 @@ import (
 	"unicode/utf8"
 )
 
-const MaxChannelMessageBytes = 8192
-const maxMessages = 500
-const maxMessageBytes = 512 * 1024
+const (
+	MaxChannelMessageBytes = 8192
+	maxMessages            = 500
+	maxMessageBytes        = 512 * 1024
+)
 
 var (
 	ErrMessageChannelChanged   = errors.New("当前频道已改变，消息未发送")

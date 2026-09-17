@@ -80,10 +80,10 @@ func (s *Store) Save(profiles []client.ServerProfile) error {
 		return errors.New("server profiles exceed the 1 MiB limit")
 	}
 	directory := filepath.Dir(s.path)
-	if err := os.MkdirAll(directory, 0700); err != nil {
+	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return err
 	}
-	if err := os.Chmod(directory, 0700); err != nil {
+	if err := os.Chmod(directory, 0o700); err != nil {
 		return err
 	}
 	file, err := os.CreateTemp(directory, ".servers-*.tmp")
@@ -93,7 +93,7 @@ func (s *Store) Save(profiles []client.ServerProfile) error {
 	temporary := file.Name()
 	defer os.Remove(temporary)
 	defer file.Close()
-	if err := file.Chmod(0600); err != nil {
+	if err := file.Chmod(0o600); err != nil {
 		return err
 	}
 	if _, err := file.Write(append(data, '\n')); err != nil {
