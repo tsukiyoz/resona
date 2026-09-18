@@ -231,6 +231,7 @@ pub struct VoiceState {
     pub generation: u64,
     pub enabled: bool,
     pub muted: bool,
+    pub auto_unmute_on_connect: bool,
     pub deafened: bool,
     #[serde(rename = "inputDeviceID")]
     pub input_device_id: String,
@@ -263,6 +264,7 @@ impl Default for VoiceState {
             generation: 0,
             enabled: false,
             muted: true,
+            auto_unmute_on_connect: false,
             deafened: false,
             input_device_id: String::new(),
             output_device_id: String::new(),

@@ -50,10 +50,10 @@ icon_tmp=$(mktemp -d "${TMPDIR:-/tmp}/resona-icon.XXXXXX")
 trap 'rm -rf "$icon_tmp"' EXIT HUP INT TERM
 mkdir "$icon_tmp/Resona.iconset"
 for size in 16 32 128 256 512; do
-  sips -z "$size" "$size" "$repo_dir/build/appicon.png" \
+  sips -z "$size" "$size" "$desktop_dir/assets/resona-macos-light.png" \
     --out "$icon_tmp/Resona.iconset/icon_${size}x${size}.png" >/dev/null
   double_size=$((size * 2))
-  sips -z "$double_size" "$double_size" "$repo_dir/build/appicon.png" \
+  sips -z "$double_size" "$double_size" "$desktop_dir/assets/resona-macos-light.png" \
     --out "$icon_tmp/Resona.iconset/icon_${size}x${size}@2x.png" >/dev/null
 done
 iconutil -c icns "$icon_tmp/Resona.iconset" -o "$icon_tmp/Resona.icns"

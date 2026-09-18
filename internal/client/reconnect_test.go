@@ -6,7 +6,40 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/tsukiyoz/resona/internal/audio"
 )
+
+func TestReconnectDoesNotRepeatAutomaticUnmute(t *testing.T) {
+	updates := make(chan func(RemoteState), 2)
+	service, _ := serviceWithProfile(t, connectorFunc(func(_ context.Context, _ ServerProfile, _ string, update func(RemoteState)) (RemoteConnection, error) {
+		updates <- update
+		update(RemoteState{ChannelID: "1", SelfID: "1", Channels: []Channel{{ID: "1"}}})
+		return &voiceConnection{}, nil
+	}))
+	defer service.Shutdown()
+	service.reconnectDelay = time.Millisecond
+	service.newVoice = func(audio.Transport, func(audio.VoiceState)) voiceEngine { return &fakeVoiceEngine{} }
+	config := defaultVoiceConfig()
+	config.AutoUnmuteOnConnect = true
+	if _, err := service.SetVoicePreferences(config); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ConnectServer("home", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitForMode(t, service, "connected")
+	before := waitVoice(t, service, func(v VoiceState) bool { return v.Active && !v.Busy })
+	if before.Muted {
+		t.Fatal("first connection did not open microphone")
+	}
+	(<-updates)(RemoteState{Closed: true, Retryable: true})
+	waitForMode(t, service, "connected")
+	after := waitVoice(t, service, func(v VoiceState) bool { return v.Generation > before.Generation && v.Active && !v.Busy })
+	if !after.Muted || !after.AutoUnmuteOnConnect {
+		t.Fatalf("reconnect changed mute policy: %+v", after)
+	}
+}
 
 func TestReconnectRetriesRestoresChannelAndCancelsOldCallbacks(t *testing.T) {
 	var calls atomic.Int32

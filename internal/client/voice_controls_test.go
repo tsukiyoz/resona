@@ -45,6 +45,61 @@ func TestVoicePreferencesPrepareOnlyOneMutedConnectionStart(t *testing.T) {
 	}
 }
 
+func TestConnectionMicrophonePreference(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		enabled, denied bool
+	}{
+		{"enabled", true, false}, {"disabled", false, false}, {"capture denied", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			service, _ := serviceWithProfile(t, connectorFunc(func(context.Context, ServerProfile, string, func(RemoteState)) (RemoteConnection, error) {
+				return &voiceConnection{}, nil
+			}))
+			defer service.Shutdown()
+			engine := &fakeVoiceEngine{configure: func(_ context.Context, c audio.VoiceConfig) error {
+				if tc.denied && !c.Muted {
+					return errors.New("capture denied")
+				}
+				return nil
+			}}
+			service.newVoice = func(audio.Transport, func(audio.VoiceState)) voiceEngine { return engine }
+			config := defaultVoiceConfig()
+			config.AutoUnmuteOnConnect = tc.enabled
+			if _, err := service.SetVoicePreferences(config); err != nil {
+				t.Fatal(err)
+			}
+			if service.GetVoiceState().Active {
+				t.Fatal("preferences opened device")
+			}
+			if _, err := service.ConnectServer("home", ""); err != nil {
+				t.Fatal(err)
+			}
+			waitForMode(t, service, "connected")
+			state := waitVoice(t, service, func(v VoiceState) bool { return v.Active && !v.Busy })
+			if state.Muted != (!tc.enabled || tc.denied) {
+				t.Fatalf("unexpected mute: %+v", state)
+			}
+			if tc.denied && state.Error == "" {
+				t.Fatal("capture failure hidden")
+			}
+			// Entry preference is not a command to unmute an existing session.
+			config = state.VoiceConfig
+			config.Muted = true
+			if _, err := service.ConfigureVoice(config); err != nil {
+				t.Fatal(err)
+			}
+			waitVoice(t, service, func(v VoiceState) bool { return v.Muted && !v.Busy })
+			if _, err := service.ConfigureDefaultVoice(state.Generation); err != nil {
+				t.Fatal(err)
+			}
+			if !service.GetVoiceState().Muted {
+				t.Fatal("repeated entry unmuted session")
+			}
+		})
+	}
+}
+
 func TestVoiceOperationDistinguishesAcceptanceApplicationAndFailure(t *testing.T) {
 	engine := &fakeVoiceEngine{}
 	service := voiceService(t, engine)

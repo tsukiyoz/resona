@@ -24,6 +24,7 @@ pub struct Preferences {
     pub notifications_enabled: bool,
     pub notification_volume: u8,
     pub activation_mode: String,
+    pub auto_unmute_on_connect: bool,
     pub vad_threshold_db: i32,
     pub input_gain: u16,
     pub playback_volume: u16,
@@ -51,12 +52,15 @@ impl Default for Preferences {
             notifications_enabled: true,
             notification_volume: 35,
             activation_mode: "continuous".into(),
+            auto_unmute_on_connect: true,
             vad_threshold_db: -40,
             input_gain: 100,
             playback_volume: 200,
             processing: {
                 let mut config = ProcessingConfig::default();
-                config.postprocess[0].backend = "speex".into();
+                config.preprocess[0].backend = "speex".into();
+                config.preprocess[1].backend = "speex".into();
+                config.postprocess[0].backend = "webrtc".into();
                 config
             },
             noise_suppression: "off".into(),
@@ -75,6 +79,7 @@ impl Default for Preferences {
 impl Preferences {
     fn normalize_audio(mut self, migrate_legacy: bool) -> Self {
         if migrate_legacy {
+            self.processing = ProcessingConfig::default();
             // Older saved preferences had an explicit playback_agc field.
             self.processing.postprocess[0].backend = "none".into();
             if self.echo_cancellation {
@@ -113,6 +118,7 @@ impl Preferences {
             notifications_enabled,
             notification_volume,
             activation_mode,
+            auto_unmute_on_connect,
             vad_threshold_db,
             input_gain,
             playback_volume,
@@ -182,6 +188,21 @@ impl Preferences {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn entry_preference_and_new_processing_defaults_round_trip() {
+        let baseline = super::Preferences::default();
+        assert!(baseline.auto_unmute_on_connect);
+        assert_eq!(baseline.processing.preprocess[0].backend, "speex");
+        assert_eq!(baseline.processing.preprocess[1].backend, "speex");
+        assert_eq!(baseline.processing.postprocess[0].backend, "webrtc");
+        let mut draft = baseline.clone();
+        draft.auto_unmute_on_connect = false;
+        let mut current = baseline.clone();
+        current.merge_settings(&baseline, &draft);
+        let restored: super::Preferences =
+            serde_json::from_slice(&serde_json::to_vec(&current).unwrap()).unwrap();
+        assert!(!restored.auto_unmute_on_connect);
+    }
+    #[test]
     fn retired_channel_collapse_preference_is_ignored() {
         let preferences: super::Preferences = serde_json::from_str(
             r#"{"channel_sidebar_collapsed":true,"server_sidebar_collapsed":true,"playback_volume":300}"#,
@@ -245,7 +266,7 @@ mod tests {
         let old: Preferences = serde_json::from_str("{}").unwrap();
         assert_eq!(old.input_gain, 100);
         assert_eq!(old.playback_volume, 200);
-        assert_eq!(old.processing.postprocess[0].backend, "speex");
+        assert_eq!(old.processing.postprocess[0].backend, "webrtc");
         let zero = Preferences {
             input_gain: 0,
             playback_volume: 10,
@@ -290,7 +311,7 @@ mod tests {
                 .processing
                 .postprocess[0]
                 .backend,
-            "speex"
+            "webrtc"
         );
     }
 

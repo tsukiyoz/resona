@@ -74,7 +74,7 @@ func (s *Service) ConfigureVoice(config audio.VoiceConfig) (VoiceState, error) {
 	return s.configureVoice(config, nil, 0)
 }
 
-// ConfigureDefaultVoice opens only playback for the just-connected generation.
+// ConfigureDefaultVoice applies the entry preference once for the just-connected generation.
 func (s *Service) ConfigureDefaultVoice(generation uint64) (VoiceState, error) {
 	return s.configureVoice(audio.VoiceConfig{}, &generation, 0)
 }
@@ -94,7 +94,7 @@ func (s *Service) configureVoice(config audio.VoiceConfig, expectedGeneration *u
 		}
 		if monitorAction != 3 {
 			config = s.voiceState.VoiceConfig
-			config.Enabled, config.Muted, config.Deafened = true, true, false
+			config.Enabled, config.Muted, config.Deafened = true, !config.AutoUnmuteOnConnect, false
 		}
 	}
 	if s.shutdown {
@@ -157,7 +157,7 @@ func (s *Service) configureVoice(config audio.VoiceConfig, expectedGeneration *u
 		s.mu.Unlock()
 		return VoiceState{}, errors.New("语音或频道正在切换，请稍候")
 	}
-	if s.voice == nil && !config.Muted {
+	if s.voice == nil && !config.Muted && !(expectedGeneration != nil && monitorAction == 0 && config.AutoUnmuteOnConnect) {
 		s.mu.Unlock()
 		return VoiceState{}, errors.New("请先以麦克风关闭状态启用语音")
 	}
@@ -228,14 +228,18 @@ func (s *Service) configureVoice(config audio.VoiceConfig, expectedGeneration *u
 		engine := s.voice
 		s.mu.Unlock()
 		err := engine.Configure(ctx, config)
-		// A failed test may have stopped playback. Recover output once, without
+		// A failed capture start may have stopped playback. Recover output once, without
 		// reopening the denied capture device or restoring network transmission.
-		if err != nil && monitorAction == 1 && ctx.Err() == nil {
+		if err != nil && (monitorAction == 1 || (expectedGeneration != nil && monitorAction == 0 && config.AutoUnmuteOnConnect)) && ctx.Err() == nil {
 			s.mu.Lock()
 			var restore *audio.VoiceConfig
 			if epoch == s.voiceEpoch && generation == s.generation && operation == s.voiceOperation && s.onlineTestRestore != nil {
 				copy := *s.onlineTestRestore
 				copy.Muted, copy.LocalMonitor = true, false
+				restore = &copy
+			} else if epoch == s.voiceEpoch && generation == s.generation && operation == s.voiceOperation && monitorAction == 0 {
+				copy := config
+				copy.Muted = true
 				restore = &copy
 			}
 			s.mu.Unlock()
