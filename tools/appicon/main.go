@@ -55,6 +55,8 @@ func generateThemes() error {
 		{"build/appicon.png", light},
 		{"desktop/assets/resona-light.png", resize(light, 256)},
 		{"desktop/assets/resona-dark.png", resize(dark, 256)},
+		{"desktop/assets/resona-macos-light.png", macIcon(light)},
+		{"desktop/assets/resona-macos-dark.png", macIcon(dark)},
 	} {
 		var data bytes.Buffer
 		if err := png.Encode(&data, item.image); err != nil {
@@ -68,6 +70,13 @@ func generateThemes() error {
 		return err
 	}
 	return writeICO(dark, "desktop/assets/resona-dark.ico")
+}
+
+func macIcon(src image.Image) image.Image {
+	dst := image.NewNRGBA(image.Rect(0, 0, 1024, 1024))
+	// Match the optical footprint of macOS rounded-square icons.
+	draw.CatmullRom.Scale(dst, image.Rect(100, 100, 924, 924), src, src.Bounds(), draw.Src, nil)
+	return dst
 }
 
 // Preserve the source silhouette and alpha while mapping its monochrome ramp.

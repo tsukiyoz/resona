@@ -95,6 +95,8 @@ type ProcessingConfig struct {
 }
 
 type VoiceConfig struct {
+	// AutoUnmuteOnConnect applies once on an explicit connection, never on reconnect.
+	AutoUnmuteOnConnect bool `json:"autoUnmuteOnConnect,omitempty"`
 	// LocalMonitor is controlled by the service, never deserialized from GUI preferences.
 	LocalMonitor   bool   `json:"-"`
 	Enabled        bool   `json:"enabled"`

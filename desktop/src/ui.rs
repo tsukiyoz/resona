@@ -2545,6 +2545,13 @@ impl ResonaApp {
     }
 
     fn commit_settings(&mut self, next: Preferences, cx: &mut Context<Self>) {
+        let mut before = VoiceState::default();
+        let mut after = VoiceState::default();
+        apply_preferences(&self.preferences, &mut before);
+        apply_preferences(&next, &mut after);
+        let entry_changed = before.auto_unmute_on_connect != after.auto_unmute_on_connect;
+        before.auto_unmute_on_connect = after.auto_unmute_on_connect;
+        let audio_changed = voice_params(&before) != voice_params(&after);
         let hotkey_changed = self.preferences.activation_mode != next.activation_mode
             || self.preferences.global_push_to_talk != next.global_push_to_talk
             || self.preferences.push_to_talk_shortcut != next.push_to_talk_shortcut;
@@ -2555,10 +2562,16 @@ impl ResonaApp {
         self.settings_operation = None;
         self.settings_draft = Some(self.preferences.clone());
         self.settings_baseline = self.settings_draft.clone();
-        self.settings_notice = if self.workspace.connected() {
-            "已应用"
+        self.settings_notice = if !audio_changed && entry_changed {
+            "已保存，下次主动连接生效"
+        } else if !audio_changed {
+            "已保存"
+        } else if self.workspace.connected() && self.voice.active {
+            "已应用到当前语音"
+        } else if self.workspace.connected() {
+            "已保存，启用语音后自动应用（无需重启应用）"
         } else {
-            "已保存，下次启用语音生效"
+            "已保存，连接并启用语音后自动应用（无需重启应用）"
         }
         .into();
         if hotkey_changed {
@@ -4899,6 +4912,14 @@ impl ResonaApp {
                             ),
                     )
                 });
+            content = content.child(self.audio_toggle(
+                "auto-unmute-on-connect",
+                "连接后自动开启麦克风",
+                self.editing_preferences().auto_unmute_on_connect,
+                preferences_disabled,
+                |p, v| p.auto_unmute_on_connect = v,
+                view,
+            ));
             content = content.child(
                 div()
                     .border_t_1()
@@ -4910,7 +4931,7 @@ impl ResonaApp {
                     .child(div().text_sm().child("麦克风处理"))
                     .child(self.processor_selector(
                         "pre-aec",
-                        "回声消除",
+                        "AEC（回声消除）",
                         false,
                         0,
                         preferences_disabled,
@@ -4946,7 +4967,7 @@ impl ResonaApp {
                     ))
                     .child(self.processor_selector(
                         "pre-ans",
-                        "背景噪声抑制",
+                        "ANS（噪声抑制）",
                         false,
                         1,
                         preferences_disabled,
@@ -4963,7 +4984,7 @@ impl ResonaApp {
                     )
                     .child(self.processor_selector(
                         "post-agc",
-                        "自动均衡每个人的语音音量",
+                        "AGC（自动增益控制）",
                         true,
                         0,
                         preferences_disabled,
@@ -7045,6 +7066,7 @@ fn visible_text_channel<'a>(
 fn voice_params(voice: &VoiceState) -> Value {
     json!({
         "enabled": voice.enabled, "muted": voice.muted, "deafened": voice.deafened,
+        "autoUnmuteOnConnect": voice.auto_unmute_on_connect,
         "inputDeviceID": voice.input_device_id, "outputDeviceID": voice.output_device_id,
         "volume": voice.volume, "inputGain": voice.input_gain, "activationMode": voice.activation_mode,
         "vadThresholdDB": voice.vad_threshold_db, "processing": voice.processing,
@@ -7180,6 +7202,7 @@ fn composer_height(requested: f32, viewport_height: f32) -> f32 {
 }
 
 fn apply_preferences(preferences: &Preferences, voice: &mut VoiceState) {
+    voice.auto_unmute_on_connect = preferences.auto_unmute_on_connect;
     voice.volume = preferences.playback_volume.min(794);
     voice.input_gain = preferences.input_gain.min(200);
     voice.activation_mode = preferences.activation_mode.clone();

@@ -34,7 +34,11 @@ mod platform {
             let image = cache.images[usize::from(light)].get_or_insert_with(|| {
                 NSImage::initWithData(
                     main_thread.alloc(),
-                    &NSData::with_bytes(if light { super::LIGHT } else { super::DARK }),
+                    &NSData::with_bytes(if light {
+                        include_bytes!("../assets/resona-macos-light.png")
+                    } else {
+                        include_bytes!("../assets/resona-macos-dark.png")
+                    }),
                 )
                 .expect("embedded application icon must be a valid PNG")
             });
