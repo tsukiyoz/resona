@@ -54,7 +54,7 @@ and Docker builds default to `v` plus VERSION; explicit build overrides do not
 edit the file or create a release. Raw `go build` without build flags still reports
 `dev`. CI requires the exact tag to match VERSION and the desktop version.
 Main-branch CI builds append `-dev` and are development
-snapshots. A tag also runs the Windows and macOS packaging workflows; do not call
+snapshots. A tag runs `release.yml`, which calls both packaging workflows; do not call
 either platform package verified until its run succeeds. macOS builds separate
 Apple Silicon and Intel bundles. PR builds are ad-hoc signed test packages;
 trusted push builds and manual main builds require the signing Secrets below.
@@ -62,8 +62,12 @@ Certificate signing alone does not mean Apple notarization. Downloadable workflo
 temporary (14 days), not durable GitHub Release assets.
 
 Push the release commit and annotated tag together after local checks. Publish
-GitHub Release assets only from a successful tag build, with the release notes;
-mark previews appropriately. Creating a GitHub Release, changing repository
+GitHub Release assets only from a successful tag build, with the release notes.
+The tag publication workflow signs a complete manifest and publishes all three
+packages from a draft only after successful builds. Configure the update Variables
+and signing Secret described in `docs/updates.md` before the next tag. Formal
+0.x releases use the stable update channel but remain experimental as above.
+Changing repository
 visibility, deploying a server and configuring branch protection are separate
 operations. A maintenance branch is warranted only when supporting fixes for an
 older release line independently of main; fix main too where applicable.
@@ -80,7 +84,7 @@ Trusted builds import the identity into a temporary runner keychain, pass it to
 `RESONA_CODESIGN_IDENTITY`, verify the bundle, and delete the temporary keychain
 with an `always()` cleanup step. Missing/expired signing credentials fail trusted
 builds rather than silently producing ad-hoc packages. PRs and manual non-main
-builds do not receive signing Secrets. Keep main/tag publishing permissions
+builds outside release tags do not receive signing Secrets. Keep main/tag publishing permissions
 restricted to trusted maintainers; a workflow with Secrets can use the private key.
 
 The current identity is Apple Development, for development testing. Public macOS

@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"os"
 	"reflect"
 	"runtime"
 	"sync"
@@ -377,7 +376,7 @@ func Run(ctx context.Context, service *client.Service, input io.ReadCloser, outp
 
 func updateMethod(method string) bool {
 	switch method {
-	case "GetUpdateStatus", "CheckUpdate", "DownloadUpdate", "CancelUpdate", "GetUpdatePackage", "InstallUpdate":
+	case "GetUpdateStatus", "CheckUpdate", "DownloadUpdate", "CancelUpdate", "GetUpdatePackage", "GetUpdateRelease", "InstallUpdate":
 		return true
 	}
 	return false
@@ -387,27 +386,18 @@ func dispatchUpdate(ctx context.Context, updater *updates.Manager, req request, 
 	switch req.Method {
 	case "GetUpdateStatus":
 		return updater.Status(), nil
-	case "CheckUpdate", "DownloadUpdate":
-		return true, updater.Start(ctx, req.Method == "DownloadUpdate", publish)
+	case "GetUpdateRelease":
+		page, err := updater.ReleasePage()
+		return struct {
+			URL string `json:"url"`
+		}{page}, err
+	case "CheckUpdate":
+		return true, updater.Start(ctx, publish)
 	case "CancelUpdate":
 		updater.Cancel()
 		return true, nil
-	case "GetUpdatePackage":
-		directory, err := updater.PackageDirectory()
-		return struct {
-			Path string `json:"path"`
-		}{directory}, err
-	case "InstallUpdate":
-		var params struct {
-			DesktopVersion string `json:"desktopVersion"`
-		}
-		if err := decodeParams(req.Params, &params); err != nil {
-			return nil, err
-		}
-		if "v"+params.DesktopVersion != version.Current().Version {
-			return nil, errors.New("桌面和 Core 版本不一致，拒绝自动更新")
-		}
-		return true, updater.PrepareInstall(os.Getppid())
+	case "DownloadUpdate", "GetUpdatePackage", "InstallUpdate":
+		return nil, errors.New("此构建不支持应用内下载或安装，请前往发布页手动更新")
 	}
 	return nil, errors.New("未知更新命令")
 }

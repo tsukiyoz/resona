@@ -6,14 +6,18 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/sha256"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -32,24 +36,40 @@ func signedForTest(t *testing.T, manifest Manifest, key ed25519.PrivateKey) []by
 	return data
 }
 
+func testManifest() Manifest {
+	return Manifest{Schema: 1, Product: "resona", Channel: "stable", Version: "v0.2.0", ReleaseURL: "https://github.com/tsukiyoz/resona/releases/tag/v0.2.0", Expires: time.Now().Add(time.Hour), Assets: map[string]Asset{"windows/amd64": {Distribution: DistributionPortable, URL: "https://example.invalid/app.zip", SHA256: hex.EncodeToString(make([]byte, 32)), Size: 10}}}
+}
+
 func TestManifestAuthenticityVersionAndExpiry(t *testing.T) {
 	public, private, _ := ed25519.GenerateKey(rand.Reader)
 	key := base64.StdEncoding.EncodeToString(public)
-	manifest := Manifest{Schema: 1, Product: "resona", Channel: "stable", Version: "v0.2.0", Expires: time.Now().Add(time.Hour), Assets: map[string]Asset{"windows/amd64": {URL: "https://example.invalid/app.zip", SHA256: hex.EncodeToString(make([]byte, 32)), Size: 10}}}
+	manifest := testManifest()
 	data := signedForTest(t, manifest, private)
 	if _, err := Verify(data, key, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	tampered := bytes.Replace(data, []byte("v0.2.0"), []byte("v9.2.0"), 1)
-	if _, err := Verify(tampered, key, time.Now()); err == nil {
+	if _, err := Verify(bytes.Replace(data, []byte("v0.2.0"), []byte("v9.2.0"), 1), key, time.Now()); err == nil {
 		t.Fatal("accepted forged payload")
 	}
-	for _, mutation := range []func(*Manifest){func(m *Manifest) { m.Expires = time.Now().Add(-time.Hour) }, func(m *Manifest) { m.Product = "other" }, func(m *Manifest) { m.Schema = 2 }, func(m *Manifest) { m.Version = "v01.2.0" }, func(m *Manifest) {
-		m.Assets["windows/amd64"] = Asset{URL: "http://example.invalid", SHA256: hex.EncodeToString(make([]byte, 32)), Size: 10}
-	}} {
-		changed := manifest
-		changed.Assets = map[string]Asset{"windows/amd64": manifest.Assets["windows/amd64"]}
-		mutation(&changed)
+	for _, mutate := range []func(*Manifest){
+		func(m *Manifest) { m.Expires = time.Now().Add(-time.Hour) },
+		func(m *Manifest) { m.Product = "other" },
+		func(m *Manifest) { m.Schema = 2 },
+		func(m *Manifest) { m.Version = "v01.2.0" },
+		func(m *Manifest) { m.ReleaseURL = "https://github.com/other/releases/tag/v0.2.0" },
+		func(m *Manifest) {
+			a := m.Assets["windows/amd64"]
+			a.Distribution = "installer"
+			m.Assets["windows/amd64"] = a
+		},
+		func(m *Manifest) {
+			a := m.Assets["windows/amd64"]
+			a.URL = "http://example.invalid/app.zip"
+			m.Assets["windows/amd64"] = a
+		},
+	} {
+		changed := testManifest()
+		mutate(&changed)
 		if _, err := Verify(signedForTest(t, changed, private), key, time.Now()); err == nil {
 			t.Fatal("accepted invalid signed manifest")
 		}
@@ -60,196 +80,318 @@ func TestManifestAuthenticityVersionAndExpiry(t *testing.T) {
 		}
 	}
 	if newer, err := Newer("v0.1.10", "v0.1.9"); err != nil || !newer {
-		t.Fatal("numeric version ordering failed")
+		t.Fatal("numeric ordering failed")
 	}
 }
 
-func TestUpdateDownloadAndCancellation(t *testing.T) {
+func TestPortableChecksOnlyMetadataAndSupportsCancelRetryAndExit(t *testing.T) {
 	public, private, _ := ed25519.GenerateKey(rand.Reader)
-	packageData := []byte("complete package")
-	digest := sha256.Sum256(packageData)
 	var feed atomic.Value
+	var blocked atomic.Bool
+	var packageRequests atomic.Int32
 	started := make(chan struct{}, 1)
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/manifest" {
-			_, _ = w.Write(feed.Load().([]byte))
+		if r.URL.Path != "/manifest" {
+			packageRequests.Add(1)
 			return
 		}
-		if r.URL.Path == "/blocked" {
+		if blocked.Load() {
 			started <- struct{}{}
 			<-r.Context().Done()
 			return
 		}
-		_, _ = w.Write(packageData)
+		_, _ = w.Write(feed.Load().([]byte))
 	}))
 	defer server.Close()
-	manifest := Manifest{Schema: 1, Product: "resona", Channel: "stable", Version: "v0.2.0", Expires: time.Now().Add(time.Hour), Assets: map[string]Asset{"windows/amd64": {URL: server.URL + "/package", SHA256: hex.EncodeToString(digest[:]), Size: int64(len(packageData))}}}
 	m := New()
 	m.endpoint = server.URL + "/manifest"
 	m.key = base64.StdEncoding.EncodeToString(public)
 	m.current = "v0.1.4"
 	m.platform = "windows/amd64"
+	m.distribution = DistributionPortable
 	m.http = server.Client()
-	m.cacheRoot = t.TempDir()
 	defer m.Close()
+	manifest := testManifest()
+	feed.Store(signedForTest(t, manifest, private))
 	statuses := make(chan Status, 16)
-	start := func(download bool) {
+	start := func() {
 		t.Helper()
-		if err := m.Start(context.Background(), download, func(status Status) { statuses <- status }); err != nil {
+		if err := m.Start(context.Background(), func(s Status) { statuses <- s }); err != nil {
 			t.Fatal(err)
 		}
 	}
 	wait := func(state string) {
 		t.Helper()
-		timer := time.NewTimer(time.Second)
+		timer := time.NewTimer(3 * time.Second)
 		defer timer.Stop()
 		for {
 			select {
-			case s := <-statuses:
-				if s.State == state {
-					m.mu.Lock()
-					done := m.done
-					m.mu.Unlock()
-					if done != nil {
-						<-done
-					}
-					return
+			case status := <-statuses:
+				if status.State != state {
+					continue
 				}
+				m.mu.Lock()
+				done := m.done
+				m.mu.Unlock()
+				if done != nil {
+					<-done
+				}
+				return
 			case <-timer.C:
-				t.Fatalf("timed out waiting %s: %+v", state, m.Status())
+				t.Fatalf("waiting for %s: %+v", state, m.Status())
 			}
 		}
 	}
-	feed.Store(signedForTest(t, manifest, private))
-	start(false)
-	wait("available")
-	start(true)
-	wait("ready")
-	directory, err := m.PackageDirectory()
-	if err != nil {
-		t.Fatal(err)
+	if _, err := m.ReleasePage(); err == nil {
+		t.Fatal("offered release before verification")
 	}
-	if data, err := os.ReadFile(filepath.Join(directory, "package.zip")); err != nil || !bytes.Equal(data, packageData) {
-		t.Fatal("download incomplete")
-	}
-	manifest.Assets["windows/amd64"] = Asset{URL: server.URL + "/blocked", SHA256: hex.EncodeToString(digest[:]), Size: int64(len(packageData))}
-	feed.Store(signedForTest(t, manifest, private))
-	start(false)
+	start()
 	wait("available")
-	start(true)
+	status := m.Status()
+	if !status.CanOpenRelease || status.CanDownload || status.CanInstall || status.Distribution != DistributionPortable {
+		t.Fatalf("wrong capabilities: %+v", status)
+	}
+	if page, err := m.ReleasePage(); err != nil || page != manifest.ReleaseURL {
+		t.Fatalf("wrong verified page: %q, %v", page, err)
+	}
+	if packageRequests.Load() != 0 {
+		t.Fatal("portable downloaded a package")
+	}
+	blocked.Store(true)
+	start()
 	<-started
-	if err := m.Start(context.Background(), false, func(Status) {}); err == nil {
-		t.Fatal("parallel updater accepted")
+	if _, err := m.ReleasePage(); err == nil {
+		t.Fatal("old release leaked into a new check")
+	}
+	if err := m.Start(context.Background(), func(Status) {}); err == nil {
+		t.Fatal("parallel check accepted")
 	}
 	m.Cancel()
 	wait("cancelled")
-	entries, _ := os.ReadDir(m.cacheRoot)
-	if len(entries) != 1 {
-		t.Fatalf("cancel left partial files: %d", len(entries))
+	if m.Status().Error != "已取消检查更新" {
+		t.Fatalf("wrong cancellation reason: %+v", m.Status())
+	}
+	feed.Store([]byte("invalid signature"))
+	blocked.Store(false)
+	start()
+	wait("failed")
+	if _, err := m.ReleasePage(); err == nil {
+		t.Fatal("failed check exposed a release")
+	}
+	feed.Store(signedForTest(t, manifest, private))
+	start()
+	wait("available")
+	m.current = "v0.2.0"
+	start()
+	wait("current")
+	if m.Status().CanOpenRelease {
+		t.Fatal("current version offered update action")
+	}
+	blocked.Store(true)
+	start()
+	<-started
+	m.Close()
+	if m.Status().CanOpenRelease {
+		t.Fatal("closed updater advertised release action")
+	}
+	if _, err := m.ReleasePage(); err == nil {
+		t.Fatal("closed updater offered release")
 	}
 }
 
-func makeArchive(t *testing.T, names []string) string {
-	t.Helper()
-	var buffer bytes.Buffer
-	writer := zip.NewWriter(&buffer)
-	for _, name := range names {
-		f, err := writer.Create(name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		data := []byte("product")
-		if name == "resona-package.json" {
-			data = []byte(`{"schema":1,"product":"resona","platform":"windows/amd64","version":"v0.2.0"}`)
-		}
-		_, _ = f.Write(data)
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(t.TempDir(), "package.zip")
-	if err := os.WriteFile(path, buffer.Bytes(), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
-func TestArchivePathsAndReplacementRollback(t *testing.T) {
-	names := []string{"resona-desktop.exe", "resona-core.exe", "resona_webrtc_apm.dll", ".resona-package", "resona-package.json"}
-	archive := makeArchive(t, names)
-	if err := ValidateWindowsArchive(archive, "v0.2.0"); err != nil {
-		t.Fatal(err)
-	}
-	if err := ValidateWindowsArchive(archive, "v0.3.0"); err == nil {
-		t.Fatal("mislabeled package accepted")
-	}
-	if err := extractPackage(archive, t.TempDir(), "v0.2.0"); err != nil {
-		t.Fatal(err)
-	}
-	for _, bad := range []string{"../outside", "C:evil", "a\\b", "NUL.txt", "a/../b", "a.", "servers.json", "resona-core.EXE"} {
-		t.Run(bad, func(t *testing.T) {
-			withBad := append(append([]string{}, names...), bad)
-			if err := extractPackage(makeArchive(t, withBad), t.TempDir(), "v0.2.0"); err == nil {
-				t.Fatal("unsafe archive accepted")
+func TestUpdateFailureReasons(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		code          int
+		parentTimeout bool
+		clientTimeout bool
+		want          string
+	}{
+		{name: "missing manifest", code: 404, want: "尚未发布更新清单（HTTP 404），请稍后重试"},
+		{name: "forbidden", code: 403, want: "更新服务拒绝访问（HTTP 403）"},
+		{name: "rate limited", code: 429, want: "更新请求过于频繁（HTTP 429），请稍后重试"},
+		{name: "server failure", code: 503, want: "更新服务响应异常（HTTP 503），请稍后重试"},
+		{name: "parent deadline", parentTimeout: true, want: "连接更新服务超时，请检查网络后重试"},
+		{name: "client timeout", clientTimeout: true, want: "连接更新服务超时，请检查网络后重试"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if test.code != 0 {
+					w.WriteHeader(test.code)
+					return
+				}
+				<-r.Context().Done()
+			}))
+			defer server.Close()
+			m := New()
+			m.endpoint, m.key, m.current, m.distribution = server.URL, "configured", "v0.1.4", DistributionPortable
+			m.http = server.Client()
+			if test.clientTimeout {
+				m.http.Timeout = 50 * time.Millisecond
+			}
+			defer m.Close()
+			ctx := context.Background()
+			if test.parentTimeout {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, 50*time.Millisecond)
+				defer cancel()
+			}
+			finished := make(chan Status, 1)
+			if err := m.Start(ctx, func(status Status) {
+				if status.State != "checking" {
+					finished <- status
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case status := <-finished:
+				if status.State != "failed" || status.Error != test.want || status.CanOpenRelease {
+					t.Fatalf("unexpected failure: %+v", status)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("check did not finish")
 			}
 		})
 	}
-	root := t.TempDir()
-	target := filepath.Join(root, "installed")
-	backup := target + ".previous"
-	_ = os.Mkdir(target, 0o700)
-	_ = os.WriteFile(filepath.Join(target, "product"), []byte("old"), 0o600)
-	if err := replaceDirectory(target, filepath.Join(root, "missing"), backup); err == nil {
-		t.Fatal("missing stage accepted")
-	}
-	if data, err := os.ReadFile(filepath.Join(target, "product")); err != nil || string(data) != "old" {
-		t.Fatal("failed replacement lost original")
-	}
-	stage := filepath.Join(root, "stage")
-	_ = os.Mkdir(stage, 0o700)
-	_ = os.WriteFile(filepath.Join(stage, "product"), []byte("new"), 0o600)
-	if err := replaceDirectory(target, stage, backup); err != nil {
-		t.Fatal(err)
-	}
-	if data, _ := os.ReadFile(filepath.Join(backup, "product")); string(data) != "old" {
-		t.Fatal("backup lost")
-	}
-	if data, _ := os.ReadFile(filepath.Join(target, "product")); string(data) != "new" {
-		t.Fatal("whole package not switched")
+}
+
+func TestUpdateNetworkErrorsDoNotExposeRawRequestDetails(t *testing.T) {
+	for _, test := range []struct {
+		err  error
+		want string
+	}{
+		{&net.DNSError{Err: "private lookup details", Name: "private.invalid"}, "无法解析更新服务器地址，请检查网络或 DNS 设置"},
+		{&tls.CertificateVerificationError{Err: errors.New("private certificate details")}, "更新服务安全连接验证失败，请检查系统时间或网络代理"},
+		{errors.New("private request details"), "无法连接更新服务，请检查网络或代理设置"},
+	} {
+		wrapped := &url.Error{Op: "Get", URL: "https://private.invalid/?secret=value", Err: test.err}
+		if got := updateNetworkError(wrapped).Error(); got != test.want {
+			t.Fatalf("unexpected reason: %s", got)
+		}
 	}
 }
 
-func TestInstallHandoffMarkers(t *testing.T) {
-	directory := t.TempDir()
-	plan := filepath.Join(directory, "install.json")
-	if err := os.WriteFile(filepath.Join(directory, "commit"), nil, 0o600); err != nil {
+func TestUnsupportedBuildsNeverCheck(t *testing.T) {
+	for _, distribution := range []string{"", "unknown", DistributionInstaller, DistributionPortable} {
+		t.Run(distribution, func(t *testing.T) {
+			m := New()
+			m.distribution = distribution
+			m.endpoint = "https://example.invalid/manifest"
+			m.key = "configured"
+			m.current = "dev"
+			if distribution != DistributionPortable {
+				m.current = "v0.1.4"
+			}
+			if s := m.Status(); s.Configured || s.UnavailableReason == "" || s.CanDownload || s.CanInstall || s.CanOpenRelease {
+				t.Fatalf("unsafe capabilities: %+v", s)
+			}
+			if err := m.Start(context.Background(), func(Status) { t.Fatal("started disabled updater") }); err == nil {
+				t.Fatal("disabled build accepted check")
+			}
+		})
+	}
+}
+
+func TestPackageIdentityAndDistribution(t *testing.T) {
+	root := t.TempDir()
+	executable := filepath.Join(root, "resona-core.exe")
+	path := filepath.Join(root, "resona-package.json")
+	for _, distribution := range []string{"portable", "installer", "unknown", ""} {
+		data := []byte(`{"schema":1,"product":"resona","platform":"windows/amd64","version":"v0.2.0","distribution":"` + distribution + `"}`)
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got := packageDistribution(executable, "windows/amd64", "v0.2.0")
+		want := distribution
+		if got != want {
+			t.Fatalf("distribution %q became %q", distribution, got)
+		}
+		if got := packageDistribution(executable, "windows/amd64", "v0.3.0"); got != "" {
+			t.Fatal("mismatched version accepted")
+		}
+	}
+	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	if InstallCommitted(plan) {
-		t.Fatal("unacknowledged handoff accepted")
+	if got := packageDistribution(executable, "windows/amd64", "v0.2.0"); got != "" {
+		t.Fatal("missing metadata granted type")
 	}
-	if waitMarker(directory, "commit", time.Now().Add(-time.Second)) {
-		t.Fatal("expired preparation accepted stale marker")
-	}
-	if err := os.WriteFile(filepath.Join(directory, "armed"), nil, 0o600); err != nil {
+	macCore := filepath.Join(root, "Resona.app", "Contents", "MacOS", "resona-core")
+	macMetadata := filepath.Join(root, "Resona.app", "Contents", "Resources", "resona-package.json")
+	if err := os.MkdirAll(filepath.Dir(macMetadata), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if !InstallCommitted(plan) {
-		t.Fatal("acknowledged handoff not accepted")
-	}
-	if err := os.WriteFile(filepath.Join(directory, "abort"), nil, 0o600); err != nil {
+	data := []byte(`{"schema":1,"product":"resona","platform":"darwin/arm64","version":"v0.2.0","distribution":"portable"}`)
+	if err := os.WriteFile(macMetadata, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if InstallCommitted(plan) || waitMarker(directory, "armed", time.Now().Add(time.Second)) {
-		t.Fatal("aborted handoff accepted")
+	if got := packageDistribution(macCore, "darwin/arm64", "v0.2.0"); got != DistributionPortable {
+		t.Fatal("macOS resources not read")
 	}
-	if packageMarker(directory) {
-		t.Fatal("unmarked installation accepted")
+}
+
+func TestWindowsReleaseZipRequiresPortableIdentity(t *testing.T) {
+	for _, distribution := range []string{"portable", "installer", ""} {
+		for _, duplicate := range []bool{false, true} {
+			var buffer bytes.Buffer
+			writer := zip.NewWriter(&buffer)
+			for _, name := range []string{"resona-desktop.exe", "resona-core.exe", "resona_webrtc_apm.dll", ".resona-package", "resona-package.json"} {
+				file, _ := writer.Create(name)
+				content := "product"
+				if name == "resona-package.json" {
+					content = `{"schema":1,"product":"resona","platform":"windows/amd64","version":"v0.2.0","distribution":"` + distribution + `"}`
+				}
+				_, _ = file.Write([]byte(content))
+			}
+			if duplicate {
+				file, _ := writer.Create(strings.ToUpper("resona-core.exe"))
+				_, _ = file.Write([]byte("duplicate"))
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "package.zip")
+			if err := os.WriteFile(path, buffer.Bytes(), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			err := ValidateWindowsArchive(path, "v0.2.0")
+			if (err == nil) != (distribution == "portable" && !duplicate) {
+				t.Fatalf("accepted distribution=%q duplicate=%v: %v", distribution, duplicate, err)
+			}
+		}
 	}
-	if err := os.Mkdir(filepath.Join(directory, ".resona-package"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if packageMarker(directory) {
-		t.Fatal("non-file package marker accepted")
+}
+
+func TestMacReleaseZipRequiresMatchingArchitectureAndDistribution(t *testing.T) {
+	for _, distribution := range []string{"portable", "installer"} {
+		var buffer bytes.Buffer
+		writer := zip.NewWriter(&buffer)
+		for _, name := range []string{"MacOS/resona-core", "MacOS/resona-desktop", "Resources/.resona-bundle", "Resources/resona-package.json"} {
+			file, err := writer.Create("Resona.app/Contents/" + name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			content := "product"
+			if name == "Resources/resona-package.json" {
+				content = `{"schema":1,"product":"resona","platform":"darwin/arm64","version":"v0.2.0","distribution":"` + distribution + `"}`
+			}
+			if _, err := file.Write([]byte(content)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), "app.zip")
+		if err := os.WriteFile(path, buffer.Bytes(), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := ValidateMacArchive(path, "darwin/arm64", "v0.2.0"); (err == nil) != (distribution == "portable") {
+			t.Fatalf("distribution=%s: %v", distribution, err)
+		}
+		if err := ValidateMacArchive(path, "darwin/amd64", "v0.2.0"); err == nil {
+			t.Fatal("wrong architecture accepted")
+		}
 	}
 }

@@ -2,13 +2,13 @@ package updates
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"runtime"
 	"sync"
 	"time"
@@ -16,103 +16,128 @@ import (
 	"github.com/tsukiyoz/resona/internal/version"
 )
 
+const checkTimeout = 10 * time.Second
+
 type Status struct {
-	State      string `json:"state"`
-	Version    string `json:"version,omitempty"`
-	Notes      string `json:"notes,omitempty"`
-	Error      string `json:"error,omitempty"`
-	CanInstall bool   `json:"canInstall"`
-	Configured bool   `json:"configured"`
+	State             string `json:"state"`
+	Version           string `json:"version,omitempty"`
+	Notes             string `json:"notes,omitempty"`
+	Error             string `json:"error,omitempty"`
+	Distribution      string `json:"distribution"`
+	CanDownload       bool   `json:"canDownload"`
+	CanInstall        bool   `json:"canInstall"`
+	CanOpenRelease    bool   `json:"canOpenRelease"`
+	ReleaseURL        string `json:"releaseURL,omitempty"`
+	Configured        bool   `json:"configured"`
+	UnavailableReason string `json:"unavailableReason,omitempty"`
 }
 
 type Manager struct {
-	mu                               sync.Mutex
-	status                           Status
-	cancel                           context.CancelFunc
-	done                             chan struct{}
-	manifest                         Manifest
-	signed                           []byte
-	directory                        string
-	cacheRoot                        string
-	endpoint, key, current, platform string
-	http                             *http.Client
-	closed                           bool
+	mu                                             sync.Mutex
+	status                                         Status
+	cancel                                         context.CancelFunc
+	done                                           chan struct{}
+	endpoint, key, current, platform, distribution string
+	http                                           *http.Client
+	closed                                         bool
 }
 
 func New() *Manager {
-	return &Manager{status: Status{State: "idle"}, endpoint: ManifestURL, key: PublicKey, current: version.Current().Version, platform: runtime.GOOS + "/" + runtime.GOARCH, http: &http.Client{Timeout: 5 * time.Minute, CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		if len(via) >= 5 || !httpsURL(req.URL.String()) {
-			return errors.New("更新下载跳转无效")
-		}
-		return nil
-	}}}
+	executable, _ := os.Executable()
+	platform := runtime.GOOS + "/" + runtime.GOARCH
+	current := version.Current().Version
+	return &Manager{
+		status: Status{State: "idle"}, distribution: packageDistribution(executable, platform, current),
+		endpoint: ManifestURL, key: PublicKey, current: current, platform: platform,
+		http: &http.Client{Timeout: checkTimeout, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 || !httpsURL(req.URL.String()) {
+				return errors.New("更新服务跳转无效")
+			}
+			return nil
+		}},
+	}
 }
 
 func (m *Manager) Status() Status { m.mu.Lock(); defer m.mu.Unlock(); return m.statusLocked() }
+
 func (m *Manager) statusLocked() Status {
 	status := m.status
-	status.Configured = httpsURL(m.endpoint) && m.key != ""
+	status.Distribution = m.distribution
+	status.CanDownload, status.CanInstall = false, false
+	status.UnavailableReason = m.unavailableReason()
+	status.Configured = status.UnavailableReason == ""
+	status.CanOpenRelease = status.Configured && status.State == "available" && status.ReleaseURL != ""
 	return status
 }
 
-func (m *Manager) PackageDirectory() (string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.status.State != "ready" || m.directory == "" {
-		return "", errors.New("更新包尚未就绪")
+func (m *Manager) unavailableReason() string {
+	if m.closed {
+		return "更新检查已关闭"
 	}
-	return m.directory, nil
+	switch m.distribution {
+	case DistributionPortable:
+	case DistributionInstaller:
+		return "安装器更新尚未接通"
+	case "":
+		return "此构建未标记有效分发方式"
+	default:
+		return "不支持的分发方式"
+	}
+	if !httpsURL(m.endpoint) || m.key == "" {
+		return "此构建尚未配置正式更新源和签名公钥"
+	}
+	if _, err := versionParts(m.current); err != nil {
+		return "开发版本不检查正式更新，请使用正式发布包"
+	}
+	return ""
 }
 
-// Exactly one worker performs network/disk work. There is no idle timer.
-func (m *Manager) Start(parent context.Context, download bool, notify func(Status)) error {
+func (m *Manager) ReleasePage() (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed || !m.statusLocked().CanOpenRelease {
+		return "", errors.New("请先检查可用更新")
+	}
+	return m.status.ReleaseURL, nil
+}
+
+// One bounded worker checks metadata; there are no package writes or idle timers.
+func (m *Manager) Start(parent context.Context, notify func(Status)) error {
 	m.mu.Lock()
 	if m.closed || m.done != nil {
 		m.mu.Unlock()
-		return errors.New("更新任务正在进行或已关闭")
+		return errors.New("更新检查正在进行或已关闭")
 	}
-	if m.status.State == "installing" {
+	if reason := m.unavailableReason(); reason != "" {
 		m.mu.Unlock()
-		return errors.New("更新安装已准备退出")
+		return errors.New(reason)
 	}
-	if download && m.status.State != "available" {
-		m.mu.Unlock()
-		return errors.New("请先检查可用更新")
-	}
-	if !httpsURL(m.endpoint) || m.key == "" {
-		m.mu.Unlock()
-		return errors.New("此构建尚未配置正式更新源和签名公钥")
-	}
-	if !download {
-		if _, err := versionParts(m.current); err != nil {
-			m.mu.Unlock()
-			return errors.New("开发版本不自动更新，请使用正式发布包")
-		}
-	}
-	ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
-	m.cancel = cancel
+	ctx, cancel := context.WithTimeout(parent, checkTimeout)
 	done := make(chan struct{})
-	m.done = done
-	m.status.State, m.status.Error = "checking", ""
-	if download {
-		m.status.State = "downloading"
-	}
+	m.cancel, m.done = cancel, done
+	m.status = Status{State: "checking"}
 	initial := m.statusLocked()
 	m.mu.Unlock()
 	notify(initial)
 	go func() {
 		defer cancel()
-		var err error
-		if download {
-			err = m.download(ctx)
-		} else {
-			err = m.check(ctx, false)
-		}
+		manifest, err := m.check(ctx)
 		m.mu.Lock()
+		if err == nil && ctx.Err() != nil {
+			err = ctx.Err()
+		}
 		if err != nil {
-			m.status.State, m.status.Error = "failed", err.Error()
-			if ctx.Err() != nil {
-				m.status.State, m.status.Error = "cancelled", "更新任务已取消或超时"
+			m.status = Status{State: "failed", Error: err.Error()}
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				m.status.Error = "连接更新服务超时，请检查网络后重试"
+			} else if errors.Is(ctx.Err(), context.Canceled) {
+				m.status = Status{State: "cancelled", Error: "已取消检查更新"}
+			}
+		} else {
+			newer, _ := Newer(manifest.Version, m.current)
+			m.status = Status{State: "current", Version: manifest.Version, Notes: manifest.Notes, ReleaseURL: manifest.ReleaseURL}
+			if newer {
+				m.status.State = "available"
 			}
 		}
 		status := m.statusLocked()
@@ -145,130 +170,66 @@ func (m *Manager) Close() {
 	if done != nil {
 		<-done
 	}
-	m.mu.Lock()
-	directory := m.directory
-	installing := m.status.State == "installing"
-	m.mu.Unlock()
-	if directory != "" && !installing {
-		_ = os.RemoveAll(directory)
-	}
 }
 
-func (m *Manager) fetch(ctx context.Context, endpoint string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+func (m *Manager) check(ctx context.Context) (Manifest, error) {
+	var empty Manifest
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.endpoint, nil)
 	if err != nil {
-		return nil, errors.New("更新下载地址无效")
+		return empty, errors.New("更新检查地址无效")
 	}
 	req.Header.Set("User-Agent", "Resona-Updater/1")
-	r, err := m.http.Do(req)
+	response, err := m.http.Do(req)
 	if err != nil {
-		return nil, errors.New("无法访问更新服务，请检查网络后重试")
+		return empty, updateNetworkError(err)
 	}
-	if r.StatusCode != http.StatusOK {
-		r.Body.Close()
-		return nil, errors.New("更新服务暂不可用，请稍后重试")
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		switch response.StatusCode {
+		case http.StatusNotFound:
+			return empty, errors.New("尚未发布更新清单（HTTP 404），请稍后重试")
+		case http.StatusForbidden:
+			return empty, errors.New("更新服务拒绝访问（HTTP 403）")
+		case http.StatusTooManyRequests:
+			return empty, errors.New("更新请求过于频繁（HTTP 429），请稍后重试")
+		default:
+			return empty, fmt.Errorf("更新服务响应异常（HTTP %d），请稍后重试", response.StatusCode)
+		}
 	}
-	return r, nil
-}
-
-func (m *Manager) check(ctx context.Context, downloading bool) error {
-	r, err := m.fetch(ctx, m.endpoint)
+	data, err := io.ReadAll(io.LimitReader(response.Body, (64<<10)+1))
 	if err != nil {
-		return err
-	}
-	defer r.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(r.Body, (64<<10)+1))
-	if err != nil {
-		return errors.New("更新清单下载失败")
+		var networkError net.Error
+		if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &networkError) {
+			return empty, updateNetworkError(err)
+		}
+		return empty, errors.New("更新清单读取失败")
 	}
 	manifest, err := Verify(data, m.key, time.Now())
 	if err != nil {
-		return err
+		return empty, err
 	}
-	newer, err := Newer(manifest.Version, m.current)
-	if err != nil {
-		return err
+	if _, err := Newer(manifest.Version, m.current); err != nil {
+		return empty, err
 	}
-	if _, ok := manifest.Assets[m.platform]; !ok {
-		return errors.New("此版本尚无当前平台的更新包")
+	asset, ok := manifest.Assets[m.platform]
+	if !ok || asset.Distribution != m.distribution {
+		return empty, errors.New("此版本没有当前平台和分发方式的更新包")
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.manifest, m.signed = manifest, data
-	m.status = Status{State: "current", Version: manifest.Version, Notes: manifest.Notes}
-	if newer {
-		m.status.State = "available"
-	}
-	if downloading && newer {
-		m.status.State = "downloading"
-	}
-	return nil
+	return manifest, nil
 }
 
-func (m *Manager) download(ctx context.Context) error {
-	// Refresh the signed feed before downloading; it may have changed since check.
-	if err := m.check(ctx, true); err != nil {
-		return err
+func updateNetworkError(err error) error {
+	var networkError net.Error
+	var dnsError *net.DNSError
+	var certificateError *tls.CertificateVerificationError
+	switch {
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &networkError) && networkError.Timeout():
+		return errors.New("连接更新服务超时，请检查网络后重试")
+	case errors.As(err, &dnsError):
+		return errors.New("无法解析更新服务器地址，请检查网络或 DNS 设置")
+	case errors.As(err, &certificateError):
+		return errors.New("更新服务安全连接验证失败，请检查系统时间或网络代理")
+	default:
+		return errors.New("无法连接更新服务，请检查网络或代理设置")
 	}
-	m.mu.Lock()
-	manifest, signed := m.manifest, m.signed
-	available := m.status.State == "downloading"
-	m.mu.Unlock()
-	if !available {
-		return nil
-	}
-	asset := manifest.Assets[m.platform]
-	r, err := m.fetch(ctx, asset.URL)
-	if err != nil {
-		return err
-	}
-	defer r.Body.Close()
-	root := m.cacheRoot
-	if root == "" {
-		cache, err := os.UserCacheDir()
-		if err != nil {
-			return errors.New("无法定位更新缓存")
-		}
-		root = filepath.Join(cache, "resona", "updates")
-	}
-	if err := os.MkdirAll(root, 0o700); err != nil {
-		return errors.New("无法创建更新缓存")
-	}
-	directory, err := os.MkdirTemp(root, "package-")
-	if err != nil {
-		return errors.New("无法创建更新目录")
-	}
-	success := false
-	defer func() {
-		if !success {
-			_ = os.RemoveAll(directory)
-		}
-	}()
-	f, err := os.OpenFile(filepath.Join(directory, "package.zip"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		return errors.New("无法写入更新包")
-	}
-	digest := sha256.New()
-	n, copyErr := io.Copy(io.MultiWriter(f, digest), io.LimitReader(r.Body, asset.Size+1))
-	syncErr := f.Sync()
-	closeErr := f.Close()
-	if copyErr != nil || syncErr != nil || closeErr != nil || ctx.Err() != nil {
-		return errors.New("更新包下载中断")
-	}
-	if n != asset.Size || hex.EncodeToString(digest.Sum(nil)) != asset.SHA256 {
-		return errors.New("更新包完整性验证失败")
-	}
-	if err := os.WriteFile(filepath.Join(directory, "manifest.json"), signed, 0o600); err != nil {
-		return errors.New("无法保存签名清单")
-	}
-	m.mu.Lock()
-	old := m.directory
-	m.directory = directory
-	m.status = Status{State: "ready", Version: manifest.Version, Notes: manifest.Notes, CanInstall: m.platform == "windows/amd64"}
-	m.mu.Unlock()
-	if old != "" {
-		_ = os.RemoveAll(old)
-	}
-	success = true
-	return nil
 }

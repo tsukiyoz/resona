@@ -30,6 +30,7 @@ func run() error {
 	output := flag.String("out", "", "signed manifest output path")
 	expires := flag.String("expires", "", "expiry in RFC3339 UTC")
 	notesPath := flag.String("notes", "", "optional UTF-8 release note file")
+	publicKey := flag.String("public-key", "", "required public key embedded in released clients")
 	flag.Parse()
 	private, err := base64.StdEncoding.DecodeString(os.Getenv("RESONA_UPDATE_SIGNING_KEY"))
 	if err != nil || len(private) != ed25519.PrivateKeySize {
@@ -54,7 +55,7 @@ func run() error {
 	if len(data) > 64<<10 || json.Unmarshal(data, &inputs) != nil || len(inputs) == 0 {
 		return errors.New("invalid asset input")
 	}
-	manifest := updates.Manifest{Schema: 1, Product: "resona", Channel: "stable", Version: *version, Expires: expiry, Assets: make(map[string]updates.Asset)}
+	manifest := updates.Manifest{Schema: 1, Product: "resona", Channel: "stable", Version: *version, ReleaseURL: "https://github.com/tsukiyoz/resona/releases/tag/" + *version, Expires: expiry, Assets: make(map[string]updates.Asset)}
 	if *notesPath != "" {
 		notes, err := os.ReadFile(*notesPath)
 		if err != nil {
@@ -73,6 +74,8 @@ func run() error {
 			if err := updates.ValidateWindowsArchive(input.Path, *version); err != nil {
 				return err
 			}
+		} else if err := updates.ValidateMacArchive(input.Path, input.Platform, *version); err != nil {
+			return err
 		}
 		f, err := os.Open(input.Path)
 		if err != nil {
@@ -84,13 +87,16 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		manifest.Assets[input.Platform] = updates.Asset{URL: input.URL, SHA256: hex.EncodeToString(h.Sum(nil)), Size: size}
+		manifest.Assets[input.Platform] = updates.Asset{URL: input.URL, Distribution: updates.DistributionPortable, SHA256: hex.EncodeToString(h.Sum(nil)), Size: size}
 	}
 	payload, err := json.Marshal(manifest)
 	if err != nil {
 		return err
 	}
 	key := ed25519.PrivateKey(private)
+	if err := validatePublicKey(key, *publicKey); err != nil {
+		return err
+	}
 	signed, err := json.Marshal(updates.SignedManifest{Payload: payload, Signature: base64.StdEncoding.EncodeToString(ed25519.Sign(key, payload))})
 	if err != nil {
 		return err
@@ -103,5 +109,16 @@ func run() error {
 		return err
 	}
 	fmt.Println("Signed manifest written; verification public key:", public)
+	return nil
+}
+
+func validatePublicKey(private ed25519.PrivateKey, encoded string) error {
+	public, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil || len(public) != ed25519.PublicKeySize {
+		return errors.New("-public-key must contain the client base64 Ed25519 public key")
+	}
+	if !private.Public().(ed25519.PublicKey).Equal(ed25519.PublicKey(public)) {
+		return errors.New("signing key does not match the public key embedded in clients")
+	}
 	return nil
 }

@@ -8,7 +8,7 @@
 | `cmd/resona-core` | Go 客户端入口，与桌面通过继承的 NDJSON 管道通信 |
 | `internal/client` | 会话、书签、凭据、聊天、语音生命周期与本地状态 |
 | `internal/desktopipc` | 请求、事件、资源订阅协调及有界关闭 |
-| `internal/updates` | 有界更新任务、签名和包校验、Windows 便携目录替换 |
+| `internal/updates` | 分发方式识别、有界更新检查、签名清单与发布包身份校验 |
 | `internal/protocol/native` | 原生控制命令、状态转换、身份和音频传输适配 |
 | `internal/audio` / `native/webrtc-apm` | malgo 设备、SpeexDSP、可选 WebRTC APM 动态库、gopus、抖动缓冲与混音 |
 | `internal/nativewire` | Protobuf 控制帧及固定语音头 |
@@ -17,11 +17,12 @@
 
 客户端与服务端在单仓库演进，客户端核心不依赖 GPUI。音频只在 Go 核心处理；server 解密后转发 Opus，不做编解码或混音。传输为逐跳加密，server 可见明文，不是端到端加密。
 
-更新由关于页命令启动独立任务，通过 IPC 状态事件回显，最多一个下载任务；没有
-启动检查或空闲轮询。可信旧 Core 复制成 Windows 安装器，ready/commit/armed
-交接后沿用现有有界关闭，父进程退出后重新校验并替换完整产品目录。配置不在
-产品目录中。保留旧包备份，不承诺断电或新版运行期崩溃的自动恢复。更新不走
-语音处理或服务端协议，公共更新源和签名公钥通过构建变量注入。见 updates.md。
+更新仅由设置中的关于页启动独立有界检查，通过 IPC 事件回显；没有启动联网或
+空闲轮询。Core 解释 `resona-package.json` 的 distribution，GUI 只按能力渲染。
+当前 Windows ZIP 和 macOS .app 均为 portable：验证签名清单后只打开对应版本
+发布页，用户手动下载替换，不下载包、不写缓存、不交接退出。安装器升级尚未
+接通，不暴露安装能力；旧 ZIP 目录替换器已移除。配置仍位于产品目录外。
+更新不走语音处理或服务端协议。见 ADR-0030 和 updates.md。
 
 ## 语音与资源
 

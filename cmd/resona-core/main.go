@@ -15,7 +15,6 @@ import (
 	"github.com/tsukiyoz/resona/internal/diagnostics"
 	"github.com/tsukiyoz/resona/internal/protocol"
 	"github.com/tsukiyoz/resona/internal/protocol/native"
-	"github.com/tsukiyoz/resona/internal/updates"
 	"github.com/tsukiyoz/resona/internal/version"
 )
 
@@ -40,15 +39,7 @@ func main() {
 
 func run() error {
 	showVersion := flag.Bool("version", false, "print build version and exit")
-	applyUpdate := flag.String("apply-update", "", "apply a verified Windows update transaction")
 	flag.Parse()
-	if *applyUpdate != "" {
-		err := updates.Apply(*applyUpdate)
-		if err != nil && updates.InstallCommitted(*applyUpdate) {
-			updates.ReportInstallError(err)
-		}
-		return err
-	}
 	if *showVersion {
 		fmt.Println("resona-core", version.Current())
 		return nil

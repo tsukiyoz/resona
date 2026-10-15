@@ -1,101 +1,108 @@
 # Desktop updates
 
-## Current implementation
+## Distribution and interaction
 
-Settings -> About provides manual checking, download/cancel, and verified-package
-status. Nothing contacts a release service at startup or on an idle timer.
-Network, hashing and disk work run outside the voice workers and IPC command loop.
-Only one update task runs at a time. Ordinary exit cancels work and cleans an
-uncommitted staged download; it never installs an update.
+One immutable version tag covers all distribution types. `resona-package.json`
+records schema 1, product, platform, version and `distribution: portable|installer`.
+Windows metadata lives beside Core; macOS metadata lives in Contents/Resources.
+Core validates it once at startup and returns interpreted capabilities/reasons.
+Missing, invalid or mismatched metadata never enables updates. See ADR-0030.
 
-Windows x64 portable packages support **Exit and update**. The running trusted
-Core copies itself and its runtime DLLs into a separate transaction directory,
-opens handles for the original Desktop/Core, and acknowledges preparation. The
-parent sends commit and waits for the helper's armed acknowledgement before exit;
-failed preparation writes abort and keeps the application running. Only an
-acknowledged, committed transaction replaces the product
-directory. The UI continues to use its existing bounded graceful shutdown.
-The helper rechecks the signature, version, archive size/hash and ZIP paths.
-Both the installed directory and new ZIP must have a regular `.resona-package`
-marker. The new ZIP also requires `resona-package.json` with matching product,
-platform and version. The Windows packager compares Desktop and Core versions
-before producing this metadata; the manifest signer validates it before signing.
-Desktop, Core, native DLLs, runtime DLLs and licenses switch as one directory.
-User configuration, identities and credentials are outside this directory.
+Current Windows ZIP and macOS .app ZIP packages are **portable**. Updates are
+available only in Settings -> About; the main window has no update button or
+extra toolbar. Opening About reads local status without starting a network check.
+Users explicitly check, then open a verified newer version's GitHub Release page
+and download/replace the application themselves. Desktop consumes Core's `canOpenRelease` and
+verified URL; it does not infer actions from platform or distribution strings.
+The system browser is requested to open the page; this is not reported as a
+successful download or installation. Core URL errors remain in the panel.
 
-Replacement uses two same-volume directory renames. Ordinary replacement failure
-restores the complete old directory. Failure to create the new desktop process
-also restores and launches the old package. The old directory remains beside the
-installation as `<install>.previous`; inspect the new version and move that backup
-before another update. This first implementation does not automatically confirm
-new-version readiness or remove the backup. New-process creation is not proof of
-successful voice operation. Runtime crashes and power loss between renames are
-not covered by automatic rollback; the retained previous directory allows manual
-recovery. The updater never elevates privileges or kills other application instances.
+Portable packages have no in-app download, package reveal, install or update-exit
+actions. Core also rejects legacy DownloadUpdate/GetUpdatePackage/InstallUpdate
+commands. The former ZIP directory replacement helper and CLI entry were removed.
+No packages are downloaded or cached. Configuration, identities and credentials
+remain in their existing user directories outside the application package.
 
-macOS supports checking, verification, download and revealing the staged package.
-Installation remains manual while Developer ID/notarization is unfinished. The
-download is temporary and is cleaned on ordinary exit: copy the verified package
-out of the shown cache directory before quitting for a manual installation.
-An Ed25519 update signature does not replace Apple/Windows platform signing.
+Only one check runs at a time with a 10-second overall deadline. Closing settings or changing pages leaves it running;
+explicit cancellation or ordinary app exit cancels it. Failure/cancellation can
+be retried. Starting a new check clears the old release action. Startup only reads
+local update status; there is no startup network check, idle timer, animation or
+result toast. Checks never run in voice workers or the IPC command loop.
 
-Windows process waiting, filesystem/antivirus behavior and the complete application
-restart still require native CI and real-machine acceptance. Until the release
-address and trust key are configured, the About page shows updates as unavailable.
+Only actual cancellation uses the cancelled state. Deadline, network, HTTP and
+manifest verification errors use failed, with "检查更新失败：" followed by a safe
+reason. HTTP 404 identifies an unpublished manifest; DNS, TLS, connection and
+timeout errors remain distinct. Raw request URLs and transport errors are not
+shown. No automatic retry extends the deadline.
+
+**Installer packages are not implemented yet.** Their metadata type is recognized,
+but reports "installer update backend unavailable" and exposes no update actions.
+Future installers must handle their own upgrade, failure recovery and restart;
+changing a ZIP marker to installer does not implement those behaviors. Signed
+assets will need a distribution dimension before both types can be served.
+macOS Developer ID/notarization and Windows native acceptance remain separate.
 
 ## Trust and build configuration
 
-Build-time `RESONA_UPDATE_URL` is a public HTTPS URL for `manifest.json`.
-`RESONA_UPDATE_PUBLIC_KEY` is a base64 Ed25519 public key. Both are public values,
-passed to Core with `-ldflags`; Windows/macOS Actions read repository Variables
-with those names. A missing address/key disables checking. A dev version cannot
-update, and Desktop/Core versions must match before installation.
+Build-time `RESONA_UPDATE_URL` points to
+`https://github.com/tsukiyoz/resona/releases/latest/download/manifest.json`.
+`RESONA_UPDATE_PUBLIC_KEY` is the base64 Ed25519 public key. Both are public Actions
+Variables injected into Core. Missing configuration and dev snapshots disable
+checking with an explicit reason. No GitHub token is shipped to clients.
 
-The source repository can host releases if it is public. Private releases require
-authentication, so preserving private source requires a public release repository
-or public download service. No GitHub token is shipped in the client. This choice
-does not change the update API or installer.
+The signed payload has schema 1, product resona, channel stable, an immutable
+vMAJOR.MINOR.PATCH, expiry, notes, `releaseURL`, and an assets map keyed by platform
+(windows/amd64, darwin/arm64, darwin/amd64). Current assets declare
+`distribution: portable`, HTTPS URL, SHA-256 and exact size. Signature verification
+precedes interpretation. The Release page must exactly match
+`https://github.com/tsukiyoz/resona/releases/tag/<signed version>`.
+Only a strictly newer formal version with a matching platform asset enables the
+open-page action. Expired, invalid or forged manifests never expose that action.
+This is not a complete TUF implementation. Ed25519 signing is independent of
+Apple/Windows platform signing; manual downloads are handled by the browser.
 
-The signed payload declares `schema: 1`, `product: "resona"`, `channel: "stable"`,
-the immutable `vMAJOR.MINOR.PATCH`, `expires` (RFC3339), notes, and an `assets` map
-keyed by `windows/amd64`, `darwin/arm64`, `darwin/amd64`. Each asset has a public
-HTTPS `url`, SHA-256 and exact byte size. Signature verification precedes schema
-and package validation; only a strictly newer stable version is accepted.
-Expiry limits stale-feed acceptance, but this is not a full TUF implementation.
-Download URLs must be HTTPS, including redirects, and may not contain credentials.
-Only an authorized signer can supply an asset URL.
+## Tag publication
 
-## Producing a manifest
+`release.yml` validates an annotated tag on main, VERSION and release notes, then
+calls Windows and both macOS architecture builds pinned to the event commit.
+After all three packages succeed, `scripts/publish-release.sh` signs the manifest,
+creates a draft, uploads every package/manifest and makes the release public.
+Assets use `Resona-vX.Y.Z-<platform>-portable.zip` names. Workflow artifacts remain
+temporary (14 days); Release assets provide the public downloads.
 
-Keep the update Ed25519 signing key separate from server/client Noise identities.
-Use an offline key or a restricted publishing Secret, never a repository file.
-`RESONA_UPDATE_SIGNING_KEY` contains the base64 64-byte Ed25519 private key.
-The signing utility never prints it. Public verification keys may be committed.
-Do not move published tags or replace an existing version's application packages.
+Existing releases, including drafts, are never overwritten. Review/delete an
+incomplete draft before rerunning the same release. Never move a published tag.
+Publication is serialized; older versions cannot take over latest. The remote
+annotated tag is checked against the event commit before draft creation and
+publication. Maintainers must still protect tags: Git ref mutation and Release
+API operations are not atomic. Manual workflow dispatch must select a release tag.
 
-Prepare an asset-input JSON file (local package paths are not published):
+## Signing and recovery of publishing configuration
+
+The publishing-only Secret `RESONA_UPDATE_SIGNING_KEY` contains the base64 64-byte
+Ed25519 private key. It is separate from Noise identities and never passed to
+platform builds or PRs. Signer output is checked against the public key embedded
+in clients. All ZIP product/version/platform/distribution metadata is validated before
+signing. Manifests expire after 365 days; publish before expiry.
+
+On 2026-10-15, the Secret and two Variables were provisioned in tsukiyoz/resona.
+The private backup is a local Keychain item **Resona release update signing key**,
+service `io.github.tsukiyoz.resona.release-signing`, account `github-releases`.
+No private file was added to Git/artifacts and no Release was published then.
+Back it up securely; changing the trust key breaks already installed clients.
+
+Example asset-input JSON for the signing tool:
 
 ```json
-[
-  {
-    "platform": "windows/amd64",
-    "path": "desktop/dist/Resona-win-x64.zip",
-    "url": "https://github.com/OWNER/PUBLIC-REPO/releases/download/v0.2.0/Resona-win-x64.zip"
-  }
-]
+[{"platform":"windows/amd64","path":"desktop/dist/Resona-win-x64.zip","url":"https://github.com/tsukiyoz/resona/releases/download/v0.2.0/Resona-v0.2.0-win-x64-portable.zip"}]
 ```
-
-Run in the restricted publishing environment with the signing Secret set:
 
 ```sh
 go run ./tools/release-manifest -version v0.2.0 -assets build/release-assets.json \
-  -expires 2027-10-14T00:00:00Z -out build/manifest.json
+  -expires 2027-10-14T00:00:00Z -public-key "$RESONA_UPDATE_PUBLIC_KEY" -out build/manifest.json
 ```
 
-The tool validates Windows package identity/version, computes package sizes/hashes,
-signs compact payload bytes and verifies
-its own output. Publish the versioned package and `manifest.json` together, using
-a latest-release download URL as the feed. Define an expiry long enough for the
-support window and publish new metadata before it expires. Do not put the signing
-key in Actions logs, source, artifacts or releases. Public release publication and
-key provisioning are still pending; no remote repository was created by this change.
+The interaction was evaluated against DBX commit
+`12139b55df9b4bf0ae89d4fab459bf1871e8a783`, notably
+[AppToolbar.vue](https://github.com/t8y2/dbx/blob/12139b55df9b4bf0ae89d4fab459bf1871e8a783/apps/desktop/src/components/layout/AppToolbar.vue)
+and UpdateDialog/useAppUpdater. Resona does not adopt hourly checks or plugin updates.

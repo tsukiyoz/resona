@@ -657,6 +657,11 @@ impl ResonaApp {
                 this.request("GetMicrophoneTestState", json!({}), Pending::MicrophoneTest);
                 this.request("GetAudioDevices", json!({}), Pending::Devices);
                 this.request("GetCapabilities", json!({}), Pending::Capabilities);
+                this.request(
+                    "GetUpdateStatus",
+                    json!({}),
+                    Pending::Update("GetUpdateStatus"),
+                );
                 this.store_voice_preferences(None);
                 cx.spawn_in(window, async move |view, cx| {
                     while let Ok(incoming) = rx.recv().await {
@@ -1153,13 +1158,13 @@ impl ResonaApp {
                         self.probe_result = format!("核心探测失败：{error}");
                     }
                     (Some(Pending::Update(method)), Ok(value)) => {
-                        if method == "InstallUpdate" {
-                            self.begin_shutdown(cx);
-                        } else if method == "GetUpdateStatus" {
+                        if method == "GetUpdateStatus" {
                             self.update_status = value;
-                        } else if method == "GetUpdatePackage" {
-                            if let Some(path) = value["path"].as_str() {
-                                cx.reveal_path(std::path::Path::new(path));
+                        } else if method == "GetUpdateRelease" && !self.closing {
+                            if let Some(url) = value["url"].as_str() {
+                                cx.open_url(url);
+                            } else {
+                                self.update_notice = "发布页地址不可用，请重新检查更新".into();
                             }
                         }
                     }
@@ -4825,29 +4830,30 @@ impl ResonaApp {
             .pending
             .values()
             .any(|p| matches!(p, Pending::Update(_)));
-        let busy = pending || matches!(state, "checking" | "downloading" | "installing");
+        let busy = pending || state == "checking";
         let status = if !self.update_notice.is_empty() {
             self.update_notice.clone()
         } else if !configured {
-            "自动更新未启用".into()
+            self.update_status["unavailableReason"]
+                .as_str()
+                .unwrap_or("更新检查不可用")
+                .into()
         } else {
             match state {
                 "checking" => "正在检查更新…".into(),
-                "downloading" => "正在下载并校验更新包…".into(),
-                "installing" => "正在准备退出并更新…".into(),
                 "current" => "已是最新正式版本".into(),
                 "available" => format!(
                     "可用版本：{}",
                     self.update_status["version"].as_str().unwrap_or("--")
                 ),
-                "ready" => format!(
-                    "更新包已验证：{}",
-                    self.update_status["version"].as_str().unwrap_or("--")
+                "failed" => format!(
+                    "检查更新失败：{}",
+                    self.update_status["error"]
+                        .as_str()
+                        .filter(|reason| !reason.is_empty())
+                        .unwrap_or("请稍后重试")
                 ),
-                "failed" | "cancelled" => self.update_status["error"]
-                    .as_str()
-                    .unwrap_or("更新失败，请重试")
-                    .into(),
+                "cancelled" => "已取消检查更新".into(),
                 _ => "尚未检查更新".into(),
             }
         };
@@ -4860,11 +4866,7 @@ impl ResonaApp {
                 .on_click(move |_, _, cx| {
                     entity.update(cx, |this, cx| {
                         this.update_notice.clear();
-                        this.request(
-                            method,
-                            json!({"desktopVersion":env!("CARGO_PKG_VERSION")}),
-                            Pending::Update(method),
-                        );
+                        this.request(method, json!({}), Pending::Update(method));
                         cx.notify();
                     });
                 })
@@ -4873,24 +4875,19 @@ impl ResonaApp {
             button("check-update", "检查更新", "CheckUpdate")
                 .disabled(!configured || busy || self.core.is_none()),
         );
-        if state == "available" {
-            controls = controls
-                .child(button("download-update", "下载更新", "DownloadUpdate").disabled(busy));
+        if self.update_status["canOpenRelease"]
+            .as_bool()
+            .unwrap_or(false)
+        {
+            controls = controls.child(
+                button("open-update-release", "打开发布页", "GetUpdateRelease")
+                    .icon(IconName::ExternalLink)
+                    .disabled(busy || self.core.is_none()),
+            );
         }
-        if matches!(state, "checking" | "downloading") {
+        if state == "checking" {
             controls =
                 controls.child(button("cancel-update", "取消", "CancelUpdate").disabled(pending));
-        }
-        if state == "ready" {
-            if self.update_status["canInstall"].as_bool().unwrap_or(false) {
-                controls = controls
-                    .child(button("install-update", "退出并更新", "InstallUpdate").disabled(busy));
-            }
-            controls = controls.child(
-                button("show-update-package", "显示更新包", "GetUpdatePackage")
-                    .icon(IconName::Folder)
-                    .disabled(busy),
-            );
         }
         div()
             .w_full()

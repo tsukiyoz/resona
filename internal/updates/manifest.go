@@ -1,4 +1,4 @@
-// Package updates implements signed, whole-package desktop updates outside audio paths.
+// Package updates verifies release manifests and checks desktop updates outside audio paths.
 package updates
 
 import (
@@ -21,19 +21,21 @@ var ManifestURL, PublicKey string
 const MaxPackageSize int64 = 512 << 20
 
 type Asset struct {
-	URL    string `json:"url"`
-	SHA256 string `json:"sha256"`
-	Size   int64  `json:"size"`
+	Distribution string `json:"distribution"`
+	URL          string `json:"url"`
+	SHA256       string `json:"sha256"`
+	Size         int64  `json:"size"`
 }
 
 type Manifest struct {
-	Schema  int              `json:"schema"`
-	Product string           `json:"product"`
-	Channel string           `json:"channel"`
-	Version string           `json:"version"`
-	Expires time.Time        `json:"expires"`
-	Notes   string           `json:"notes"`
-	Assets  map[string]Asset `json:"assets"`
+	Schema     int              `json:"schema"`
+	Product    string           `json:"product"`
+	Channel    string           `json:"channel"`
+	Version    string           `json:"version"`
+	Expires    time.Time        `json:"expires"`
+	Notes      string           `json:"notes"`
+	ReleaseURL string           `json:"releaseURL"`
+	Assets     map[string]Asset `json:"assets"`
 }
 
 type SignedManifest struct {
@@ -73,12 +75,15 @@ func Verify(data []byte, publicKey string, now time.Time) (Manifest, error) {
 	if _, err := versionParts(manifest.Version); err != nil {
 		return manifest, err
 	}
+	if manifest.ReleaseURL != "https://github.com/tsukiyoz/resona/releases/tag/"+manifest.Version {
+		return manifest, errors.New("更新发布页地址无效")
+	}
 	if !manifest.Expires.After(now) || len(manifest.Notes) > 8192 || len(manifest.Assets) > 8 {
 		return manifest, errors.New("更新清单已过期或超出限制")
 	}
 	for _, asset := range manifest.Assets {
 		digest, err := hex.DecodeString(asset.SHA256)
-		if err != nil || len(digest) != 32 || asset.Size <= 0 || asset.Size > MaxPackageSize || !httpsURL(asset.URL) {
+		if err != nil || len(digest) != 32 || asset.Size <= 0 || asset.Size > MaxPackageSize || !httpsURL(asset.URL) || asset.Distribution != DistributionPortable {
 			return manifest, errors.New("更新包信息无效")
 		}
 	}

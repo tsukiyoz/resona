@@ -1,10 +1,10 @@
 name: Windows build
 
 on:
+  workflow_call:
   workflow_dispatch:
   push:
     branches: [main]
-    tags: ['v*']
     paths:
       - '.github/workflows/windows-build.yml'
       - 'build-windows.cmd'
@@ -44,6 +44,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
