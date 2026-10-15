@@ -27,6 +27,9 @@ pub struct Session {
     #[serde(rename = "sendingMessageID")]
     pub sending_message_id: String,
     pub mode: String,
+    pub connection_attempt: usize,
+    pub connection_waiting: bool,
+    pub connection_retry_slow: bool,
     #[serde(rename = "channelID")]
     pub channel_id: String,
     #[serde(rename = "switchingChannelID")]

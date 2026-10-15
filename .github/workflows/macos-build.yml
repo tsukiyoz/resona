@@ -1,10 +1,17 @@
 name: macOS build
 
 on:
+  workflow_call:
+    secrets:
+      MACOS_CERTIFICATE_P12_BASE64:
+        required: true
+      MACOS_CERTIFICATE_PASSWORD:
+        required: true
+      MACOS_SIGNING_IDENTITY:
+        required: true
   workflow_dispatch:
   push:
     branches: [main]
-    tags: ['v*']
     paths:
       - '.github/workflows/macos-build.yml'
       - 'Makefile'
@@ -63,6 +70,8 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -98,7 +107,7 @@ jobs:
       # PR code must never receive the signing identity or certificate secrets.
       - name: Import signing identity for trusted builds
         id: signing
-        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/main' || github.ref_type == 'tag'))
         env:
           CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -126,6 +135,8 @@ jobs:
       - name: Build app bundle
         env:
           RESONA_BUILD_VERSION: ${{ steps.version.outputs.version }}
+          RESONA_UPDATE_URL: ${{ vars.RESONA_UPDATE_URL }}
+          RESONA_UPDATE_PUBLIC_KEY: ${{ vars.RESONA_UPDATE_PUBLIC_KEY }}
         run: make build-desktop VERSION="$RESONA_BUILD_VERSION"
       - name: Verify WebRTC processors with packaged library
         run: |

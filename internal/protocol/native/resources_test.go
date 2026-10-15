@@ -1,13 +1,80 @@
 package native
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/tsukiyoz/resona/internal/audio"
+	"github.com/tsukiyoz/resona/internal/client"
 	w "github.com/tsukiyoz/resona/internal/nativewire"
 )
+
+type resourceTestTransport struct {
+	w.Connection
+	closes atomic.Int32
+}
+
+func (c *resourceTestTransport) Context() context.Context            { return context.Background() }
+func (c *resourceTestTransport) CloseWithError(uint64, string) error { c.closes.Add(1); return nil }
+
+type resourceTestStream struct {
+	w.Stream
+	write func([]byte) (int, error)
+}
+
+func (s resourceTestStream) Write(data []byte) (int, error) { return s.write(data) }
+func (resourceTestStream) SetWriteDeadline(time.Time) error { return nil }
+
+func TestResourceTimeoutCancelAndPermanentRefusalKeepHealthyTransport(t *testing.T) {
+	transport := &resourceTestTransport{}
+	c := &connection{conn: transport, gate: make(chan struct{}, 1), pending: make(map[uint32]chan uint8)}
+	for _, mode := range []string{"timeout", "cancel", "refused", "success"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+			defer cancel()
+			c.stream = resourceTestStream{write: func(data []byte) (int, error) {
+				frame, err := w.Read(bytes.NewReader(data))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if mode == "cancel" {
+					cancel()
+				}
+				if mode == "refused" || mode == "success" {
+					code := w.OK
+					if mode == "refused" {
+						code = w.PermissionDenied
+					}
+					c.mu.Lock()
+					c.pending[frame.Request] <- code
+					c.mu.Unlock()
+				}
+				return len(data), nil
+			}}
+			err := c.command(ctx, w.WatchResourcesKind, w.WatchResources{})
+			var failure *client.ResourceSyncError
+			if mode == "timeout" && !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("timeout=%v", err)
+			}
+			if mode == "cancel" && !errors.Is(err, context.Canceled) {
+				t.Fatalf("cancel=%v", err)
+			}
+			if mode == "refused" && (!errors.As(err, &failure) || failure.Retryable) {
+				t.Fatalf("refusal=%v", err)
+			}
+			if mode == "success" && err != nil {
+				t.Fatal(err)
+			}
+			if transport.closes.Load() != 0 || len(c.pending) != 0 || len(c.gate) != 0 {
+				t.Fatal("resource request closed transport or leaked command state")
+			}
+		})
+	}
+}
 
 func TestResourceWatchScopesResyncAndKeepsVoiceAndChat(t *testing.T) {
 	t.Run("noise", func(t *testing.T) {

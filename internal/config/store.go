@@ -2,6 +2,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,21 @@ import (
 
 	"github.com/tsukiyoz/resona/internal/client"
 )
+
+const (
+	SchemaVersion = 1
+	maxBytes      = 1024 * 1024
+)
+
+type storedProfile struct {
+	client.ServerProfile
+	RetiredTrust json.RawMessage `json:"certificateFingerprint,omitempty"`
+}
+
+type document struct {
+	SchemaVersion int             `json:"schema_version"`
+	Servers       []storedProfile `json:"servers"`
+}
 
 type Store struct {
 	path string
@@ -27,42 +43,55 @@ func NewDefault() (*Store, error) {
 }
 
 func (s *Store) Load() ([]client.ServerProfile, error) {
+	profiles, _, _, err := s.read()
+	return profiles, err
+}
+
+func (s *Store) read() ([]client.ServerProfile, int, []byte, error) {
 	file, err := os.Open(s.path)
 	if errors.Is(err, os.ErrNotExist) {
-		return []client.ServerProfile{}, nil
+		return []client.ServerProfile{}, SchemaVersion, nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", s.path, err)
+		return nil, 0, nil, fmt.Errorf("open %s: %w", s.path, err)
 	}
 	defer file.Close()
-	info, err := file.Stat()
+	data, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
 	if err != nil {
-		return nil, err
+		return nil, 0, nil, err
 	}
-	if info.Size() > 1024*1024 {
-		return nil, fmt.Errorf("read %s: server profiles exceed the 1 MiB limit", s.path)
+	if len(data) > maxBytes {
+		return nil, 0, nil, fmt.Errorf("read %s: server profiles exceed the 1 MiB limit", s.path)
 	}
-	var stored []struct {
-		client.ServerProfile
-		RetiredTrust json.RawMessage `json:"certificateFingerprint,omitempty"`
-	}
-	decoder := json.NewDecoder(io.LimitReader(file, 1024*1024+1))
+	var stored []storedProfile
+	version := 0
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&stored); err != nil {
-		return nil, fmt.Errorf("read %s: %w", s.path, err)
+	if bytes.HasPrefix(bytes.TrimSpace(data), []byte("[")) {
+		err = decoder.Decode(&stored)
+	} else {
+		var doc document
+		err = decoder.Decode(&doc)
+		if err == nil && (doc.SchemaVersion != SchemaVersion || doc.Servers == nil) {
+			err = errors.New("unsupported server profiles schema or missing servers array")
+		}
+		stored, version = doc.Servers, doc.SchemaVersion
+	}
+	if err != nil {
+		return nil, 0, nil, fmt.Errorf("read %s: %w", s.path, err)
 	}
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
-		return nil, fmt.Errorf("read %s: unexpected trailing data", s.path)
+		return nil, 0, nil, fmt.Errorf("read %s: unexpected trailing data", s.path)
 	}
 	profiles := make([]client.ServerProfile, 0, len(stored))
 	for _, entry := range stored {
 		profiles = append(profiles, entry.ServerProfile)
 	}
 	if err := validate(profiles); err != nil {
-		return nil, fmt.Errorf("read %s: %w", s.path, err)
+		return nil, 0, nil, fmt.Errorf("read %s: %w", s.path, err)
 	}
-	return profiles, nil
+	return profiles, version, data, nil
 }
 
 func (s *Store) Save(profiles []client.ServerProfile) error {
@@ -72,11 +101,18 @@ func (s *Store) Save(profiles []client.ServerProfile) error {
 	if profiles == nil {
 		profiles = []client.ServerProfile{}
 	}
-	data, err := json.MarshalIndent(profiles, "", "  ")
+	_, version, original, err := s.read()
+	if err != nil {
+		return fmt.Errorf("refusing to overwrite unreadable server profiles: %w", err)
+	}
+	data, err := json.MarshalIndent(struct {
+		SchemaVersion int                    `json:"schema_version"`
+		Servers       []client.ServerProfile `json:"servers"`
+	}{SchemaVersion, profiles}, "", "  ")
 	if err != nil {
 		return err
 	}
-	if len(data)+1 > 1024*1024 {
+	if len(data)+1 > maxBytes {
 		return errors.New("server profiles exceed the 1 MiB limit")
 	}
 	directory := filepath.Dir(s.path)
@@ -85,6 +121,11 @@ func (s *Store) Save(profiles []client.ServerProfile) error {
 	}
 	if err := os.Chmod(directory, 0o700); err != nil {
 		return err
+	}
+	if version == 0 {
+		if err := s.backup(original); err != nil {
+			return fmt.Errorf("back up server profiles before migration: %w", err)
+		}
 	}
 	file, err := os.CreateTemp(directory, ".servers-*.tmp")
 	if err != nil {
@@ -108,6 +149,47 @@ func (s *Store) Save(profiles []client.ServerProfile) error {
 	if err := os.Rename(temporary, s.path); err != nil {
 		return err
 	}
+	return nil
+}
+
+func (s *Store) backup(data []byte) error {
+	path := s.path + ".pre-v1.bak"
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		existing, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer existing.Close()
+		previous, err := io.ReadAll(io.LimitReader(existing, int64(len(data))+1))
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(previous, data) {
+			return errors.New("migration backup already exists with different contents")
+		}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	complete := false
+	defer func() {
+		file.Close()
+		if !complete {
+			os.Remove(path)
+		}
+	}()
+	if _, err := file.Write(data); err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	complete = true
 	return nil
 }
 

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/tsukiyoz/resona/internal/client"
@@ -82,8 +83,11 @@ func TestInvalidConfigPreventsServiceStartupAndPreservesFile(t *testing.T) {
 	for _, data := range []string{
 		"{broken", "[] trailing", `[{"id":"one","name":"Home","address":"localhost","nickname":"Alice","password":"secret"}]`,
 		`[{"id":"one","name":"Home","address":"localhost","nickname":"Alice"},{"id":"one","name":"Duplicate","address":"localhost","nickname":"Alice"}]`,
+		`{"schema_version":2,"servers":[]}`, `{"schema_version":"1","servers":[]}`,
+		`{"schema_version":1,"servers":[],"future_option":true}`, `{"schema_version":1}`,
+		`null`, strings.Repeat(" ", maxBytes+1),
 	} {
-		t.Run(data, func(t *testing.T) {
+		t.Run("invalid", func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "servers.json")
 			if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 				t.Fatal(err)
@@ -91,10 +95,66 @@ func TestInvalidConfigPreventsServiceStartupAndPreservesFile(t *testing.T) {
 			if _, err := client.New(New(path)); err == nil {
 				t.Fatal("invalid config must prevent startup")
 			}
+			if err := New(path).Save(nil); err == nil {
+				t.Fatal("save must preserve unreadable configuration")
+			}
 			got, err := os.ReadFile(path)
 			if err != nil || string(got) != data {
 				t.Fatal("invalid config was modified")
 			}
 		})
+	}
+}
+
+func TestMigrationBacksUpOriginalOnceAndRejectsConflictingBackup(t *testing.T) {
+	for _, conflict := range []bool{false, true} {
+		path := filepath.Join(t.TempDir(), "servers.json")
+		original := []byte("[ ]\n")
+		if err := os.WriteFile(path, original, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		backup := path + ".pre-v1.bak"
+		if conflict {
+			if err := os.WriteFile(backup, []byte("previous backup"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		store := New(path)
+		profiles, err := store.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		unchanged, _ := os.ReadFile(path)
+		if string(unchanged) != string(original) {
+			t.Fatal("load rewrote legacy configuration")
+		}
+		err = store.Save(profiles)
+		if conflict {
+			if err == nil {
+				t.Fatal("conflicting backup must prevent migration")
+			}
+			unchanged, _ = os.ReadFile(path)
+			if string(unchanged) != string(original) {
+				t.Fatal("failed migration replaced source")
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		for range 2 {
+			if err := store.Save(profiles); err != nil {
+				t.Fatal(err)
+			}
+		}
+		copied, _ := os.ReadFile(backup)
+		if string(copied) != string(original) {
+			t.Fatal("backup lost original bytes")
+		}
+		data, _ := os.ReadFile(path)
+		var doc document
+		if err := json.Unmarshal(data, &doc); err != nil || doc.SchemaVersion != SchemaVersion || doc.Servers == nil {
+			t.Fatal("migration did not produce current document")
+		}
 	}
 }

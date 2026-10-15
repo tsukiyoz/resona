@@ -156,3 +156,180 @@ actionlint v1.7.12、shell 语法及 diff 检查通过。本机 arm64 独立测�
 - v0.1.4 Windows tag run 35214797720 timed out in the live DSP replacement test; main run 35214797706 also exposed a truncated unquoted PowerShell GCC library query.
 - Encoder control is now checked between queued frames. A deterministic test keeps capture nonempty and verifies replacement and old-processor destruction at the next frame boundary.
 - The new regression and existing live DSP replacement test passed 10 repetitions under the Go race detector locally. Windows packaging validation remains pending on the fix branch; v0.1.4 is immutable.
+
+## 2026-10-14 本地配置升级保护
+
+分支 `feature/tsukiyo/client-20261014_config-updates`，未提交。偏好对象与书签 envelope
+增加独立格式版本 1；读取旧文件只迁移内存，首次保存备份原始字节。损坏、超限、
+未来版本及当前版本未知字段拒绝覆盖；恢复偏好不自动开麦、3A 全关、全程不保存。
+诊断页显示保护状态并可定位配置目录；设置区分 Core 已应用与偏好已保存。
+
+- Rust 45 项测试通过：旧链及明确关闭项、原文件读取不变、逐字节备份、备份冲突、
+  未来版本/错误类型/嵌套未知字段/超限、恢复配置及乱序保存。
+- `go test ./internal/...` 通过。首次沙箱运行的 UDP bind 被拒绝，在允许本机端口
+  的环境复跑通过；没有使用远端服务器。
+- `go test -race ./internal/config` 通过：旧数组、v1 往返、权限、Core 启动拒绝错误
+  配置、Save 再校验、原文件保护与备份冲突。
+- `make build-desktop` 成功，包含最新 Core、GPUI 与 WebRTC 库的 macOS release
+  包完成 ad-hoc 签名和严格校验。该开发包不作为公开签名或公证完成的证据。
+- 原生 CUA 验证新版离线默认 800×900 与最小 760×600：配置状态、诊断按钮、Core
+  探测结果与固定页脚无重叠；Finder 成功选中配置目录。未连接服务器或开启麦克风。
+  验收后退出应用。
+- 产品体验初审及完成复审通过。修正旧保存失败污染新结果和诊断页内容挤压问题；
+  定位按钮文案匹配系统行为。`cargo fmt`、gofumpt v0.10.0 与 diff 检查通过。
+
+异常配置实窗未通过破坏用户真实文件来验证，保护逻辑由临时文件测试覆盖。
+Windows 文件替换/目录定位/最小窗口仍待实机验证。保存前校验不提供跨进程事务；
+早于本次版本保护的旧二进制不能获得未来格式保护，回滚不等于配置降级。
+本节阶段完成时公开发布和自动更新尚待实现；后续进度见文末更新流程验证及 ADR-0029。
+
+## 2026-10-14 静默资源刷新与悬停复制
+
+同一功能分支，未提交。恢复前台或扩大资源关注范围时保留缓存界面，异步刷新，
+移除同步遮罩和聊天/管理的刷新门控；会话、命令等待、对象及权限检查保留。
+复制按钮使用消息行独立 hover group 和固定 28×28px 槽位。补齐期间过滤成员提示音，
+连接和断开通知不再被普通资源刷新过滤。
+
+- Rust 46 项测试通过，包含刷新期间连接通知及成员补齐过滤回归。
+- desktopipc 的后台合并及资源关注范围回归通过：后台多次变化不发布普通状态，
+  恢复后一次补齐。没有改变 Core 实现，没有增加空闲定时器。
+- `cargo fmt`、diff 检查和 `make build-desktop` 通过；最新 macOS release 包为
+  `desktop/dist/Resona.app`，ad-hoc 签名及严格验证通过。产品流程复审通过。
+- 独立 debug 包离线窗口和本地预览可打开，未连接远端或开启麦克风。
+  首次自动化点击触发 GPUI macOS 窗口激活回调阻塞；进程采样显示
+  `window_did_change_key_status` 持锁调用 `resignKeyWindow`，同步重入回调等待同一锁。
+  重启并 Raise 后可进入预览，但自动化键盘/粘贴未成功，不能将悬停、复制或真实网络
+  切应用的实窗验收记作通过。临时测试进程已结束；采样文件未加入 Git。
+
+Windows 实机、长消息换行、悬停不重排及剪贴板完整性仍待验证。
+
+## 2026-10-14 连接与资源同步生命周期
+
+同一功能分支，未提交。初次连接临时失败最多三次尝试，明确拒绝立即停止；
+断线恢复三次快速尝试后显式显示失败并保留慢速重试。立即重试唤醒现有 worker，
+退出取消拨号和退避，恢复后保持麦克风静音。资源同步独立报告状态；有缓存的
+普通刷新静默，三次失败后阻止频道操作并等待手动重试，不停止健康语音。
+
+- `go test ./internal/...` 和连接、IPC、原生协议三个包的 race 测试通过。
+  覆盖 setup 期间关闭、旧回调、取消等待、三次失败、立即重试与计时器竞争、
+  单资源请求、关注范围替换、断开取消和显式重试。
+- 确定性 IPC 测试验证首次同步、成功和失败状态都在对应 connected workspace
+  之后发送；原生控制测试验证资源回复超时、取消及明确拒绝不关闭健康传输。
+- Rust 47 项测试通过；临时目录加入进程内唯一编号，消除并行测试命名碰撞。
+  普通刷新期间保留 Core 产生的真实成员通知，bootstrap 静默由 Core 负责。
+- 最终 `make build-desktop` 成功，最新 Core、GPUI 与 WebRTC 库打包至
+  `desktop/dist/Resona.app`；ad-hoc 签名严格验证、gofumpt v0.10.0、Rust 格式与
+  diff 检查通过。开发签名不代表公开分发签名或公证完成。
+- 产品与生命周期复审完成，发现的提前回调、IPC 顺序、重试令牌、同步提交失败
+  和永久拒绝分类问题已修复。没有新增空闲定时器、逐包日志或后台文件写入。
+
+原生失败遮罩、按钮及切应用的完整实窗流程仍待验收；上一节记录的 GPUI macOS
+自动化激活阻塞仍限制 CUA 验证，Windows 尚未实机验证。不将单元测试等同于实窗
+和真实网络验收；本轮未连接或修改用户远端服务器。
+
+## 2026-10-14 轻量连接状态提示
+
+去掉连接、恢复和初次资源同步的全区灰幕；工作区上方显示紧凑的实色状态面板，
+普通等待低对比，失败明确区分。透明层使用 GPUI `occlude()` 阻挡底层点击、悬停
+和滚轮；取消、重试、退出按钮，服务器栏、语音工具栏与标题栏保留可用。
+无新增动画、计时器或状态机改动。
+
+Rust 47 项测试、格式和 diff 检查、最终 `make build-desktop` 与 ad-hoc 签名严格
+验证通过；最新产物为 `desktop/dist/Resona.app`。产品流程与实现复核通过。
+实窗点击、深浅主题和最小窗口的状态提示验收仍待完成，沿用上一节的 CUA 限制。
+
+## 2026-10-14 更新检查与 Windows 便携安装流程
+
+同一功能分支，未提交。关于页接入手动检查、异步下载/取消、校验结果、包目录定位
+和 Windows 退出更新。没有启动或空闲检查。公开源、公钥及发布工作流未配置，
+仓库选择尚待确认；没有创建远端仓库或改变源码可见性。
+
+- `go test ./internal/... ./tools/release-manifest` 通过。沙箱的临时 TCP bind
+  首次失败，经允许本机端口的环境复跑通过；没有使用远端服务器。
+- `go test -race ./internal/updates ./internal/desktopipc` 通过。覆盖篡改签名、
+  过期清单、版本排序/回退、HTTPS 限制、完整下载、取消/重复任务、ZIP 路径与
+  重复项拒绝、包版本身份、目录替换失败回退、过期/取消安装交接信号。
+- Windows 更新包测试的 `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go test -c`
+  编译通过；这不等于 Windows 原生执行或完整 cgo 产品打包验收。
+- Rust 47 项测试及 `cargo fmt --check`、gofumpt v0.10.0、diff 检查通过。
+- 最终 `make build-desktop` 成功，`desktop/dist/Resona.app` 包含新 UI/Core，
+  ad-hoc 签名严格验证通过。沙箱首次 iconutil 失败，允许系统工具后复跑成功。
+- 产品及生命周期复审通过：安装器 ready/commit/armed 后才退出，准备失败
+  写 abort 并 Kill/Wait 专属 helper；helper 使用独立 cwd，重新校验后整包替换。
+  打包脚本校验 Cargo/Core/包版本，签名工具与安装器再次校验产品元数据。
+
+Windows 原生退出、占用目录、杀毒软件及失败回滚/重新启动尚待实机验证；本机
+没有 PowerShell，不将源码复审当作该脚本运行成功。macOS 暂不自动安装，公共
+签名/公证尚未完成。保留 `.previous` 和已交接事务缓存，不宣称断电或新版运行期
+崩溃自动回退。实窗关于页沿用前述 CUA 限制，未记为验收通过。
+
+## 2026-10-14 Go 静态检查
+
+`make lint` 汇总 `go vet` 和固定 Staticcheck v0.8.1，覆盖根模块及
+`test/controlcodec`、`test/opuscodec` 两个独立模块；统一使用 `make lint` 入口。
+检查基于当前 macOS/arm64 和默认构建标签，不代表 Windows 专属实现验收。
+
+- 最终 `make lint` 通过，没有禁用规则。修复详情请求取消函数释放路径、14 条
+  Staticcheck 告警（13 条错误文案规范及 1 条 benchmark 测试比较表达式）。
+- `go test ./internal/... ./tools/desktop-perf ./tools/release-manifest`、
+  `go test -race ./internal/desktopipc` 和两个 benchmark 模块测试通过。
+  Opus 测试按其文档链接本机已有 Rust benchmark 静态库；未重跑性能采样。
+- 模块下载/编译缓存的沙箱限制经授权复跑；macOS Keychain C API 的原生编译
+  弃用警告仍存在，不属于 Go 静态检查失败。diff 检查通过，未提交、未推送。
+
+## 2026-10-15 更新发布链路、发行类型与设置入口
+
+- 源仓库 `tsukiyoz/resona` 的更新 Secret 和两个公开 Variables 已配置，私钥
+  独立备份在本机 Keychain；未创建新仓库、未发布 Release、未移动已有 tag。
+- `release.yml` 复用 Windows 和两架构 macOS 构建，仅全部成功后签名并发布。
+  构建固定到事件提交，发布前反复校验远端 annotated tag；已有版本不覆盖，
+  先创建草稿并上传全部资产，旧版本不接管 latest。
+- 便携包元数据明确标记 `distribution: portable`，Windows 与 macOS 发布 ZIP
+  名称均带 `portable` 后缀，共用一个版本 tag。Core 校验包身份后返回更新能力；
+  缺失、未知发行类型及尚未实现的 installer 类型均禁止更新操作。
+- 便携版仅手动检查签名清单并打开对应版本发布页，没有下载或退出安装操作。
+  已删除旧的便携整包替换 helper；旧 IPC 下载/安装命令显式拒绝。
+- `go test ./internal/... ./tools/release-manifest` 通过。签名工具验证配置公钥
+  与签名私钥匹配；发布脚本模拟覆盖完整首次发布、
+  旧版本、已有 Release、缺包、签名失败、上传失败和移动 tag，均通过。
+- 更新管理器测试覆盖仅请求清单、不下载包、并发拒绝、取消、失败重试、关闭、
+  包类型门控及发布页地址校验；Windows/macOS ZIP 检查覆盖必需文件和包身份。
+  Windows 更新包测试交叉编译通过，不代表 Windows 原生执行验收。
+- `go test -race ./internal/updates ./internal/desktopipc`、`make lint`
+  与调整入口前的 Rust 48 项测试通过；产品流程复核通过。
+- actionlint v1.7.12、脚本语法、gofumpt、cargo fmt 和 diff 检查通过。
+  GitHub 的实际多平台 tag 运行尚未触发；模拟测试不代表远端发布验收完成。
+- `make build-desktop` 使用已配置的公开更新源/公钥打包成功，
+  `desktop/dist/Resona.app` 的 ad-hoc 签名严格验证通过；未替代原签名版本的
+  钥匙串授权验收。设置中的关于页使用 Core 返回的发布页能力，应用退出后
+  忽略迟到的打开发布页响应。
+
+尚未提供真实安装器或安装器自动升级；该工作需另行验证升级和失败恢复。
+Windows 手动更新、深浅主题和 760×600 实窗尚未验收，本轮没有新增闲置轮询
+或动画。本分支改动尚未提交或推送。
+
+### 更新入口收敛到设置
+
+按最终反馈删除顶部按钮、独立更新弹窗及其专属测试；仅保留设置中的关于页。
+macOS 恢复原有空标题栏，其他平台无额外工具行。关于页只读取本地状态，
+检查由按钮显式触发；切换栏目/关闭设置不取消检查，显式取消/退出仍取消。
+Core 和更新生命周期未修改，不新增空闲任务。旧顶部入口实窗结果不作为
+当前产品验收证据；深色、最小窗口与 Windows 实机仍待验证。
+最终 Rust 47 项测试、cargo fmt、diff 检查和 macOS 发布构建及签名严格验证
+通过。本机 800×900 浅色实窗确认主界面无更新按钮、设置导航可进入关于页，
+“尚未检查更新”和检查按钮正确显示；打开关于页没有自动检查。
+
+### 更新检查失败原因
+
+总检查期限改为 10 秒；deadline/HTTP client timeout 均为 failed，只有实际
+取消才是 cancelled。GUI 将 failed 显示为“检查更新失败：{安全原因}”，
+主动取消为“已取消检查更新”。HTTP 404/403/429/其他响应和 DNS/TLS/连接
+错误分别说明，不回显原始请求或网络错误。没有增加自动重试或空闲任务。
+`go test ./internal/... ./tools/release-manifest`、更新/IPC race、`make lint`
+及 Rust 47 项测试通过。新增用例验证两类期限、取消、HTTP 状态和原始错误脱敏。
+本机公开更新 URL 实测 DNS/TCP/TLS 成功后 12 秒无响应；GitHub API 可访问
+公开仓库，但 latest Release 返回 404。该次网络超时和缺少发布清单均有直接
+证据，不将它们等同于此前用户那一次请求的确切根因。
+最终 macOS 发布构建与签名严格验证通过；800×900 浅色实窗点击检查后明确
+显示“检查更新失败：尚未发布更新清单（HTTP 404），请稍后重试”，按钮恢复
+可检查状态。网络超时和主动取消的分类由上述本地定向/竞态用例验证。

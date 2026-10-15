@@ -1,10 +1,10 @@
 name: Windows build
 
 on:
+  workflow_call:
   workflow_dispatch:
   push:
     branches: [main]
-    tags: ['v*']
     paths:
       - '.github/workflows/windows-build.yml'
       - 'build-windows.cmd'
@@ -44,6 +44,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -94,6 +96,8 @@ jobs:
         env:
           RESONA_MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
           RESONA_BUILD_VERSION: ${{ steps.version.outputs.version }}
+          RESONA_UPDATE_URL: ${{ vars.RESONA_UPDATE_URL }}
+          RESONA_UPDATE_PUBLIC_KEY: ${{ vars.RESONA_UPDATE_PUBLIC_KEY }}
         run: ./desktop/scripts/build-windows.ps1 -Msys2Root $env:RESONA_MSYS2_ROOT -Version $env:RESONA_BUILD_VERSION
       - name: Upload Windows package
         uses: actions/upload-artifact@v6

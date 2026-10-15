@@ -39,13 +39,25 @@ entries and keyed by session, member ID and instance. A full list confirming a
 departure prunes the entry; scope changes must not reset user volume preferences.
 
 On activation or interest expansion, one serialized worker lists and watches the
-latest scope. GPUI temporarily blocks resource actions until the matching interest
-generation completes; the voice toolbar stays available. Foreground synchronization
-also runs every five minutes through the same worker. The timer stops while inactive.
-Failed synchronization is reported and retries on the long interval or the next
-interest change, without an immediate retry loop. Session changes reapply interest;
-stale completions are discarded. A watch reply timeout does not close a healthy
-voice connection; cancellation of a blocked control write still closes the transport.
+latest scope. GPUI keeps its cached presentation while silently refreshing it;
+ordinary refresh with usable data does not display a loading overlay or disable
+chat and resource actions. Initial synchronization and manual recovery show a
+work-area overlay, leaving voice controls and exit available. Each round makes at
+most three attempts, bounded to two seconds each, with 300/600ms retry waits.
+Permanent adapter-authored refusals fail immediately. Exhaustion blocks channel
+interaction with an explicit failure/retry/exit view; focus changes and the periodic
+fallback do not restart a failed round. A manual request uses a new generation and
+an explicit retry flag. Resource state remains distinct from transport state.
+
+Session, object and permission checks still apply, with the server authorizing
+mutations. IPC events carry both session ID and interest generation. One coordinator
+cancels superseded jobs and joins them before starting the latest scope; at most one
+request is in flight. Session changes reset synchronization state. Foreground
+synchronization runs every five minutes after success, stopping when inactive or
+failed. No idle retry timer is added. A watch reply timeout/cancellation does not
+close a healthy voice connection; a deadline failure while writing a control frame
+still closes the transport, since partial framing cannot safely continue. This
+policy was updated on 2026-10-14.
 
 Inactive currently means GPUI reports the window is not active, including an
 unfocused but still visible window. This deliberately optimizes the gaming case;

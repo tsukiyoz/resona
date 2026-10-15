@@ -168,6 +168,153 @@ func TestReconnectBackoffBounded(t *testing.T) {
 	}
 }
 
+func TestInitialConnectionRetriesAndRejectsLateAttemptCallbacks(t *testing.T) {
+	for _, outcome := range []string{"success", "exhausted", "permanent", "closed_retry", "closed_permanent", "cancel_wait"} {
+		t.Run(outcome, func(t *testing.T) {
+			var calls atomic.Int32
+			var old func(RemoteState)
+			s, _ := serviceWithProfile(t, connectorFunc(func(_ context.Context, _ ServerProfile, _ string, update func(RemoteState)) (RemoteConnection, error) {
+				n := calls.Add(1)
+				if n == 1 {
+					old = update
+				}
+				if outcome == "permanent" {
+					return nil, &ConnectFailure{Message: "authentication refused"}
+				}
+				if outcome == "closed_retry" || outcome == "closed_permanent" {
+					if n < 3 || outcome == "closed_permanent" {
+						update(RemoteState{Closed: true, Retryable: outcome == "closed_retry", Error: "closed during setup"})
+						return &fakeConnection{}, nil
+					}
+					update(RemoteState{ChannelID: "1"})
+					return &fakeConnection{}, nil
+				}
+				if outcome == "success" && n == 3 {
+					update(RemoteState{ChannelID: "1", Channels: []Channel{{ID: "1"}}})
+					return &fakeConnection{}, nil
+				}
+				return nil, errors.New("temporary network failure")
+			}))
+			s.reconnectDelay = time.Millisecond
+			if outcome == "cancel_wait" {
+				s.reconnectDelay = time.Hour
+			}
+			defer s.Shutdown()
+			_, _ = s.ConnectServer("home", "")
+			if outcome == "cancel_wait" {
+				waitConnectionState(t, s, func(state Session) bool { return state.ConnectionWaiting })
+				_, _ = s.DisconnectServer()
+				if calls.Load() != 1 || s.GetSessionState().Mode != "offline" {
+					t.Fatal("cancelled wait dialed again")
+				}
+				return
+			}
+			wantMode, wantCalls := "failed", int32(3)
+			if outcome == "success" || outcome == "closed_retry" {
+				wantMode = "connected"
+			}
+			if outcome == "permanent" || outcome == "closed_permanent" {
+				wantCalls = 1
+			}
+			state := waitForMode(t, s, wantMode)
+			if calls.Load() != wantCalls {
+				t.Fatalf("calls=%d", calls.Load())
+			}
+			old(RemoteState{Closed: true, Error: "stale"})
+			if s.GetSessionState().Mode != wantMode {
+				t.Fatal("old callback changed current state")
+			}
+			if wantMode == "failed" && (state.Session.ConnectionAttempt != int(wantCalls) || state.Session.ConnectionWaiting) {
+				t.Fatal("failure attempt state incorrect")
+			}
+		})
+	}
+}
+
+func waitConnectionState(t *testing.T, s *Service, predicate func(Session) bool) Session {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		state := s.GetSessionState()
+		if predicate(state) {
+			return state
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("connection state timed out: %+v", s.GetSessionState())
+	return Session{}
+}
+
+func TestImmediateRetryRacingTimerDoesNotWakeTheNextAttempt(t *testing.T) {
+	var calls atomic.Int32
+	var update func(RemoteState)
+	s, _ := serviceWithProfile(t, connectorFunc(func(_ context.Context, _ ServerProfile, _ string, callback func(RemoteState)) (RemoteConnection, error) {
+		if calls.Add(1) == 1 {
+			update = callback
+			callback(RemoteState{ChannelID: "1"})
+			return &fakeConnection{}, nil
+		}
+		return nil, errors.New("temporary failure")
+	}))
+	s.reconnectDelay = 50 * time.Millisecond
+	defer s.Shutdown()
+	_, _ = s.ConnectServer("home", "")
+	waitForMode(t, s, "connected")
+	update(RemoteState{Closed: true, Retryable: true})
+	waitConnectionState(t, s, func(state Session) bool { return state.ConnectionWaiting })
+	// Hold admission past timer expiry, then enqueue the accepted click. The dial
+	// must satisfy both triggers even if the worker already selected the timer.
+	s.mu.Lock()
+	time.Sleep(75 * time.Millisecond)
+	s.reconnectNow <- struct{}{}
+	s.mu.Unlock()
+	waitConnectionState(t, s, func(state Session) bool { return state.ConnectionAttempt == 1 && state.ConnectionWaiting })
+	time.Sleep(10 * time.Millisecond)
+	if calls.Load() != 2 {
+		t.Fatalf("one click started an extra dial: %d", calls.Load())
+	}
+}
+
+func TestReconnectThreeFailuresAreVisibleAndImmediateRetryWakesOneWorker(t *testing.T) {
+	var calls atomic.Int32
+	var old func(RemoteState)
+	s, _ := serviceWithProfile(t, connectorFunc(func(_ context.Context, _ ServerProfile, _ string, update func(RemoteState)) (RemoteConnection, error) {
+		n := calls.Add(1)
+		if n == 1 {
+			old = update
+			update(RemoteState{ChannelID: "1"})
+			return &fakeConnection{}, nil
+		}
+		return nil, errors.New("temporary network failure")
+	}))
+	s.reconnectDelay = time.Hour
+	defer s.Shutdown()
+	_, _ = s.ConnectServer("home", "")
+	before := waitForMode(t, s, "connected")
+	old(RemoteState{Closed: true, Retryable: true})
+	for completed := 0; completed <= 3; completed++ {
+		state := waitConnectionState(t, s, func(state Session) bool {
+			return state.Mode == "reconnecting" && state.ConnectionWaiting && state.ConnectionAttempt == completed
+		})
+		if completed == 3 {
+			if !state.ConnectionRetrySlow || state.Error == "" || calls.Load() != 4 {
+				t.Fatal("three failed recovery attempts were not visible")
+			}
+			break
+		}
+		if _, err := s.RetryConnection(before.Session.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.RetryConnection("old-session"); err == nil {
+		t.Fatal("stale retry accepted")
+	}
+	_, _ = s.DisconnectServer()
+	if calls.Load() != 4 || s.GetSessionState().Mode != "offline" {
+		t.Fatal("cancelled slow recovery dialed again")
+	}
+}
+
 func TestReconnectInterruptedRestorationAndMissingChannel(t *testing.T) {
 	for _, mode := range []string{"retry", "missing", "cancel", "refused"} {
 		t.Run(mode, func(t *testing.T) {

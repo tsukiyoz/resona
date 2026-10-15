@@ -108,6 +108,27 @@ plutil -replace CFBundleVersion -string "$bundle_version" "$bundle_dir/Contents/
 plutil -lint "$bundle_dir/Contents/Info.plist"
 test -s "$bundle_dir/Contents/Resources/Resona.icns"
 
+python3 - "$bundle_dir" "$core_binary" "$bundle_version" <<'PY'
+import json
+import pathlib
+import platform
+import re
+import subprocess
+import sys
+
+bundle = pathlib.Path(sys.argv[1])
+version_output = subprocess.check_output([sys.argv[2], "--version"], text=True)
+match = re.match(r"resona-core (v[0-9]+\.[0-9]+\.[0-9]+(?:-dev)?) \(", version_output)
+if not match:
+    raise SystemExit("Core package version is invalid")
+if match.group(1) not in ("v" + sys.argv[3], "v" + sys.argv[3] + "-dev"):
+    raise SystemExit("Core and desktop package versions disagree")
+arch = {"arm64": "arm64", "x86_64": "amd64"}[platform.machine()]
+metadata = dict(schema=1, product="resona", platform="darwin/" + arch,
+                version=match.group(1), distribution="portable")
+(bundle / "Contents/Resources/resona-package.json").write_text(json.dumps(metadata), encoding="utf-8")
+PY
+
 if [ -n "$sign_identity" ]; then
   # Sign nested code first; let codesign derive certificate-bound requirements.
   codesign --force --sign "$sign_identity" "$bundle_dir/Contents/Frameworks/libresona_webrtc_apm.dylib"

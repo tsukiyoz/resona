@@ -1,10 +1,14 @@
 use crate::model::ProcessingConfig;
 use serde::{Deserialize, Serialize};
 use std::{
-    fs,
+    fs::{self, OpenOptions},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     sync::Mutex,
 };
+
+pub const SCHEMA_VERSION: u32 = 1;
+const MAX_BYTES: u64 = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -19,6 +23,9 @@ pub enum ThemePreference {
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Preferences {
+    pub schema_version: u32,
+    #[serde(skip)]
+    read_only: bool,
     pub theme: ThemePreference,
     pub server_sidebar_collapsed: bool,
     pub notifications_enabled: bool,
@@ -47,6 +54,8 @@ pub struct Preferences {
 impl Default for Preferences {
     fn default() -> Self {
         Self {
+            schema_version: SCHEMA_VERSION,
+            read_only: false,
             theme: ThemePreference::System,
             server_sidebar_collapsed: false,
             notifications_enabled: true,
@@ -77,6 +86,15 @@ impl Default for Preferences {
 }
 
 impl Preferences {
+    pub fn recovery() -> Self {
+        Self {
+            read_only: true,
+            auto_unmute_on_connect: false,
+            processing: ProcessingConfig::default(),
+            ..Self::default()
+        }
+    }
+
     fn normalize_audio(mut self, migrate_legacy: bool) -> Self {
         if migrate_legacy {
             self.processing = ProcessingConfig::default();
@@ -133,7 +151,7 @@ impl Preferences {
 
     pub fn save_ordered(&self, revision: u64, saved: &Mutex<u64>) -> std::io::Result<()> {
         let Some(path) = path() else {
-            return Ok(());
+            return Err(io::Error::other("configuration directory unavailable"));
         };
         self.save_ordered_at(revision, saved, &path)
     }
@@ -155,34 +173,166 @@ impl Preferences {
         Ok(())
     }
 
-    pub fn load() -> Self {
+    pub fn load() -> io::Result<Self> {
         let Some(path) = path() else {
-            return Self::default();
+            return Err(io::Error::other("configuration directory unavailable"));
         };
         Self::load_at(&path)
     }
 
-    fn load_at(path: &Path) -> Self {
-        fs::read(path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-            .and_then(|value| {
-                let migrate_legacy = value.get("processing").is_none();
-                serde_json::from_value::<Self>(value)
-                    .ok()
-                    .map(|preferences| preferences.normalize_audio(migrate_legacy))
-            })
-            .unwrap_or_default()
+    fn load_at(path: &Path) -> io::Result<Self> {
+        match read_document(path)? {
+            Some(bytes) => Self::decode(&bytes).map(|(preferences, _)| preferences),
+            None => Ok(Self::default()),
+        }
+    }
+
+    fn decode(bytes: &[u8]) -> io::Result<(Self, u32)> {
+        let value: serde_json::Value = serde_json::from_slice(bytes)?;
+        if !value.is_object() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "preferences must be an object",
+            ));
+        }
+        let version = match value.get("schema_version") {
+            None => 0,
+            Some(version) => version
+                .as_u64()
+                .filter(|version| *version == SCHEMA_VERSION as u64)
+                .map(|version| version as u32)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "unsupported preferences schema_version",
+                    )
+                })?,
+        };
+        if version == SCHEMA_VERSION {
+            check_fields(&value, &serde_json::to_value(Self::default())?)?;
+        }
+        let migrate_legacy = version == 0 && value.get("processing").is_none();
+        let mut preferences =
+            serde_json::from_value::<Self>(value)?.normalize_audio(migrate_legacy);
+        preferences.schema_version = SCHEMA_VERSION;
+        Ok((preferences, version))
     }
 
     fn save_at(&self, path: &Path) -> std::io::Result<()> {
+        if self.read_only {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "preferences are protected for this run",
+            ));
+        }
+        if let Some(bytes) = read_document(path)? {
+            let (_, version) = Self::decode(&bytes)?;
+            if version == 0 {
+                write_backup(path, &bytes)?;
+            }
+        }
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let temp = path.with_extension("tmp");
-        fs::write(&temp, serde_json::to_vec_pretty(self)?)?;
-        fs::rename(temp, path)
+        let bytes = serde_json::to_vec_pretty(self)?;
+        if bytes.len() as u64 > MAX_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "preferences exceed the 1 MiB limit",
+            ));
+        }
+        let temp = path.with_extension(format!(
+            "{}.{}.tmp",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let result = (|| {
+            let mut file = private_file(&temp)?;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            drop(file);
+            fs::rename(&temp, path)
+        })();
+        let _ = fs::remove_file(&temp);
+        result
     }
+}
+
+fn read_document(path: &Path) -> io::Result<Option<Vec<u8>>> {
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let mut bytes = Vec::new();
+    file.take(MAX_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "preferences exceed the 1 MiB limit",
+        ));
+    }
+    Ok(Some(bytes))
+}
+
+// Current schemas must not silently discard fields from a newer writer.
+fn check_fields(value: &serde_json::Value, known: &serde_json::Value) -> io::Result<()> {
+    if let (Some(value), Some(known)) = (value.as_object(), known.as_object()) {
+        for (key, value) in value {
+            let field = known.get(key).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "unknown preferences field")
+            })?;
+            check_fields(value, field)?;
+        }
+    } else if let (Some(value), Some(known)) = (value.as_array(), known.as_array()) {
+        if value.len() != known.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unsupported processing chain shape",
+            ));
+        }
+        for (value, field) in value.iter().zip(known) {
+            check_fields(value, field)?;
+        }
+    }
+    Ok(())
+}
+
+fn private_file(path: &Path) -> io::Result<fs::File> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
+}
+
+fn write_backup(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let backup = path.with_extension("json.pre-v1.bak");
+    let mut file = match private_file(&backup) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            // A backup from an interrupted migration is reusable only for the same source.
+            if read_document(&backup)?.as_deref() == Some(bytes) {
+                return Ok(());
+            }
+            return Err(io::Error::other(
+                "migration backup already exists with different contents",
+            ));
+        }
+        Err(error) => return Err(error),
+    };
+    let result = file.write_all(bytes).and_then(|_| file.sync_all());
+    drop(file);
+    if result.is_err() {
+        let _ = fs::remove_file(backup);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -296,18 +446,19 @@ mod tests {
         let path = directory.join("preferences.json");
         fs::write(&path, r#"{"playback_agc":"off"}"#).unwrap();
         assert_eq!(
-            Preferences::load_at(&path).processing.postprocess[0].backend,
+            Preferences::load_at(&path).unwrap().processing.postprocess[0].backend,
             "none"
         );
-        let saved = serde_json::to_vec(&Preferences::load_at(&path)).unwrap();
+        let saved = serde_json::to_vec(&Preferences::load_at(&path).unwrap()).unwrap();
         fs::write(&path, saved).unwrap();
         assert_eq!(
-            Preferences::load_at(&path).processing.postprocess[0].backend,
+            Preferences::load_at(&path).unwrap().processing.postprocess[0].backend,
             "none"
         );
         fs::remove_file(path).unwrap();
         assert_eq!(
             Preferences::load_at(&directory.join("missing.json"))
+                .unwrap()
                 .processing
                 .postprocess[0]
                 .backend,
@@ -355,7 +506,7 @@ mod tests {
             }"#,
         )
         .unwrap();
-        let migrated = Preferences::load_at(&path);
+        let migrated = Preferences::load_at(&path).unwrap();
         assert_eq!(migrated.input_gain, 145);
         assert_eq!(migrated.notification_volume, 17);
         assert_eq!(migrated.processing.preprocess[0].backend, "none");
@@ -440,8 +591,114 @@ mod tests {
         assert_eq!(*saved.lock().unwrap(), 3);
         fs::remove_dir_all(directory).unwrap();
     }
+
+    fn test_directory() -> PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "resona-schema-{}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn legacy_migration_is_read_only_then_backs_up_exact_source_once() {
+        let directory = test_directory();
+        let path = directory.join("native-preferences.json");
+        let original =
+            br#"{ "auto_unmute_on_connect":false, "playback_agc":"off", "input_gain":145 }"#;
+        fs::write(&path, original).unwrap();
+        let preferences = Preferences::load_at(&path).unwrap();
+        assert!(!preferences.auto_unmute_on_connect);
+        assert_eq!(preferences.input_gain, 145);
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert!(!path.with_extension("json.pre-v1.bak").exists());
+        preferences.save_at(&path).unwrap();
+        assert_eq!(
+            fs::read(path.with_extension("json.pre-v1.bak")).unwrap(),
+            original
+        );
+        assert_eq!(Preferences::load_at(&path).unwrap(), preferences);
+        preferences.save_at(&path).unwrap();
+        assert_eq!(
+            fs::read(path.with_extension("json.pre-v1.bak")).unwrap(),
+            original
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn corrupt_future_and_unknown_fields_are_never_replaced_by_save() {
+        let directory = test_directory();
+        let path = directory.join("native-preferences.json");
+        let mut nested = serde_json::to_value(Preferences::default()).unwrap();
+        nested["processing"]["preprocess"][0]["params"]["futureParam"] = 1.into();
+        for bytes in [
+            "{broken".to_string(),
+            "null".into(),
+            "{} trailing".into(),
+            r#"{"schema_version":2}"#.into(),
+            r#"{"schema_version":"1"}"#.into(),
+            r#"{"schema_version":1,"future_option":true}"#.into(),
+            nested.to_string(),
+            " ".repeat(MAX_BYTES as usize + 1),
+        ] {
+            fs::write(&path, &bytes).unwrap();
+            assert!(Preferences::load_at(&path).is_err());
+            assert!(Preferences::default().save_at(&path).is_err());
+            assert_eq!(fs::read(&path).unwrap(), bytes.as_bytes());
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn recovery_cannot_unmute_or_save_even_after_manual_repair() {
+        let directory = test_directory();
+        let path = directory.join("native-preferences.json");
+        let recovery = Preferences::recovery();
+        assert!(!recovery.auto_unmute_on_connect);
+        assert_eq!(recovery.processing, ProcessingConfig::default());
+        Preferences::default().save_at(&path).unwrap();
+        let original = fs::read(&path).unwrap();
+        let mut changed = recovery.clone();
+        changed.playback_volume = 300;
+        assert!(changed.save_ordered_at(1, &Mutex::new(0), &path).is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn conflicting_backup_blocks_migration_without_overwriting_either_file() {
+        let directory = test_directory();
+        let path = directory.join("native-preferences.json");
+        let backup = path.with_extension("json.pre-v1.bak");
+        fs::write(&path, b"{}").unwrap();
+        fs::write(&backup, b"previous backup").unwrap();
+        assert!(Preferences::load_at(&path).unwrap().save_at(&path).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"{}");
+        assert_eq!(fs::read(&backup).unwrap(), b"previous backup");
+        fs::remove_dir_all(directory).unwrap();
+    }
 }
 
 fn path() -> Option<PathBuf> {
-    dirs::config_dir().map(|directory| directory.join("resona").join("native-preferences.json"))
+    directory().map(|directory| directory.join("native-preferences.json"))
+}
+
+pub fn directory() -> Option<PathBuf> {
+    dirs::config_dir().map(|directory| directory.join("resona"))
 }

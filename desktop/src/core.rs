@@ -27,6 +27,7 @@ pub enum Incoming {
     },
     Workspace(Value),
     ResourceSync(Value),
+    Update(Value),
     Notifications(Value),
     Voice(Value),
     MicrophoneTest(Value),
@@ -304,6 +305,7 @@ fn parse_line(line: &str) -> Result<Incoming> {
         return match event {
             "workspace" => Ok(Incoming::Workspace(result)),
             "resourceSync" => Ok(Incoming::ResourceSync(result)),
+            "update" => Ok(Incoming::Update(result)),
             "notifications" => Ok(Incoming::Notifications(result)),
             "voice" => Ok(Incoming::Voice(result)),
             "microphoneTest" => Ok(Incoming::MicrophoneTest(result)),

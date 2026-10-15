@@ -12,3 +12,5 @@
 | [0026 资源观察](0026-scoped-resource-watch.md) | Accepted，实验协议 |
 | [0027 单一原生协议](0027-native-only.md) | Accepted，实验协议 |
 | [0028 重连与诊断](0028-reconnect-and-client-diagnostics.md) | Accepted |
+| [0029 本地配置升级与发布入口](0029-local-config-upgrades.md) | Accepted（配置保护），更新分发方案由 0030 取代 |
+| [0030 分发方式与更新](0030-distribution-and-updates.md) | Accepted（便携手动更新），Pending（安装包与安装器升级） |
