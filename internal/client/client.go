@@ -32,6 +32,9 @@ type Session struct {
 	ID                       string `json:"id"`
 	SendingMessageID         string `json:"sendingMessageID"`
 	Mode                     string `json:"mode"`
+	ConnectionAttempt        int    `json:"connectionAttempt"`
+	ConnectionWaiting        bool   `json:"connectionWaiting"`
+	ConnectionRetrySlow      bool   `json:"connectionRetrySlow"`
 	ChannelID                string `json:"channelID"`
 	Nickname                 string `json:"nickname"`
 	ServerID                 string `json:"serverID"`
@@ -137,6 +140,7 @@ type Service struct {
 	connection      RemoteConnection
 	reconnect       *reconnectPlan
 	reconnectDelay  time.Duration
+	reconnectNow    chan struct{}
 	connectCancel   context.CancelFunc
 	connectDone     chan struct{}
 	cleanupWG       sync.WaitGroup

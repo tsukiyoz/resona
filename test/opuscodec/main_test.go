@@ -41,7 +41,9 @@ func TestMetrics(t *testing.T) {
 	if nrmse([]float32{0, 0}, []float32{1, -1}) != 1 {
 		t.Fatal("silence must not pass parity")
 	}
-	if pcmHash(fixture(2)) != pcmHash(fixture(2)) {
+	first := fixture(2)
+	second := fixture(2)
+	if pcmHash(first) != pcmHash(second) {
 		t.Fatal("fixture must be reproducible")
 	}
 }

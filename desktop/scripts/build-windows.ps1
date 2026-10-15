@@ -58,6 +58,7 @@ try {
     New-Item -ItemType Directory -Force "build\bin" | Out-Null
     $BuildTime = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
     $VersionFlags = "-X github.com/tsukiyoz/resona/internal/version.Version=$Version -X github.com/tsukiyoz/resona/internal/version.BuildTime=$BuildTime"
+    $VersionFlags += " -X github.com/tsukiyoz/resona/internal/updates.ManifestURL=$env:RESONA_UPDATE_URL -X github.com/tsukiyoz/resona/internal/updates.PublicKey=$env:RESONA_UPDATE_PUBLIC_KEY"
     Invoke-Checked go @("build", "-ldflags", $VersionFlags, "-o", "build/bin/resona-core.exe", "./cmd/resona-core")
     Invoke-Checked "./build/bin/resona-core.exe" @("--version")
 
@@ -126,7 +127,7 @@ try {
     if (-not $SkipTests) {
         Invoke-Checked cargo @("test", "--locked", "--manifest-path", "desktop/Cargo.toml", "--target", "x86_64-pc-windows-msvc")
     }
-    & "$PSScriptRoot\package-windows.ps1"
+    & "$PSScriptRoot\package-windows.ps1" -Version $Version
 
     $Package = Join-Path $RepoDirectory "desktop\dist\Resona-win-x64"
     Copy-Item "build\bin\resona_webrtc_apm.dll" $Package

@@ -12,3 +12,4 @@
 | [0026 资源观察](0026-scoped-resource-watch.md) | Accepted，实验协议 |
 | [0027 单一原生协议](0027-native-only.md) | Accepted，实验协议 |
 | [0028 重连与诊断](0028-reconnect-and-client-diagnostics.md) | Accepted |
+| [0029 本地配置升级与发布入口](0029-local-config-upgrades.md) | Accepted（配置保护、本地更新），Pending（公开发布、Windows 验收） |

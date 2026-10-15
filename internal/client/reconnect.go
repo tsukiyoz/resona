@@ -25,10 +25,15 @@ func (s *Service) startReconnectLocked(plan reconnectPlan, old RemoteConnection,
 	previous := s.connectDone
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
+	now := make(chan struct{}, 1)
 	s.connectCancel, s.connectDone = cancel, done
+	s.reconnectNow = now
 	s.generation++
 	generation := s.generation
 	s.state.Session.Mode = "reconnecting"
+	s.state.Session.ConnectionAttempt = 0
+	s.state.Session.ConnectionWaiting = true
+	s.state.Session.ConnectionRetrySlow = false
 	s.state.Session.Error = "连接中断，正在重连；恢复后麦克风保持静音"
 	s.notifyChangedLocked()
 	go func() {
@@ -37,6 +42,7 @@ func (s *Service) startReconnectLocked(plan reconnectPlan, old RemoteConnection,
 			s.mu.Lock()
 			if s.connectDone == done {
 				s.connectCancel, s.connectDone = nil, nil
+				s.reconnectNow = nil
 			}
 			s.mu.Unlock()
 			close(done)
@@ -59,12 +65,20 @@ func (s *Service) startReconnectLocked(plan reconnectPlan, old RemoteConnection,
 				delay = s.reconnectDelay
 			}
 			slog.Info("reconnect scheduled", "attempt", attempt+1, "delay_ms", delay.Milliseconds())
-			timer := time.NewTimer(delay)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
+			s.mu.Lock()
+			if s.generation != generation || s.shutdown || ctx.Err() != nil {
+				s.mu.Unlock()
 				return
-			case <-timer.C:
+			}
+			s.state.Session.ConnectionWaiting = true
+			s.state.Session.ConnectionRetrySlow = attempt >= 3
+			if attempt >= 3 {
+				s.state.Session.Error = "连接恢复失败，正在后台继续重试；可立即重试或退出服务器"
+			}
+			s.notifyChangedLocked()
+			s.mu.Unlock()
+			if !waitConnectionRetry(ctx, delay, now) {
+				return
 			}
 			s.mu.Lock()
 			if s.generation != generation || s.shutdown || ctx.Err() != nil {
@@ -75,10 +89,17 @@ func (s *Service) startReconnectLocked(plan reconnectPlan, old RemoteConnection,
 			generation = s.generation
 			attemptGeneration := generation
 			s.state.Session.Error = "正在尝试恢复连接；可随时取消"
+			s.state.Session.ConnectionAttempt = attempt + 1
+			s.state.Session.ConnectionWaiting = false
+			// A click racing the timer is satisfied by this dial, not the next one.
+			select {
+			case <-now:
+			default:
+			}
 			s.notifyChangedLocked()
 			s.mu.Unlock()
 			started := time.Now()
-			attemptCtx, stop := context.WithTimeout(ctx, s.connectTimeout)
+			attemptCtx, stop := context.WithTimeout(ctx, min(s.connectTimeout, 8*time.Second))
 			// Bootstrap and channel restoration stay private until the connection is
 			// accepted. A close racing setup must not publish a half-restored session.
 			var setupMu sync.Mutex
@@ -105,12 +126,13 @@ func (s *Service) startReconnectLocked(plan reconnectPlan, old RemoteConnection,
 					_ = conn.Close()
 				}
 				var failure *ConnectFailure
-				retry := !errors.As(err, &failure) || failure.Retryable
+				retry := retryableConnect(err)
 				slog.Warn("reconnect failed", "attempt", attempt+1, "retryable", retry, "elapsed_ms", time.Since(started).Milliseconds())
 				s.mu.Lock()
 				current := s.generation == generation && ctx.Err() == nil && s.state.Session.Mode == "reconnecting"
 				if current && !retry {
 					s.state.Session.Mode = "failed"
+					_ = errors.As(err, &failure)
 					s.state.Session.Error = failure.Message
 					s.reconnect = nil
 					s.notifyChangedLocked()
@@ -168,6 +190,9 @@ func (s *Service) startReconnectLocked(plan reconnectPlan, old RemoteConnection,
 			s.state.Session.ID = rand.Text()
 			s.state.Messages = []Message{}
 			s.state.Session.Mode = "connected"
+			s.state.Session.ConnectionAttempt = 0
+			s.state.Session.ConnectionWaiting = false
+			s.state.Session.ConnectionRetrySlow = false
 			s.state.Session.Error = "连接已恢复，麦克风保持静音，请确认后开启"
 			if !restored {
 				s.state.Session.Error = "连接已恢复，但原频道不可用；已留在当前频道并保持麦克风静音"
@@ -186,9 +211,41 @@ func (s *Service) startReconnectLocked(plan reconnectPlan, old RemoteConnection,
 }
 
 func reconnectBackoff(attempt int) time.Duration {
-	base := time.Second << min(attempt, 5)
-	if base > 25*time.Second {
-		base = 25 * time.Second
+	base := 25 * time.Second
+	if attempt < 3 {
+		base = time.Second << attempt
 	}
 	return base + time.Duration(mathrand.Int64N(int64(base/5)+1))
+}
+
+func retryableConnect(err error) bool {
+	var failure *ConnectFailure
+	return !errors.As(err, &failure) || failure.Retryable
+}
+
+func waitConnectionRetry(ctx context.Context, delay time.Duration, now <-chan struct{}) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-now:
+		return ctx.Err() == nil
+	case <-timer.C:
+		return ctx.Err() == nil
+	}
+}
+
+// Only wake the existing recovery worker; never create a parallel dial.
+func (s *Service) RetryConnection(sessionID string) (Workspace, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.shutdown || s.state.Session.ID != sessionID || s.state.Session.Mode != "reconnecting" || !s.state.Session.ConnectionWaiting || s.reconnectNow == nil {
+		return Workspace{}, errors.New("当前连接不在等待重试")
+	}
+	select {
+	case s.reconnectNow <- struct{}{}:
+	default:
+	}
+	return s.snapshot(), nil
 }

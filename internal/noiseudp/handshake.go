@@ -18,7 +18,7 @@ import (
 
 const prologue = "resona-noise-exp-5"
 
-var ErrServerAuthentication = errors.New("Noise server authentication failed")
+var ErrServerAuthentication = errors.New("noiseudp: server authentication failed")
 
 var (
 	suite = noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashSHA256)
@@ -45,7 +45,7 @@ func handshake(initiator bool, key []byte) (*noise.HandshakeState, error) {
 	c := noise.Config{CipherSuite: suite, Pattern: noise.HandshakeNK, Initiator: initiator, Prologue: []byte(prologue)}
 	if initiator {
 		if len(key) != 32 {
-			return nil, errors.New("Noise server public key required")
+			return nil, errors.New("noiseudp: server public key required")
 		}
 		c.PeerStatic = key
 	} else {

@@ -2,6 +2,14 @@ package client
 
 import "context"
 
+// Adapter errors contain only a safe message and an explicit retry policy.
+type ResourceSyncError struct {
+	Message   string
+	Retryable bool
+}
+
+func (e *ResourceSyncError) Error() string { return e.Message }
+
 type ResourceInterest struct {
 	Active      bool `json:"active"`
 	AllChannels bool `json:"allChannels"`

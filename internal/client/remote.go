@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"errors"
 	"log/slog"
+	"sync"
+	"time"
 )
 
 type RemoteConnector interface {
@@ -104,12 +106,13 @@ func (s *Service) connectServerLocked(id, password string, remember bool, expect
 	s.connectCancel = cancel
 	s.connectDone = done
 	s.state.Session = Session{
-		Protocol:   profile.Protocol,
-		ID:         rand.Text(),
-		Mode:       "connecting",
-		Nickname:   profile.Nickname,
-		ServerID:   profile.ID,
-		ServerName: profile.Name,
+		Protocol:          profile.Protocol,
+		ID:                rand.Text(),
+		Mode:              "connecting",
+		ConnectionAttempt: 1,
+		Nickname:          profile.Nickname,
+		ServerID:          profile.ID,
+		ServerName:        profile.Name,
 	}
 	s.clearRemoteCollectionsLocked()
 	s.state.Notifications = []Notification{}
@@ -136,9 +139,119 @@ func (s *Service) connect(ctx context.Context, connector RemoteConnector, profil
 		}
 		s.mu.Unlock()
 	}()
-	connection, err := connector.Connect(ctx, profile, password, func(state RemoteState) {
-		s.applyRemoteState(generation, state)
-	})
+	var connection RemoteConnection
+	var err error
+	for attempt := 1; attempt <= 3; attempt++ {
+		attemptGeneration := generation
+		attemptCtx, stop := context.WithTimeout(ctx, 8*time.Second)
+		started := time.Now()
+		var setupMu sync.Mutex
+		var latest RemoteState
+		ready := false
+		connection, err = connector.Connect(attemptCtx, profile, password, func(state RemoteState) {
+			setupMu.Lock()
+			defer setupMu.Unlock()
+			if !ready {
+				if !latest.Closed {
+					latest = state
+				}
+				return
+			}
+			s.applyRemoteState(attemptGeneration, state)
+		})
+		setupMu.Lock()
+		if latest.Closed {
+			message := latest.Error
+			if message == "" {
+				message = "服务器连接已关闭"
+			}
+			err = &ConnectFailure{Message: message, Retryable: latest.Retryable}
+		}
+		if err == nil && attemptCtx.Err() != nil {
+			err = attemptCtx.Err()
+		}
+		if err == nil && connection != nil {
+			// Keep setup callbacks private until the session is admitted.
+			s.applyRemoteState(generation, latest)
+			s.mu.Lock()
+			if generation != s.generation || s.state.Session.Mode != "connecting" {
+				s.mu.Unlock()
+				setupMu.Unlock()
+				stop()
+				_ = connection.Close()
+				return
+			}
+			if ctx.Err() != nil {
+				err = ctx.Err()
+				s.mu.Unlock()
+				setupMu.Unlock()
+				stop()
+				_ = connection.Close()
+				connection = nil
+				break
+			}
+			s.connection = connection
+			s.reconnect = &reconnectPlan{profile: profile, password: password}
+			s.state.Session.Mode = "connected"
+			s.state.Session.ConnectionAttempt = 0
+			s.state.Session.ConnectionWaiting = false
+			s.state.Session.Error = ""
+			s.addNotificationLocked("connected", s.state.Session.ChannelID)
+			s.notifyChangedLocked()
+			s.mu.Unlock()
+			ready = true
+			setupMu.Unlock()
+			stop()
+			slog.Info("connection established")
+			_, _ = s.ConfigureDefaultVoice(generation)
+			if remember {
+				s.rememberSuccessfulPassword(profile, password, generation)
+			}
+			return
+		}
+		setupMu.Unlock()
+		stop()
+		if connection != nil {
+			_ = connection.Close()
+			connection = nil
+		}
+		if err == nil {
+			err = errors.New("empty connection")
+		}
+		slog.Warn("connection attempt failed", "attempt", attempt, "retryable", retryableConnect(err), "elapsed_ms", time.Since(started).Milliseconds())
+		if !retryableConnect(err) || attempt == 3 || ctx.Err() != nil {
+			break
+		}
+		s.mu.Lock()
+		if generation != s.generation || s.state.Session.Mode != "connecting" {
+			s.mu.Unlock()
+			return
+		}
+		// Invalidate callbacks from the failed attempt before waiting or dialing again.
+		s.generation++
+		generation = s.generation
+		s.clearRemoteCollectionsLocked()
+		s.state.Session.ConnectionWaiting = true
+		s.state.Session.Error = "连接未成功，正在重试；可随时取消"
+		s.notifyChangedLocked()
+		s.mu.Unlock()
+		delay := time.Duration(attempt) * 300 * time.Millisecond
+		if s.reconnectDelay > 0 {
+			delay = s.reconnectDelay
+		}
+		if !waitConnectionRetry(ctx, delay, nil) {
+			break
+		}
+		s.mu.Lock()
+		if generation != s.generation || ctx.Err() != nil || s.state.Session.Mode != "connecting" {
+			s.mu.Unlock()
+			return
+		}
+		s.state.Session.ConnectionAttempt = attempt + 1
+		s.state.Session.ConnectionWaiting = false
+		s.notifyChangedLocked()
+		s.mu.Unlock()
+	}
 
 	s.mu.Lock()
 	if generation != s.generation || s.state.Session.Mode != "connecting" {
@@ -151,6 +264,7 @@ func (s *Service) connect(ctx context.Context, connector RemoteConnector, profil
 	if err != nil || ctx.Err() != nil || connection == nil {
 		slog.Warn("connection failed", "timeout", errors.Is(ctx.Err(), context.DeadlineExceeded))
 		s.state.Session.Mode = "failed"
+		s.state.Session.ConnectionWaiting = false
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			s.state.Session.Error = "连接服务器超时，请稍后重试"
 		} else {
@@ -168,18 +282,7 @@ func (s *Service) connect(ctx context.Context, connector RemoteConnector, profil
 		}
 		return
 	}
-	s.connection = connection
-	s.reconnect = &reconnectPlan{profile: profile, password: password}
-	slog.Info("connection established")
-	s.state.Session.Mode = "connected"
-	s.state.Session.Error = ""
-	s.addNotificationLocked("connected", s.state.Session.ChannelID)
-	s.notifyChangedLocked()
 	s.mu.Unlock()
-	_, _ = s.ConfigureDefaultVoice(generation)
-	if remember {
-		s.rememberSuccessfulPassword(profile, password, generation)
-	}
 }
 
 func (s *Service) applyRemoteState(generation uint64, remote RemoteState) {
@@ -307,6 +410,7 @@ func (s *Service) disconnectRemote() (Workspace, error) {
 	voice := s.detachVoiceLocked()
 	s.connectCancel = nil
 	s.connectDone = nil
+	s.reconnectNow = nil
 	s.connection = nil
 	s.mu.Unlock()
 

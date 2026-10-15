@@ -27,12 +27,12 @@ func (c *Conn) prepareKeysLocked(now time.Time) error {
 		return c.failure()
 	}
 	if !c.txConfirmed && now.Sub(c.keySince) >= rekeyTimeout {
-		c.fail(errors.New("Noise key confirmation timed out"))
+		c.fail(errors.New("noiseudp: key confirmation timed out"))
 		return c.failure()
 	}
 	if c.txConfirmed && (c.counter >= rekeyPackets || now.Sub(c.keySince) >= rekeyAfter) {
 		if c.txEpoch >= maxKeyEpoch {
-			c.fail(errors.New("Noise key generation exhausted"))
+			c.fail(errors.New("noiseudp: key generation exhausted"))
 			return c.failure()
 		}
 		c.txState.Rekey()

@@ -61,7 +61,7 @@ func newNativeEncoder(kind, bitrate, complexity int, cbr bool) (encoder, error) 
 	} else {
 		e.ptr = C.bench_encoder_new(C.int(kind), C.int(bitrate), C.int(complexity), C.bool(cbr))
 		if e.ptr == nil {
-			return nil, fmt.Errorf("Rust encoder create failed: %d", kind)
+			return nil, fmt.Errorf("creating Rust encoder failed: %d", kind)
 		}
 	}
 	return e, nil
@@ -100,7 +100,7 @@ func newNativeDecoder(kind int) (decoder, error) {
 	} else {
 		d.ptr = C.bench_decoder_new(C.int(kind))
 		if d.ptr == nil {
-			return nil, fmt.Errorf("Rust decoder create failed: %d", kind)
+			return nil, fmt.Errorf("creating Rust decoder failed: %d", kind)
 		}
 	}
 	return d, nil

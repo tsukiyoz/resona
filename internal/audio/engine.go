@@ -812,7 +812,7 @@ func (r *engineRun) encodeLoop() {
 			}
 			n, encodeErr := r.encoder.Encode(pcm, encoded)
 			if encodeErr != nil {
-				r.fail(fmt.Errorf("Opus 编码失败: %w", encodeErr), true)
+				r.fail(fmt.Errorf("音频 Opus 编码失败: %w", encodeErr), true)
 				return
 			}
 			r.sendMu.Lock()
@@ -1013,7 +1013,7 @@ func (r *engineRun) recordDecodeFailure(now time.Time, senderID uint16, codec Co
 	}
 	r.decodeFailures[senderID] = failure
 	if failure.count >= decodeErrorLimit {
-		r.engine.setRunDecodeError(r, senderID, fmt.Errorf("Opus 解码持续失败（发送者=%d，codec=%s，帧长度=%d）: %w", senderID, codec, packetBytes, err))
+		r.engine.setRunDecodeError(r, senderID, fmt.Errorf("音频 Opus 解码持续失败（发送者=%d，codec=%s，帧长度=%d）: %w", senderID, codec, packetBytes, err))
 	}
 }
 

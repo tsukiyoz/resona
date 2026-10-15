@@ -32,7 +32,7 @@ const (
 
 type RemoteError struct{ Code uint64 }
 
-var ErrIdleTimeout = errors.New("Noise session expired")
+var ErrIdleTimeout = errors.New("noiseudp: session expired")
 
 func (e *RemoteError) Error() string { return "Noise peer closed the session" }
 
@@ -171,7 +171,7 @@ func (c *Conn) send(kind byte, body []byte) error {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
 	if len(body)+21 > maxPacket {
-		return errors.New("Noise datagram too large")
+		return errors.New("noiseudp: datagram too large")
 	}
 	if err := c.prepareKeysLocked(time.Now()); err != nil {
 		return err
@@ -184,11 +184,11 @@ func (c *Conn) sendLocked(kind byte, body []byte) error {
 		return c.failure()
 	}
 	if c.counter+1 >= maxCounter {
-		c.fail(errors.New("Noise key packet budget exhausted"))
+		c.fail(errors.New("noiseudp: key packet budget exhausted"))
 		return c.failure()
 	}
 	if len(body)+21 > maxPacket {
-		return errors.New("Noise datagram too large")
+		return errors.New("noiseudp: datagram too large")
 	}
 	c.counter++
 	header := make([]byte, 5, 5+len(body)+16)

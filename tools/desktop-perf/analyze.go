@@ -113,7 +113,7 @@ func analyze(input io.Reader, selected groups, baseline string, skip float64) (*
 		r.Platform = "windows"
 		r.specs = winMetrics
 		if len(selected) > 0 {
-			return nil, fmt.Errorf("Windows CSV already defines groups; --group is only for legacy macOS CSV")
+			return nil, fmt.Errorf("groups are already defined by Windows CSV; --group is only for legacy macOS CSV")
 		}
 		r.Warnings = append(r.Warnings, "Working-set sums can double-count shared pages. Private commit is committed private virtual memory, not resident RAM or macOS physical footprint.", "Process I/O includes file/device/pipe activity; it is not dedicated disk throughput or network bandwidth. Windows wakeups are unavailable.")
 	case strings.Join(macHeader, ","):

@@ -271,7 +271,7 @@ func (c *connection) SetResourceInterest(ctx context.Context, allChannels, allMe
 	supported := c.state.CanWatchResources
 	c.mu.Unlock()
 	if !supported {
-		return errors.New("服务器不支持资源订阅，请更新匹配版本")
+		return &client.ResourceSyncError{Message: "服务器不支持资源订阅，请更新匹配版本", Retryable: false}
 	}
 	return c.command(ctx, w.WatchResourcesKind, w.WatchResources{AllChannels: allChannels, AllMembers: allMembers})
 }
@@ -318,7 +318,10 @@ func (c *connection) command(ctx context.Context, kind uint8, cmd any) error {
 	_ = c.stream.SetWriteDeadline(deadline)
 	// A resource watch is idempotent. A missing reply must not disconnect an
 	// otherwise healthy voice session; a blocked write still has its deadline.
-	stop := context.AfterFunc(ctx, func() { _ = c.conn.CloseWithError(0, "operation cancelled") })
+	stop := func() bool { return false }
+	if kind != w.WatchResourcesKind {
+		stop = context.AfterFunc(ctx, func() { _ = c.conn.CloseWithError(0, "operation cancelled") })
+	}
 	defer stop()
 	if err := w.Write(c.stream, kind, request, cmd); err != nil {
 		_ = c.conn.CloseWithError(1, "control write failed")
@@ -334,6 +337,9 @@ func (c *connection) command(ctx context.Context, kind uint8, cmd any) error {
 				_ = c.conn.CloseWithError(0, "operation cancelled")
 			}
 			return ctx.Err()
+		}
+		if kind == w.WatchResourcesKind && code != w.OK {
+			return &client.ResourceSyncError{Message: "服务器拒绝资源同步，请检查权限或客户端版本", Retryable: code == w.RateLimited}
 		}
 		if kind >= w.CreateChannelKind && kind <= w.DeleteChannelKind {
 			return channelReply(code)

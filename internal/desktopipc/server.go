@@ -8,12 +8,14 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"reflect"
 	"runtime"
 	"sync"
 
 	"github.com/tsukiyoz/resona/internal/audio"
 	"github.com/tsukiyoz/resona/internal/client"
+	"github.com/tsukiyoz/resona/internal/updates"
 	"github.com/tsukiyoz/resona/internal/version"
 )
 
@@ -44,6 +46,9 @@ func Run(ctx context.Context, service *client.Service, input io.ReadCloser, outp
 	defer unsubscribe()
 	var writerMu sync.Mutex
 	encoder := json.NewEncoder(output)
+	updater := updates.New()
+	defer updater.Close()
+	var publishedSession string
 	resourceSync := newResourceSync()
 	requests := make(chan request, 16)
 	failures := make(chan error, 1)
@@ -67,30 +72,13 @@ func Run(ctx context.Context, service *client.Service, input io.ReadCloser, outp
 	workers.Add(4)
 	go func() {
 		defer workers.Done()
-		resourceSync.run(ctx, service, func(interest resourceInterest, session string, syncErr error) {
-			if !interest.Active {
-				return
-			}
+		resourceSync.run(ctx, service, func(status resourceSyncStatus) {
 			writerMu.Lock()
 			defer writerMu.Unlock()
-			if interest != resourceSync.current() || session != service.ResourceSessionID() {
+			if status.Generation != resourceSync.current().Generation || status.SessionID != service.ResourceSessionID() {
 				return
 			}
-			workspace, err := service.GetWorkspace()
-			if err != nil {
-				return
-			}
-			message := ""
-			if syncErr != nil {
-				message = "资源同步未完成，稍后重试或重新切回窗口"
-			}
-			if encoder.Encode(envelope{Event: "resourceSync", Result: struct {
-				Generation     uint64            `json:"generation"`
-				Workspace      client.Workspace  `json:"workspace"`
-				Voice          client.VoiceState `json:"voice"`
-				MicrophoneTest client.VoiceState `json:"microphoneTest"`
-				Error          string            `json:"error"`
-			}{interest.Generation, workspace, service.GetVoiceState(), service.GetMicrophoneTest(), message}}) != nil {
+			if publishResourceSync(encoder, service, status, resourceSync.current().Active, &publishedSession) != nil {
 				fail(errors.New("desktop output unavailable"))
 			}
 		})
@@ -151,6 +139,12 @@ func Run(ctx context.Context, service *client.Service, input io.ReadCloser, outp
 			}
 			if err == nil && publish && (previous == nil || !reflect.DeepEqual(*previous, workspace)) {
 				err = encoder.Encode(envelope{Event: "workspace", Result: workspace})
+				if err == nil {
+					publishedSession = ""
+					if workspace.Session.Mode == "connected" {
+						publishedSession = workspace.Session.ID
+					}
+				}
 				previous = &workspace
 				if len(workspace.Notifications) > 0 {
 					lastNotification = workspace.Notifications[len(workspace.Notifications)-1].ID
@@ -188,6 +182,43 @@ func Run(ctx context.Context, service *client.Service, input io.ReadCloser, outp
 				return nil
 			}
 		case req := <-requests:
+			if updateMethod(req.Method) {
+				select {
+				case readSlots <- struct{}{}:
+					workers.Add(1)
+					go func(req request) {
+						defer workers.Done()
+						defer func() { <-readSlots }()
+						publish := func(status updates.Status) {
+							writerMu.Lock()
+							defer writerMu.Unlock()
+							if encoder.Encode(envelope{Event: "update", Result: status}) != nil {
+								fail(errors.New("desktop output unavailable"))
+							}
+						}
+						result, err := dispatchUpdate(ctx, updater, req, publish)
+						response := envelope{ID: req.ID, Result: result}
+						if err != nil {
+							response.Result = nil
+							response.Error = err.Error()
+						}
+						writerMu.Lock()
+						writeErr := encoder.Encode(response)
+						writerMu.Unlock()
+						if writeErr != nil {
+							fail(errors.New("desktop response unavailable"))
+						}
+					}(req)
+				default:
+					writerMu.Lock()
+					err := encoder.Encode(envelope{ID: req.ID, Error: "更新操作繁忙，请稍后重试"})
+					writerMu.Unlock()
+					if err != nil {
+						return errors.New("desktop output unavailable")
+					}
+				}
+				continue
+			}
 			if req.Method == "CreateChannel" || req.Method == "UpdateChannel" || req.Method == "DeleteChannel" || req.Method == "ClaimServerOwner" {
 				select {
 				case adminSlots <- struct{}{}:
@@ -235,10 +266,6 @@ func Run(ctx context.Context, service *client.Service, input io.ReadCloser, outp
 				continue
 			}
 			if req.Method == "ExportDiagnostics" || req.Method == "GetIconResource" || req.Method == "GetChannelDetails" || req.Method == "GetUserDetails" {
-				readContext := ctx
-				if isDetails {
-					readContext, cancelDetails = context.WithCancel(ctx)
-				}
 				select {
 				case readSlots <- struct{}{}:
 				default:
@@ -250,9 +277,14 @@ func Run(ctx context.Context, service *client.Service, input io.ReadCloser, outp
 					}
 					continue
 				}
+				readContext, cancelRead := context.WithCancel(ctx)
+				if isDetails {
+					cancelDetails = cancelRead
+				}
 				workers.Add(1)
 				go func(req request) {
 					defer workers.Done()
+					defer cancelRead()
 					defer func() { <-readSlots }()
 					result, err := dispatchRead(readContext, service, req)
 					response := envelope{ID: req.ID, Result: result}
@@ -270,6 +302,7 @@ func Run(ctx context.Context, service *client.Service, input io.ReadCloser, outp
 				continue
 			}
 			if req.Method == "PrepareShutdown" {
+				updater.Cancel()
 				var p struct {
 					NotificationEnabled bool `json:"notificationEnabled"`
 					NotificationVolume  int  `json:"notificationVolume"`
@@ -340,6 +373,71 @@ func Run(ctx context.Context, service *client.Service, input io.ReadCloser, outp
 			}
 		}
 	}
+}
+
+func updateMethod(method string) bool {
+	switch method {
+	case "GetUpdateStatus", "CheckUpdate", "DownloadUpdate", "CancelUpdate", "GetUpdatePackage", "InstallUpdate":
+		return true
+	}
+	return false
+}
+
+func dispatchUpdate(ctx context.Context, updater *updates.Manager, req request, publish func(updates.Status)) (any, error) {
+	switch req.Method {
+	case "GetUpdateStatus":
+		return updater.Status(), nil
+	case "CheckUpdate", "DownloadUpdate":
+		return true, updater.Start(ctx, req.Method == "DownloadUpdate", publish)
+	case "CancelUpdate":
+		updater.Cancel()
+		return true, nil
+	case "GetUpdatePackage":
+		directory, err := updater.PackageDirectory()
+		return struct {
+			Path string `json:"path"`
+		}{directory}, err
+	case "InstallUpdate":
+		var params struct {
+			DesktopVersion string `json:"desktopVersion"`
+		}
+		if err := decodeParams(req.Params, &params); err != nil {
+			return nil, err
+		}
+		if "v"+params.DesktopVersion != version.Current().Version {
+			return nil, errors.New("桌面和 Core 版本不一致，拒绝自动更新")
+		}
+		return true, updater.PrepareInstall(os.Getppid())
+	}
+	return nil, errors.New("未知更新命令")
+}
+
+// Called under the shared writer lock: a resource status must follow its session.
+func publishResourceSync(encoder *json.Encoder, service *client.Service, status resourceSyncStatus, active bool, publishedSession *string) error {
+	result := struct {
+		resourceSyncStatus
+		Workspace *client.Workspace `json:"workspace,omitempty"`
+	}{resourceSyncStatus: status}
+	needsSession := status.SessionID != "" && *publishedSession != status.SessionID
+	if needsSession || (active && (status.State == "idle" || status.State == "ready")) {
+		workspace, err := service.GetWorkspace()
+		if err != nil {
+			return err
+		}
+		if status.SessionID != "" && (workspace.Session.ID != status.SessionID || workspace.Session.Mode != "connected") {
+			return nil
+		}
+		if needsSession {
+			if err := encoder.Encode(envelope{Event: "workspace", Result: workspace}); err != nil {
+				return err
+			}
+			*publishedSession = status.SessionID
+		}
+		if active && (status.State == "idle" || status.State == "ready") {
+			result.Workspace = &workspace
+		}
+	}
+	return encoder.Encode(envelope{Event: "resourceSync", Result: result})
 }
 
 func readErrorMessage(err error) string {
@@ -492,6 +590,8 @@ func dispatchWithContext(ctx context.Context, s *client.Service, req request) (a
 		return struct{}{}, s.ManageChannelContext(ctx, p.SessionID, "delete", p.ChannelID, "", "")
 	case "DisconnectServer":
 		return s.DisconnectServer()
+	case "RetryConnection":
+		return s.RetryConnection(p.SessionID)
 	case "SelectChannel":
 		return s.SelectChannel(p.ID)
 	case "SendChannelMessage":

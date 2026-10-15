@@ -71,6 +71,7 @@ impl IconNamed for VoiceIcon {
 
 #[derive(Clone)]
 enum Pending {
+    Update(&'static str),
     ExportDiagnostics,
     Probe(Instant),
     CoreInfo,
@@ -149,6 +150,22 @@ enum DetailChange {
     Refresh,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ResourceState {
+    #[default]
+    Idle,
+    Syncing,
+    Ready,
+    Refreshing,
+    Failed,
+}
+
+impl ResourceState {
+    fn blocks(self) -> bool {
+        matches!(self, Self::Idle | Self::Syncing | Self::Failed)
+    }
+}
+
 #[derive(Clone)]
 struct SubmittedDraft {
     key: String,
@@ -196,7 +213,9 @@ enum DeviceMenu {
 pub struct ResonaApp {
     resource_interest: Option<(bool, bool)>,
     resource_generation: u64,
-    resources_syncing: bool,
+    resource_state: ResourceState,
+    resource_error: String,
+    resource_attempt: usize,
     composer_height: f32,
     composer_drag: Option<(f32, f32)>,
     chat_collapsed: bool,
@@ -229,6 +248,7 @@ pub struct ResonaApp {
     closing: bool,
     connect_revision: u64,
     preferences: Preferences,
+    preference_error: Option<String>,
     settings_draft: Option<Preferences>,
     settings_baseline: Option<Preferences>,
     settings_apply: Option<(Preferences, String, bool)>,
@@ -239,6 +259,8 @@ pub struct ResonaApp {
     settings_discard: bool,
     probe_result: String,
     core_info: Option<Value>,
+    update_status: Value,
+    update_notice: String,
     preference_revision: u64,
     preference_save_order: Arc<Mutex<u64>>,
     audio_settings_pending: bool,
@@ -314,7 +336,10 @@ impl ResonaApp {
                 .multi_line(true)
                 .placeholder("发送到当前频道")
         });
-        let preferences = Preferences::load();
+        let (preferences, preference_error) = match Preferences::load() {
+            Ok(preferences) => (preferences, None),
+            Err(error) => (Preferences::recovery(), Some(error.to_string())),
+        };
         theme::apply(preferences.theme, Some(window), cx);
         let playback_input = cx.new(|cx| InputState::new(window, cx).default_value("100"));
         let playback_subscription = cx.subscribe_in(
@@ -475,7 +500,9 @@ impl ResonaApp {
         let mut this = Self {
             resource_interest: None,
             resource_generation: 0,
-            resources_syncing: false,
+            resource_state: ResourceState::Idle,
+            resource_error: String::new(),
+            resource_attempt: 0,
             composer_height: 210.,
             composer_drag: None,
             chat_collapsed: false,
@@ -509,6 +536,7 @@ impl ResonaApp {
             closing: false,
             connect_revision: 0,
             preferences,
+            preference_error,
             settings_draft: None,
             settings_baseline: None,
             settings_apply: None,
@@ -519,6 +547,8 @@ impl ResonaApp {
             settings_discard: false,
             probe_result: String::new(),
             core_info: None,
+            update_status: json!({"state":"idle"}),
+            update_notice: String::new(),
             preference_revision: 0,
             preference_save_order: Arc::new(Mutex::new(0)),
             audio_settings_pending: false,
@@ -671,6 +701,13 @@ impl ResonaApp {
 
     fn request_failed(&mut self, pending: Pending, error: String) {
         match pending {
+            Pending::Update(_) => self.update_notice = error,
+            Pending::ResourceInterest(generation) => {
+                if generation == self.resource_generation {
+                    self.resource_state = ResourceState::Failed;
+                    self.resource_error = error;
+                }
+            }
             Pending::SettingsApply(session, revision)
             | Pending::SettingsStatus(session, revision) => {
                 if revision == self.settings_revision
@@ -718,6 +755,12 @@ impl ResonaApp {
 
     fn handle_incoming(&mut self, incoming: Incoming, window: &mut Window, cx: &mut Context<Self>) {
         match incoming {
+            Incoming::Update(value) => {
+                if self.core.is_some() {
+                    self.update_status = value;
+                    self.update_notice.clear();
+                }
+            }
             Incoming::Notifications(value) => {
                 if let Ok(workspace) = serde_json::from_value::<Workspace>(value) {
                     if workspace.session.id == self.workspace.session.id {
@@ -729,13 +772,29 @@ impl ResonaApp {
                 if self.core.is_some()
                     && value.get("generation").and_then(Value::as_u64)
                         == Some(self.resource_generation)
+                    && resource_session_matches(
+                        &self.workspace,
+                        value["sessionID"].as_str().unwrap_or(""),
+                    )
                 {
-                    self.apply_workspace(value["workspace"].clone(), window, cx);
-                    self.apply_voice(value["voice"].clone());
-                    self.apply_microphone_test(value["microphoneTest"].clone());
-                    self.resources_syncing = false;
-                    if let Some(error) = value["error"].as_str().filter(|s| !s.is_empty()) {
-                        self.error = error.to_owned();
+                    if value["workspace"].is_object() {
+                        self.apply_workspace(value["workspace"].clone(), window, cx);
+                    }
+                    self.resource_state = next_resource_state(
+                        self.resource_state,
+                        value["state"].as_str().unwrap_or("idle"),
+                    );
+                    self.resource_error = value["error"].as_str().unwrap_or("").into();
+                    self.resource_attempt = value["attempt"].as_u64().unwrap_or(0) as usize;
+                    if self.resource_state == ResourceState::Failed {
+                        self.channel_error = "资源同步失败，请关闭此窗口后重试".into();
+                        self.ownership_error = self.channel_error.clone();
+                    } else if self.resource_state == ResourceState::Ready {
+                        for error in [&mut self.channel_error, &mut self.ownership_error] {
+                            if error == "资源同步失败，请关闭此窗口后重试" {
+                                error.clear();
+                            }
+                        }
                     }
                 }
             }
@@ -753,7 +812,6 @@ impl ResonaApp {
                     return;
                 }
                 self.error = error.clone();
-                self.resources_syncing = false;
                 if let Some(core) = &self.core {
                     core.finish_shutdown();
                 }
@@ -798,8 +856,8 @@ impl ResonaApp {
                     (Some(Pending::ResourceInterest(generation)), result) => {
                         if generation == self.resource_generation {
                             if let Err(error) = result {
-                                self.resources_syncing = false;
-                                self.error = error;
+                                self.resource_state = ResourceState::Failed;
+                                self.resource_error = error;
                             }
                         }
                     }
@@ -912,6 +970,12 @@ impl ResonaApp {
                         self.apply_workspace(value, window, cx);
                         if !keep_modal || self.workspace.connected() {
                             self.close_modal(window, cx);
+                        } else {
+                            // The core now owns setup and retries; closing the password form
+                            // directly avoids treating its dismissal as cancellation.
+                            self.modal = None;
+                            self.password_input
+                                .update(cx, |input, cx| input.set_value("", window, cx));
                         }
                         self.connect_error.clear();
                     }
@@ -1088,6 +1152,18 @@ impl ResonaApp {
                     (Some(Pending::Probe(_)), Err(error)) => {
                         self.probe_result = format!("核心探测失败：{error}");
                     }
+                    (Some(Pending::Update(method)), Ok(value)) => {
+                        if method == "InstallUpdate" {
+                            self.begin_shutdown(cx);
+                        } else if method == "GetUpdateStatus" {
+                            self.update_status = value;
+                        } else if method == "GetUpdatePackage" {
+                            if let Some(path) = value["path"].as_str() {
+                                cx.reveal_path(std::path::Path::new(path));
+                            }
+                        }
+                    }
+                    (Some(Pending::Update(_)), Err(error)) => self.update_notice = error,
                     (Some(Pending::CoreInfo), Ok(value)) => self.core_info = Some(value),
                     (Some(Pending::CoreInfo), Err(error)) => {
                         self.core_info = None;
@@ -1164,8 +1240,27 @@ impl ResonaApp {
         }
         self.resource_interest = Some(next);
         self.resource_generation = self.resource_generation.wrapping_add(1);
-        self.resources_syncing = active;
         self.request("SetResourceInterest", json!({"active":active, "allChannels":all, "allMembers":all, "generation":self.resource_generation}), Pending::ResourceInterest(self.resource_generation));
+    }
+
+    fn resources_blocked(&self) -> bool {
+        self.workspace.connected() && self.resource_state.blocks()
+    }
+
+    fn retry_resources(&mut self, cx: &mut Context<Self>) {
+        if self.closing
+            || !self.workspace.connected()
+            || self.resource_state != ResourceState::Failed
+        {
+            return;
+        }
+        let (active, all) = self.resource_interest.unwrap_or((true, true));
+        self.resource_generation = self.resource_generation.wrapping_add(1);
+        self.resource_state = ResourceState::Syncing;
+        self.resource_attempt = 0;
+        self.resource_error.clear();
+        self.request("SetResourceInterest", json!({"active":active,"allChannels":all,"allMembers":all,"generation":self.resource_generation,"retry":true}), Pending::ResourceInterest(self.resource_generation));
+        cx.notify();
     }
 
     fn flush_queued_voice(&mut self, cx: &mut Context<Self>) {
@@ -1244,6 +1339,18 @@ impl ResonaApp {
                 if detail_update == DetailChange::Clear {
                     self.clear_selected_details();
                 }
+                if workspace.session.id != self.workspace.session.id
+                    || workspace.connected() != self.workspace.connected()
+                {
+                    self.resource_interest = None;
+                    self.resource_state = if workspace.connected() {
+                        ResourceState::Syncing
+                    } else {
+                        ResourceState::Idle
+                    };
+                    self.resource_error.clear();
+                    self.resource_attempt = 0;
+                }
                 if workspace.session.id != self.workspace.session.id {
                     self.queued_voice = None;
                     self.voice_target = None;
@@ -1294,7 +1401,9 @@ impl ResonaApp {
                             .update(cx, |input, cx| input.set_value("", window, cx));
                         self.modal = None;
                         self.connect_error.clear();
-                        self.focus.focus(window);
+                        if window.is_window_active() {
+                            self.focus.focus(window);
+                        }
                     } else if workspace.session.mode == "failed" {
                         self.connect_error = if workspace.session.credential_error.is_empty() {
                             workspace.session.error.clone()
@@ -1504,6 +1613,7 @@ impl ResonaApp {
 
     fn join_channel(&mut self, id: &str, cx: &mut Context<Self>) {
         if self.closing
+            || self.resources_blocked()
             || !self.workspace.session.switching_channel_id.is_empty()
             || !self.workspace.session.sending_message_id.is_empty()
             || self.workspace.session.channel_id == id
@@ -1696,22 +1806,10 @@ impl ResonaApp {
                         .num_milliseconds();
                     (-1_000..=5_000).contains(&age)
                 });
-            if self.resources_syncing
-                || !fresh
-                || !self.preferences.notifications_enabled
-                || self.voice.deafened
-            {
+            if !fresh || !self.preferences.notifications_enabled || self.voice.deafened {
                 continue;
             }
-            let applicable = match notification.kind.as_str() {
-                "connected" => workspace.connected(),
-                "disconnected" => true,
-                "member_joined" | "member_left" => {
-                    workspace.connected() && notification.channel_id == workspace.session.channel_id
-                }
-                _ => false,
-            };
-            if !applicable {
+            if !notification_applies(workspace, notification) {
                 continue;
             }
             if notification.kind.starts_with("member_") {
@@ -1732,16 +1830,32 @@ impl ResonaApp {
     }
 
     fn flush_preferences(&mut self) {
+        if self.preference_error.is_some() {
+            return;
+        }
         self.preference_revision += 1;
         if let Err(error) = self
             .preferences
             .save_ordered(self.preference_revision, &self.preference_save_order)
         {
-            self.error = format!("无法保存声音设置：{error}");
+            self.preference_error = Some(error.to_string());
         }
     }
 
     fn save_preferences(&mut self, cx: &mut Context<Self>) {
+        self.save_preferences_with_notice(None, cx);
+    }
+
+    fn save_preferences_with_notice(&mut self, notice: Option<String>, cx: &mut Context<Self>) {
+        if self.preference_error.is_some() {
+            if notice.is_some() {
+                self.settings_notice = "已应用到本次运行，偏好处于保护状态，未保存".into();
+            }
+            return;
+        }
+        if notice.is_some() {
+            self.settings_notice = "已应用，正在保存偏好".into();
+        }
         self.preference_revision += 1;
         let revision = self.preference_revision;
         let preferences = self.preferences.clone();
@@ -1750,14 +1864,24 @@ impl ResonaApp {
             .background_executor()
             .spawn(async move { preferences.save_ordered(revision, &order) });
         cx.spawn(async move |view, cx| {
-            if let Err(error) = save.await {
-                let _ = view.update(cx, |this, cx| {
-                    if this.preference_revision == revision {
-                        this.error = format!("无法保存声音设置：{error}");
-                        cx.notify();
+            let result = save.await;
+            let _ = view.update(cx, |this, cx| {
+                match result {
+                    Err(error) if this.preference_revision == revision => {
+                        this.preference_error = Some(error.to_string());
+                        this.settings_notice = "已应用到本次运行，但偏好未保存；请查看诊断".into();
                     }
-                });
-            }
+                    Ok(())
+                        if this.preference_revision == revision
+                            && this.preference_error.is_none()
+                            && this.settings_notice == "已应用，正在保存偏好" =>
+                    {
+                        this.settings_notice = notice.unwrap_or_else(|| "偏好已保存".into());
+                    }
+                    _ => {}
+                }
+                cx.notify();
+            });
         })
         .detach();
     }
@@ -1834,6 +1958,7 @@ impl ResonaApp {
         cx: &mut Context<Self>,
     ) {
         if self.closing
+            || self.resources_blocked()
             || !self.workspace.connected()
             || !self.workspace.session.can_manage_channels
             || session != self.workspace.session.id
@@ -1894,7 +2019,7 @@ impl ResonaApp {
     }
 
     fn submit_channel(&mut self, cx: &mut Context<Self>) {
-        if self.resources_syncing {
+        if self.resources_blocked() {
             return;
         }
         let Some(Modal::Channel {
@@ -1958,7 +2083,8 @@ impl ResonaApp {
     }
 
     fn open_ownership(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.workspace.connected()
+        if self.resources_blocked()
+            || !self.workspace.connected()
             || (self.workspace.session.server_role.is_empty()
                 && !self.workspace.session.can_claim_owner)
         {
@@ -1976,6 +2102,9 @@ impl ResonaApp {
     }
 
     fn claim_owner(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.resources_blocked() {
+            return;
+        }
         let Some(Modal::Ownership { session }) = self.modal.clone() else {
             return;
         };
@@ -2219,7 +2348,7 @@ impl ResonaApp {
     }
 
     fn send_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.resources_syncing
+        if self.resources_blocked()
             || visible_text_channel(&self.workspace, &self.selected_server).is_none()
             || !self.workspace.session.switching_channel_id.is_empty()
             || !self.workspace.session.sending_message_id.is_empty()
@@ -2281,7 +2410,7 @@ impl ResonaApp {
     }
 
     fn retry_message(&mut self, message_id: String, allow_duplicate: bool, cx: &mut Context<Self>) {
-        if self.resources_syncing {
+        if self.resources_blocked() {
             return;
         }
         let Some(message) = self
@@ -2580,7 +2709,7 @@ impl ResonaApp {
         if stop_notifications && self.core.is_some() {
             self.request("StopNotifications", json!({}), Pending::Notification);
         }
-        self.save_preferences(cx);
+        self.save_preferences_with_notice(Some(self.settings_notice.clone()), cx);
     }
 
     fn change_theme(
@@ -3614,7 +3743,7 @@ impl ResonaApp {
 
     fn render_chat(&self, channel: &crate::model::Channel, view: &Entity<Self>) -> AnyElement {
         let can_send = (self.workspace.session.mode == "preview" || self.workspace.connected())
-            && !self.resources_syncing
+            && !self.resources_blocked()
             && self.workspace.session.switching_channel_id.is_empty()
             && self.workspace.session.sending_message_id.is_empty()
             && !self.pending.values().any(|p| matches!(p, Pending::Send(_)));
@@ -3758,8 +3887,11 @@ impl ResonaApp {
                                         let retry = view.clone();
                                         let retry_id = message.id.clone();
                                         let copy_text = message.text.clone();
+                                        let message_group =
+                                            SharedString::from(format!("message-{}", message.id));
                                         div()
                                             .id(SharedString::from(format!("text-{}", message.id)))
+                                            .group(message_group.clone())
                                             .py_1()
                                             .flex()
                                             .items_start()
@@ -3848,20 +3980,30 @@ impl ResonaApp {
                                                     }),
                                             )
                                             .child(
-                                                Button::new(SharedString::from(format!(
-                                                    "copy-{}",
-                                                    message.id
-                                                )))
-                                                .icon(IconName::Copy)
-                                                .ghost()
-                                                .tooltip("复制消息")
-                                                .on_click(move |_, _, cx| {
-                                                    cx.write_to_clipboard(
-                                                        gpui::ClipboardItem::new_string(
-                                                            copy_text.clone(),
-                                                        ),
-                                                    )
-                                                }),
+                                                div()
+                                                    .size(px(28.))
+                                                    .flex_shrink_0()
+                                                    .invisible()
+                                                    .group_hover(message_group, |style| {
+                                                        style.visible()
+                                                    })
+                                                    .child(
+                                                        Button::new(SharedString::from(format!(
+                                                            "copy-{}",
+                                                            message.id
+                                                        )))
+                                                        .icon(IconName::Copy)
+                                                        .size(px(28.))
+                                                        .ghost()
+                                                        .tooltip("复制消息")
+                                                        .on_click(move |_, _, cx| {
+                                                            cx.write_to_clipboard(
+                                                                gpui::ClipboardItem::new_string(
+                                                                    copy_text.clone(),
+                                                                ),
+                                                            )
+                                                        }),
+                                                    ),
                                             )
                                             .when(
                                                 matches!(
@@ -4674,6 +4816,90 @@ impl ResonaApp {
             );
         }
         section.into_any_element()
+    }
+
+    fn render_updates(&self, view: &Entity<Self>) -> gpui::Div {
+        let state = self.update_status["state"].as_str().unwrap_or("idle");
+        let configured = self.update_status["configured"].as_bool().unwrap_or(false);
+        let pending = self
+            .pending
+            .values()
+            .any(|p| matches!(p, Pending::Update(_)));
+        let busy = pending || matches!(state, "checking" | "downloading" | "installing");
+        let status = if !self.update_notice.is_empty() {
+            self.update_notice.clone()
+        } else if !configured {
+            "自动更新未启用".into()
+        } else {
+            match state {
+                "checking" => "正在检查更新…".into(),
+                "downloading" => "正在下载并校验更新包…".into(),
+                "installing" => "正在准备退出并更新…".into(),
+                "current" => "已是最新正式版本".into(),
+                "available" => format!(
+                    "可用版本：{}",
+                    self.update_status["version"].as_str().unwrap_or("--")
+                ),
+                "ready" => format!(
+                    "更新包已验证：{}",
+                    self.update_status["version"].as_str().unwrap_or("--")
+                ),
+                "failed" | "cancelled" => self.update_status["error"]
+                    .as_str()
+                    .unwrap_or("更新失败，请重试")
+                    .into(),
+                _ => "尚未检查更新".into(),
+            }
+        };
+        let button = |id, label, method: &'static str| {
+            let entity = view.clone();
+            Button::new(id)
+                .label(label)
+                .compact()
+                .ghost()
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |this, cx| {
+                        this.update_notice.clear();
+                        this.request(
+                            method,
+                            json!({"desktopVersion":env!("CARGO_PKG_VERSION")}),
+                            Pending::Update(method),
+                        );
+                        cx.notify();
+                    });
+                })
+        };
+        let mut controls = div().flex().flex_wrap().gap_2().child(
+            button("check-update", "检查更新", "CheckUpdate")
+                .disabled(!configured || busy || self.core.is_none()),
+        );
+        if state == "available" {
+            controls = controls
+                .child(button("download-update", "下载更新", "DownloadUpdate").disabled(busy));
+        }
+        if matches!(state, "checking" | "downloading") {
+            controls =
+                controls.child(button("cancel-update", "取消", "CancelUpdate").disabled(pending));
+        }
+        if state == "ready" {
+            if self.update_status["canInstall"].as_bool().unwrap_or(false) {
+                controls = controls
+                    .child(button("install-update", "退出并更新", "InstallUpdate").disabled(busy));
+            }
+            controls = controls.child(
+                button("show-update-package", "显示更新包", "GetUpdatePackage")
+                    .icon(IconName::Folder)
+                    .disabled(busy),
+            );
+        }
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(div().h(px(1.)).w_full().bg(rgb(LINE)))
+            .child(div().text_xs().text_color(rgb(MUTED)).child(status))
+            .child(controls)
     }
 
     fn render_audio_settings(&self, view: &Entity<Self>, devices_page: bool) -> gpui::Div {
@@ -5542,7 +5768,7 @@ impl ResonaApp {
                                             _ => "自定义",
                                         })
                                         .icon(IconName::ChevronDown)
-                                        .disabled(pending || unavailable)
+                                        .disabled(pending || unavailable || self.resources_blocked())
                                         .dropdown_menu(move |mut menu, _, _| {
                                             for (label, value) in [
                                                 ("省流 · 20 kbps", 20000),
@@ -5746,7 +5972,7 @@ impl ResonaApp {
                                         Button::new("claim-owner")
                                             .label("认领所有者")
                                             .primary()
-                                            .disabled(pending)
+                                            .disabled(pending || self.resources_blocked())
                                             .on_click(move |_, window, cx| {
                                                 entity.update(cx, |this, cx| {
                                                     this.claim_owner(window, cx)
@@ -6213,12 +6439,43 @@ impl ResonaApp {
                     .any(|p| matches!(p, Pending::ExportDiagnostics));
                 div()
                     .w_full()
+                    .flex_1()
+                    .min_h_0()
+                    .child(div()
+                    .id("diagnostics-scroll")
+                    .w_full()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scrollbar()
+                    .child(div()
+                    .w_full()
                     .min_w_0()
-                    .h(px(420.))
                     .p_5()
                     .flex()
                     .flex_col()
                     .gap_5()
+                    .child(div().text_sm().text_color(rgb(MUTED)).child("本地配置"))
+                    .child(
+                        div().text_xs().text_color(rgb(TEXT)).child(
+                            self.preference_error.as_ref().map(|error| format!(
+                                "偏好未加载或未保存：{error}。原文件保留，本次修改不保存；修复配置后重启应用。"
+                            )).unwrap_or_else(|| format!("偏好格式 v{}", crate::preferences::SCHEMA_VERSION)),
+                        ),
+                    )
+                    .child(
+                        Button::new("open-config-directory")
+                            .label("定位配置目录")
+                            .icon(IconName::Folder)
+                            .outline()
+                            .tooltip("在文件管理器中显示配置目录；修复后重启应用")
+                            .disabled(crate::preferences::directory().is_none_or(|directory| !directory.is_dir()))
+                            .on_click(|_, _, cx| {
+                                if let Some(directory) = crate::preferences::directory() {
+                                    cx.reveal_path(&directory);
+                                }
+                            }),
+                    )
+                    .child(div().w_full().h(px(1.)).bg(rgb(LINE)))
                     .child(div().text_sm().text_color(rgb(MUTED)).child("核心状态"))
                     .child(
                         div()
@@ -6288,6 +6545,8 @@ impl ResonaApp {
                                     });
                                 }
                             }),
+                    )
+                    )
                     )
             }
             Modal::About => {
@@ -6368,6 +6627,7 @@ impl ResonaApp {
                                     )),
                             ),
                     )
+                    .child(self.render_updates(&entity))
             }
         };
         let card = if settings_page {
@@ -6518,6 +6778,11 @@ impl ResonaApp {
                                         entity.update(cx, |this, cx| {
                                             this.device_menu = None;
                                             this.modal = Some(Modal::About);
+                                            this.request(
+                                                "GetUpdateStatus",
+                                                json!({}),
+                                                Pending::Update("GetUpdateStatus"),
+                                            );
                                             if this.core_info.is_none() && this.core.is_some() {
                                                 this.request(
                                                     "GetCoreInfo",
@@ -6598,7 +6863,14 @@ impl ResonaApp {
                                         .child(if self.settings_discard {
                                             "放弃未应用的修改？".to_owned()
                                         } else {
-                                            self.settings_notice.clone()
+                                            if self.settings_notice.is_empty()
+                                                && self.preference_error.is_some()
+                                            {
+                                                "偏好处于保护状态，本次修改不保存；详情见诊断"
+                                                    .into()
+                                            } else {
+                                                self.settings_notice.clone()
+                                            }
                                         }),
                                 )
                                 .child(
@@ -6692,7 +6964,15 @@ impl ResonaApp {
     fn session_label(&self) -> String {
         match self.workspace.session.mode.as_str() {
             "preview" => "本地预览",
-            "connecting" => "正在连接",
+            "connecting" => {
+                return format!(
+                    "正在连接 · {}/3",
+                    self.workspace.session.connection_attempt.max(1)
+                );
+            }
+            "reconnecting" if self.workspace.session.connection_retry_slow => {
+                "恢复失败 · 自动重试中"
+            }
             "reconnecting" => "正在重连",
             "connected" => "在线",
             "disconnecting" => "正在断开",
@@ -6728,6 +7008,206 @@ impl ResonaApp {
             return "正在同步可见成员".into();
         }
         self.workspace.session.server_name.clone()
+    }
+
+    fn render_server_stage(&self, view: &Entity<Self>) -> Option<AnyElement> {
+        if self.selected_server != self.workspace.session.server_id {
+            return None;
+        }
+        let mode = self.workspace.session.mode.as_str();
+        let resource = self.resources_blocked();
+        if !resource && !matches!(mode, "connecting" | "reconnecting" | "failed") {
+            return None;
+        }
+        let failed_resource = resource && self.resource_state == ResourceState::Failed;
+        let failed_connection = mode == "failed";
+        let title = if resource {
+            if failed_resource {
+                "资源同步失败".into()
+            } else if self.resource_attempt == 0 {
+                "正在同步资源".into()
+            } else {
+                format!("正在同步资源 · {}/3", self.resource_attempt)
+            }
+        } else if mode == "connecting" {
+            format!(
+                "正在连接 · {}/3",
+                self.workspace.session.connection_attempt.max(1)
+            )
+        } else if mode == "reconnecting" {
+            if self.workspace.session.connection_retry_slow {
+                if self.workspace.session.connection_waiting {
+                    "连接恢复失败 · 等待自动重试".into()
+                } else {
+                    "正在恢复连接".into()
+                }
+            } else {
+                format!(
+                    "正在恢复连接 · {}/3",
+                    self.workspace.session.connection_attempt.max(1)
+                )
+            }
+        } else {
+            "连接失败".into()
+        };
+        let detail = if failed_connection && self.workspace.session.connection_attempt > 1 {
+            format!(
+                "已尝试 {} 次。{}",
+                self.workspace.session.connection_attempt,
+                self.status_detail()
+            )
+        } else if failed_resource {
+            self.resource_error.clone()
+        } else if resource {
+            String::new()
+        } else {
+            self.status_detail()
+        };
+        let mut controls = div().flex().flex_wrap().justify_center().gap_2();
+        if failed_resource {
+            let entity = view.clone();
+            controls = controls.child(
+                Button::new("retry-resources")
+                    .label("重试")
+                    .primary()
+                    .on_click(move |_, _, cx| {
+                        entity.update(cx, |this, cx| this.retry_resources(cx));
+                    }),
+            );
+        } else if failed_connection {
+            let entity = view.clone();
+            let id = self.workspace.session.server_id.clone();
+            controls = controls.child(
+                Button::new("retry-server-connection")
+                    .label("重新连接")
+                    .primary()
+                    .disabled(self.is_busy())
+                    .on_click(move |_, _, cx| {
+                        entity.update(cx, |this, cx| this.begin_connect(id.clone(), cx));
+                    }),
+            );
+            if let Some(profile) = self.selected_profile().cloned() {
+                let entity = view.clone();
+                controls = controls.child(
+                    Button::new("edit-failed-server")
+                        .label("编辑服务器")
+                        .ghost()
+                        .on_click(move |_, window, cx| {
+                            entity.update(cx, |this, cx| {
+                                this.open_server_form(Some(profile.clone()), window, cx);
+                                cx.notify();
+                            });
+                        }),
+                );
+            }
+            let entity = view.clone();
+            let id = self.workspace.session.server_id.clone();
+            controls = controls.child(
+                Button::new("retry-server-password")
+                    .label("重新输入密码")
+                    .ghost()
+                    .disabled(self.is_busy())
+                    .on_click(move |_, window, cx| {
+                        entity.update(cx, |this, cx| {
+                            this.open_password(id.clone(), window, cx);
+                            cx.notify();
+                        });
+                    }),
+            );
+        } else if mode == "reconnecting" {
+            let entity = view.clone();
+            controls = controls.child(
+                Button::new("retry-connection-now")
+                    .label("立即重试")
+                    .primary()
+                    .disabled(!self.workspace.session.connection_waiting || self.is_busy())
+                    .on_click(move |_, _, cx| {
+                        entity.update(cx, |this, cx| {
+                            this.request(
+                                "RetryConnection",
+                                json!({"sessionID":this.workspace.session.id}),
+                                Pending::Workspace("RetryConnection"),
+                            );
+                            cx.notify();
+                        });
+                    }),
+            );
+        }
+        let entity = view.clone();
+        controls = controls.child(
+            Button::new("exit-server-stage")
+                .label(if mode == "connecting" {
+                    "取消连接"
+                } else {
+                    "退出服务器"
+                })
+                .ghost()
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |this, cx| {
+                        this.request(
+                            "DisconnectServer",
+                            json!({}),
+                            Pending::Workspace("DisconnectServer"),
+                        );
+                        cx.notify();
+                    });
+                }),
+        );
+        Some(
+            div()
+                .id("server-stage")
+                .absolute()
+                .inset_0()
+                .occlude()
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_mouse_down(gpui::MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                .on_click(|_, _, cx| cx.stop_propagation())
+                .flex()
+                .items_start()
+                .justify_center()
+                .p_3()
+                .child(
+                    div()
+                        .w_full()
+                        .max_w(px(380.))
+                        .bg(rgb(PANEL))
+                        .border_1()
+                        .border_color(rgb(if failed_resource || failed_connection {
+                            RED
+                        } else {
+                            LINE
+                        }))
+                        .rounded(px(6.))
+                        .p_3()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(rgb(if failed_resource || failed_connection {
+                                    RED
+                                } else {
+                                    MUTED
+                                }))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_center()
+                                .child(title),
+                        )
+                        .when(!detail.is_empty(), |body| {
+                            body.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(MUTED))
+                                    .text_center()
+                                    .child(detail),
+                            )
+                        })
+                        .child(controls),
+                )
+                .into_any_element(),
+        )
     }
 }
 
@@ -6869,6 +7349,22 @@ impl Render for ResonaApp {
             .bg(rgb(BG))
             .flex()
             .flex_col()
+            .when(self.preference_error.is_some(), |root| {
+                root.child(
+                    div()
+                        .w_full()
+                        .flex_shrink_0()
+                        .px_3()
+                        .py_2()
+                        .border_b_1()
+                        .border_color(rgb(LINE))
+                        .text_xs()
+                        .text_color(rgb(AMBER))
+                        .child(
+                            "偏好未加载或未保存，本次修改不保存；请在设置 → 诊断查看并修复后重启。",
+                        ),
+                )
+            })
             .child(
                 div()
                     .flex_1()
@@ -6880,6 +7376,7 @@ impl Render for ResonaApp {
                         div()
                             .flex_1()
                             .min_w_0()
+                            .relative()
                             .flex()
                             .flex_col()
                             .child(
@@ -6896,31 +7393,13 @@ impl Render for ResonaApp {
                             .when_some(
                                 visible_text_channel(&self.workspace, &self.selected_server),
                                 |body, channel| body.child(self.render_chat(channel, &view)),
-                            ),
+                            )
+                            .when_some(self.render_server_stage(&view), |body, stage| {
+                                body.child(stage)
+                            }),
                     ),
             )
             .child(self.render_voicebar(&view))
-            .when(
-                self.resources_syncing && self.workspace.connected(),
-                |root| {
-                    root.child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .right_0()
-                            .bottom(px(72.))
-                            .bg(rgba(0x08090bdd))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
-                                cx.stop_propagation()
-                            })
-                            .child("正在同步当前资源"),
-                    )
-                },
-            )
             .when(!display_error.is_empty() && self.modal.is_none(), |root| {
                 let entity = view.clone();
                 root.child(
@@ -6983,6 +7462,36 @@ impl Render for ResonaApp {
                 root.child(gpui_component::TitleBar::new().bg(rgb(PANEL)).border_b_0())
             })
             .child(content)
+    }
+}
+
+fn notification_applies(workspace: &Workspace, notification: &crate::model::Notification) -> bool {
+    match notification.kind.as_str() {
+        "connected" => workspace.connected(),
+        "disconnected" => true,
+        "member_joined" | "member_left" => {
+            workspace.connected() && notification.channel_id == workspace.session.channel_id
+        }
+        _ => false,
+    }
+}
+
+fn resource_session_matches(workspace: &Workspace, session: &str) -> bool {
+    if session.is_empty() {
+        !workspace.connected()
+    } else {
+        workspace.connected() && workspace.session.id == session
+    }
+}
+
+fn next_resource_state(current: ResourceState, state: &str) -> ResourceState {
+    match state {
+        "syncing" => ResourceState::Syncing,
+        "ready" => ResourceState::Ready,
+        "failed" => ResourceState::Failed,
+        "refreshing" if current == ResourceState::Syncing => current,
+        "refreshing" => ResourceState::Refreshing,
+        _ => ResourceState::Idle,
     }
 }
 
@@ -7503,6 +8012,49 @@ fn ordered_channels(channels: &[crate::model::Channel]) -> Vec<(crate::model::Ch
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn resource_refresh_is_silent_until_failure_and_scoped_to_session() {
+        use super::{ResourceState, next_resource_state, resource_session_matches};
+        assert!(!ResourceState::Ready.blocks());
+        assert!(!next_resource_state(ResourceState::Ready, "refreshing").blocks());
+        assert!(next_resource_state(ResourceState::Syncing, "refreshing").blocks());
+        assert!(next_resource_state(ResourceState::Refreshing, "failed").blocks());
+        assert!(next_resource_state(ResourceState::Failed, "syncing").blocks());
+        assert!(!next_resource_state(ResourceState::Syncing, "ready").blocks());
+        let mut workspace = Workspace::default();
+        workspace.session.mode = "connected".into();
+        workspace.session.id = "new".into();
+        assert!(resource_session_matches(&workspace, "new"));
+        assert!(!resource_session_matches(&workspace, "old"));
+        assert!(!resource_session_matches(&workspace, ""));
+        workspace.session.mode = "reconnecting".into();
+        assert!(!resource_session_matches(&workspace, "new"));
+    }
+    #[test]
+    fn silent_refresh_preserves_real_member_notifications_from_core() {
+        let mut workspace = Workspace::default();
+        workspace.session.mode = "connected".into();
+        workspace.session.channel_id = "current".into();
+        let mut notification = crate::model::Notification {
+            kind: "connected".into(),
+            channel_id: "current".into(),
+            ..Default::default()
+        };
+        assert!(super::notification_applies(&workspace, &notification));
+        for kind in ["member_joined", "member_left"] {
+            notification.kind = kind.into();
+            assert!(super::notification_applies(&workspace, &notification));
+            notification.channel_id = "other".into();
+            assert!(!super::notification_applies(&workspace, &notification));
+            notification.channel_id = "current".into();
+        }
+        workspace.session.mode = "offline".into();
+        notification.kind = "connected".into();
+        assert!(!super::notification_applies(&workspace, &notification));
+        notification.kind = "disconnected".into();
+        assert!(super::notification_applies(&workspace, &notification));
+    }
+
     #[test]
     fn viewed_server_and_details_determine_resource_scope() {
         let mut workspace = Workspace::default();

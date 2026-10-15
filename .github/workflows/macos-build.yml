@@ -126,6 +126,8 @@ jobs:
       - name: Build app bundle
         env:
           RESONA_BUILD_VERSION: ${{ steps.version.outputs.version }}
+          RESONA_UPDATE_URL: ${{ vars.RESONA_UPDATE_URL }}
+          RESONA_UPDATE_PUBLIC_KEY: ${{ vars.RESONA_UPDATE_PUBLIC_KEY }}
         run: make build-desktop VERSION="$RESONA_BUILD_VERSION"
       - name: Verify WebRTC processors with packaged library
         run: |
