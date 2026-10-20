@@ -99,6 +99,10 @@ try {
         throw "WebRTC requires a short build path without spaces. Pass -NativeTargetDirectory with a writable path such as C:\resona-3a (at most 30 characters): $ApmTarget"
     }
     $env:CARGO_TARGET_DIR = $ApmTarget
+    if (-not $env:RNNOISE_SOURCE) {
+        $env:RNNOISE_SOURCE = ($RepoDirectory + "/build/native/rnnoise").Replace('\', '/')
+    }
+    Invoke-Checked bash @("native/rnnoise/prepare.sh")
     Invoke-Checked cargo @("test", "--locked", "--release", "--manifest-path", "native/webrtc-apm/Cargo.toml")
     Invoke-Checked cargo @("build", "--locked", "--release", "--manifest-path", "native/webrtc-apm/Cargo.toml")
     $Apm = Join-Path $env:CARGO_TARGET_DIR "release\resona_webrtc_apm.dll"
@@ -111,7 +115,7 @@ try {
     $BuildPath = $env:Path
     try {
         $env:Path = "$env:WINDIR\System32;$env:WINDIR"
-        Invoke-Checked $SmokeBinary @("-test.run", "^TestOptionalWebRTCProcessors$", "-test.v")
+        Invoke-Checked $SmokeBinary @("-test.run", "^TestOptional(WebRTC|RNNoise)Processors$", "-test.v")
     } finally {
         $env:Path = $BuildPath
         Remove-Item $SmokeBinary -ErrorAction SilentlyContinue

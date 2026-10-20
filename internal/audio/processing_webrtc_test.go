@@ -3,6 +3,7 @@
 package audio
 
 import (
+	"context"
 	"math"
 	"testing"
 )
@@ -14,6 +15,52 @@ func TestMissingWebRTCLibraryRejectsSelection(t *testing.T) {
 	}
 	if err := validateProcessor("preprocess", "aec", ProcessorSpec{Name: "aec", Backend: "webrtc"}); err == nil {
 		t.Fatal("accepted WebRTC selection without its native library")
+	}
+	if rnnoiseAvailable() {
+		t.Fatal("RNNoise available without a library")
+	}
+	if err := validateProcessor("preprocess", "ans", ProcessorSpec{Name: "ans", Backend: "rnnoise"}); err == nil {
+		t.Fatal("accepted RNNoise without its native library")
+	}
+}
+
+func TestOptionalRNNoiseProcessors(t *testing.T) {
+	if !rnnoiseAvailable() {
+		t.Skip("packaged RNNoise library is not installed beside the test binary")
+	}
+	spec := ProcessorSpec{Name: "ans", Backend: "rnnoise"}
+	if err := validateProcessor("preprocess", "ans", spec); err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []ProcessorSpec{
+		{Name: "aec", Backend: "rnnoise"},
+		{Name: "agc", Backend: "rnnoise"},
+		{Name: "ans", Backend: "rnnoise", Params: ProcessorParams{Level: 2}},
+	} {
+		if err := validateProcessor("preprocess", invalid.Name, invalid); err == nil {
+			t.Fatalf("invalid RNNoise selection accepted: %+v", invalid)
+		}
+	}
+	devices := &fakeDeviceFactory{}
+	e := newWithFactory(&fakeTransport{codec: CodecOpusVoice}, nil, devices)
+	defer e.Close()
+	config := VoiceConfig{Enabled: true, Muted: true, Volume: 100}
+	if err := e.Configure(context.Background(), config); err != nil {
+		t.Fatal(err)
+	}
+	first := e.run
+	for _, backend := range []string{"rnnoise", "speex", "none", "rnnoise"} {
+		config.Processing.Preprocess[1] = ProcessorSpec{Name: "ans", Backend: backend}
+		if err := e.Configure(context.Background(), config); err != nil {
+			t.Fatal(err)
+		}
+		if e.run != first || len(devices.opens) != 1 || !e.Status().Config.Muted {
+			t.Fatal("switching ANS reopened devices or unmuted the microphone")
+		}
+	}
+	config.Processing.Preprocess[1].Params.Level = 3
+	if err := e.Configure(context.Background(), config); err == nil || e.Status().Config.Processing.Preprocess[1] != spec {
+		t.Fatal("invalid RNNoise parameters changed the applied chain")
 	}
 }
 

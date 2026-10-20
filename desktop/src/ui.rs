@@ -5469,6 +5469,12 @@ impl ResonaApp {
                     format!("{}（当前不可用）", selected.backend)
                 }
             });
+        let selected_description = options
+            .iter()
+            .find(|option| option.id == selected.backend)
+            .map(|option| option.description.clone())
+            .unwrap_or_else(|| "此处理器当前不可用，请在诊断页重新探测 Core。".into());
+        let selected_backend = selected.backend.clone();
         let entity = view.clone();
         div()
             .flex()
@@ -5502,36 +5508,51 @@ impl ResonaApp {
             .child(
                 Button::new(id)
                     .label(selected_label)
+                    .tooltip(selected_description)
                     .icon(IconName::ChevronDown)
                     .disabled(disabled || options.is_empty())
                     .dropdown_menu(move |mut menu, _, _| {
                         for option in &options {
                             let entity = entity.clone();
                             let backend = option.id.clone();
+                            let label = option.display_name.clone();
+                            let description = option.description.clone();
+                            let item_id = SharedString::from(format!("{id}-{}", option.id));
                             menu = menu.item(
-                                PopupMenuItem::new(option.display_name.clone()).on_click(
-                                    move |_, _, cx| {
-                                        entity.update(cx, |this, cx| {
-                                            if this.settings_apply.is_some()
-                                                || this.settings_draft.is_none()
-                                            {
-                                                return;
+                                PopupMenuItem::element(move |_, _| {
+                                    div()
+                                        .id(item_id.clone())
+                                        .w_full()
+                                        .tooltip({
+                                            let description = description.clone();
+                                            move |window, cx| {
+                                                Tooltip::new(description.clone()).build(window, cx)
                                             }
-                                            this.update_audio_preferences(
-                                                |p| {
-                                                    let spec = if receive {
-                                                        &mut p.processing.postprocess[index]
-                                                    } else {
-                                                        &mut p.processing.preprocess[index]
-                                                    };
-                                                    spec.backend = backend.clone();
-                                                    spec.params = Default::default();
-                                                },
-                                                cx,
-                                            );
-                                        });
-                                    },
-                                ),
+                                        })
+                                        .child(label.clone())
+                                })
+                                .checked(option.id == selected_backend)
+                                .on_click(move |_, _, cx| {
+                                    entity.update(cx, |this, cx| {
+                                        if this.settings_apply.is_some()
+                                            || this.settings_draft.is_none()
+                                        {
+                                            return;
+                                        }
+                                        this.update_audio_preferences(
+                                            |p| {
+                                                let spec = if receive {
+                                                    &mut p.processing.postprocess[index]
+                                                } else {
+                                                    &mut p.processing.preprocess[index]
+                                                };
+                                                spec.backend = backend.clone();
+                                                spec.params = Default::default();
+                                            },
+                                            cx,
+                                        );
+                                    });
+                                }),
                             );
                         }
                         menu

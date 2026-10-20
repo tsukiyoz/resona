@@ -1,9 +1,11 @@
-# Optional WebRTC audio backend
+# Native WebRTC and RNNoise audio backend
 
 `libresona_webrtc_apm` supplies AEC3 and WebRTC NS on microphone input, plus a
 separate AGC2 state for each decoded voice member. The Core loads the library
 on demand through a versioned C ABI. The desktop never receives PCM through
-IPC. All three backends remain disabled by default.
+IPC. The same library includes the optional RNNoise standard-model ANS (ABI 2,
+kind 4); source/model preparation and provenance are in `../rnnoise/README.md`.
+New preferences use WebRTC AGC2; existing preferences remain unchanged.
 
 The integration uses `webrtc-audio-processing =2.1.0` with its bundled C++
 WebRTC APM source. `test/audio3a` validated that dependency before production

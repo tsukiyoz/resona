@@ -93,3 +93,25 @@ VoIP、complexity 5、32/48kbit/s）串联发送 ANS 和独立接收 AGC2；Spee
 三阶段音频保留真实增益，统一防削波余量，不逐条响度匹配。
 详见 `test/audio3a/VERIFICATION.md`。链路听感、Windows/Linux 新版 CI、
 设备采集和游戏等价负载仍待验收，尚未把 RNNoise 接入产品或改默认值。
+
+随后收到 Windows 两模型各 90 行结果：完整链折算单核 CPU 中位 little 2.26%、
+regular 4.17%，关闭/Speex 对照的音频指标一致；硬件、输入哈希和运行时版本
+尚缺 metadata 核验。维护者完成 32kbit/s 键盘和背景交谈的具名链路试听：
+两模型均几乎消除键盘声，regular 主观似乎略好；背景交谈下 little 人声扭曲，
+regular 人声相对更正常，Speex 仍保留交谈噪声。此结果再次支持 regular 作为
+音质优先候选、little 作为低开销候选，而非仅按停顿 RMS 或 CPU 选默认值。
+尚需音量阶跃与轻声完整性、增益适应以及真实游戏负载验收，不宣称 regular
+无失真或能可靠分离目标说话人。本次仅记录验证反馈，未修改产品默认值。
+
+### RNNoise 产品接入（2026-10-21）
+
+结合上述 Windows 链路试听，产品先提供 RNNoise regular（标准模型）作为发送
+ANS 可选项，保留 Speex 及已有 WebRTC 实现与默认偏好。使用与验证工具相同的
+上游提交和模型哈希，见 `native/rnnoise/README.md`。算法说明来自 Core 元数据，
+设置的选项和当前选择均提供悬浮说明；RNNoise 不显示无效的强度参数。
+
+本机通过 Core 全量测试、音频/客户端/IPC 竞态测试、47 项桌面测试、2 项原生
+处理器测试、`make lint` 及签名 macOS 打包。原生界面离线检查确认 ANS 菜单
+存在 RNNoise、选择后隐藏强度、应用前仍为草稿，取消不会保存。自动化工具
+未能可靠模拟菜单悬停，实际悬浮显示仍需人工复核；Windows 产品构建与多人
+游戏负载仍待 CI 和维护者验收，不能用这些本机检查替代游戏帧时间测量。

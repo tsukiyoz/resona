@@ -32,7 +32,7 @@ func ProcessorOptions() []ProcessorOption {
 		phase, name, speex, webRTC, speexDesc, webRTCDesc string
 	}{
 		{"preprocess", "aec", "SpeexDSP", "WebRTC AEC3", "轻量回声消除，适合日常语音。", "更复杂的回声消除，资源开销通常较高。"},
-		{"preprocess", "ans", "SpeexDSP", "WebRTC NS", "轻量背景噪声抑制。", "WebRTC 背景噪声抑制，提供更细的强度调节。"},
+		{"preprocess", "ans", "SpeexDSP", "WebRTC NS", "轻量降噪，适合风扇、空调等稳定噪声；可能保留键盘声。", "传统降噪，可调强度；较强时可能影响音色。"},
 		{"postprocess", "agc", "SpeexDSP", "WebRTC AGC2", "对每位成员独立均衡收听响度。", "对每位成员独立均衡收听响度，可调目标余量。"},
 	}
 	options := make([]ProcessorOption, 0, len(slots)*3)
@@ -44,6 +44,9 @@ func ProcessorOptions() []ProcessorOption {
 		}
 		if webRTC {
 			options = append(options, ProcessorOption{slot.phase, slot.name, "webrtc", slot.webRTC, slot.webRTCDesc})
+		}
+		if slot.name == "ans" && rnnoiseAvailable() {
+			options = append(options, ProcessorOption{slot.phase, slot.name, "rnnoise", "RNNoise（标准模型）", "神经网络降噪，适合键盘等复杂噪声；比 Speex 更耗 CPU，可能改变部分音色。"})
 		}
 	}
 	return options
@@ -118,6 +121,15 @@ func validateProcessor(phase, expected string, spec ProcessorSpec) error {
 		return nil
 	}
 	p := spec.Params
+	if spec.Backend == "rnnoise" {
+		if phase != "preprocess" || expected != "ans" || p != (ProcessorParams{}) {
+			return errors.New("RNNoise 仅支持麦克风降噪，不接受其他处理参数")
+		}
+		if !rnnoiseAvailable() {
+			return errors.New("RNNoise 不可用，请安装匹配的原生音频库")
+		}
+		return nil
+	}
 	if spec.Backend == "webrtc" {
 		if !AvailableWebRTC() {
 			return fmt.Errorf("%s/WebRTC 处理器不可用，请安装匹配的音频库", expected)

@@ -8,6 +8,8 @@ const speexAvailable = false
 
 func webRtcAvailable() bool { return false }
 
+func rnnoiseAvailable() bool { return false }
+
 func newPlaybackProcessor() (speechProcessor, error) {
 	return nil, errors.New("收听自动增益需要启用 cgo 的构建")
 }

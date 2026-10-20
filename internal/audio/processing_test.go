@@ -54,5 +54,8 @@ func TestProcessorOptionsMatchAvailableBackends(t *testing.T) {
 		if !found["none"] || found["speex"] != speexAvailable || found["webrtc"] != AvailableWebRTC() {
 			t.Fatalf("wrong available options for %s/%s: %v", slot.phase, slot.name, found)
 		}
+		if found["rnnoise"] != (slot.name == "ans" && rnnoiseAvailable()) {
+			t.Fatalf("RNNoise offered in wrong slot: %s/%s: %v", slot.phase, slot.name, found)
+		}
 	}
 }

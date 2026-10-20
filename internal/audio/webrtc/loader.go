@@ -49,7 +49,7 @@ static resona_stage *resona_stage_open(const char *path, uint32_t kind, int32_t 
     new_fn create = (new_fn)resona_symbol(lib, "resona_apm_new");
     process_fn process = (process_fn)resona_symbol(lib, "resona_apm_process");
     free_fn release = (free_fn)resona_symbol(lib, "resona_apm_free");
-    if (!version || version() != 1 || !create || !process || !release) {
+    if (!version || (version() != 1 && version() != 2) || !create || !process || !release || (kind == 4 && version() < 2)) {
         snprintf(error, size, "incompatible WebRTC audio library");
         resona_unload(lib);
         return NULL;
@@ -69,6 +69,15 @@ static resona_stage *resona_stage_open(const char *path, uint32_t kind, int32_t 
     }
     *stage = (resona_stage){lib, instance, process, release};
     return stage;
+}
+
+static int resona_has_rnnoise(const char *path) {
+    resona_library lib = resona_open(path);
+    if (!lib) return 0;
+    version_fn version = (version_fn)resona_symbol(lib, "resona_apm_abi_version");
+    int available = version && version() == 2;
+    resona_unload(lib);
+    return available;
 }
 
 static int32_t resona_stage_process(resona_stage *stage, float *samples, const float *reference) {
@@ -122,6 +131,16 @@ func Available() bool {
 	}
 	info, err := os.Stat(path)
 	return err == nil && info.Mode().IsRegular()
+}
+
+func RNNoiseAvailable() bool {
+	path := libraryPath()
+	if path == "" {
+		return false
+	}
+	name := C.CString(path)
+	defer C.free(unsafe.Pointer(name))
+	return C.resona_has_rnnoise(name) != 0
 }
 
 // New loads a backend only when selected. A Stage is owned by one audio worker.

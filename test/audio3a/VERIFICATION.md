@@ -242,10 +242,47 @@ stage listening pack uses common scene headroom across both models/rates,
 without individual loudness matching. It contains 100 finite 18s WAVs and full
 attribution; summary has 40 rows. Local outputs (ignored):
 `build/audio3a/reports/chain-{regular,little,summary}/` and
-`chain-little-keyboard-recheck/`. Human chain listening remains pending.
+`chain-little-keyboard-recheck/`. Initial human chain feedback is recorded below;
+other scenes and 48kbit/s listening remain pending.
 
 Manual Windows/Linux Actions now build the Go tools, verify independent state,
 run the identical chain fixture and upload tools, raw stages and reports.
 `package/run-chain.ps1` reruns both models sequentially on the user's PC, without
 a compiler, network or audio permission. New platform results and real-device/
 gaming validation remain pending until those runs actually succeed.
+
+### User-supplied Windows results and 32kbit/s listening
+
+Received 90 rows for each model: five scenes, three ANS choices, two bitrates,
+three repeats, 900 measured packets per row. Case keys match. Off/Speex controls
+have identical ANS/decoded/received level metrics, payload rates and AGC activity
+across model runs. The submitted files do not include metadata manifests, so
+input hashes, runtime versions and hardware are not independently verified here.
+
+- Median full-chain CPU: off 1.13%, Speex 1.30% (little build) / 1.39% (regular
+  build), RNNoise little 2.26%, regular 4.17%, normalized to one real-time core.
+  Little costs about 46% less than regular for this complete harness chain.
+- RNNoise mean-frame-time medians: little 444us, regular 828us. Largest recorded
+  frame across both submissions: 2.512ms. Controls' p99 values cluster near
+  1.5ms; the common timing pattern is unexplained and not used to rank models.
+- Neither RNNoise model reaches full scale; no stage exceeds full scale in
+  either submission. Off/Speex controls each have three full-scale samples per
+  model run, counted across repeated outputs rather than distinct audible events.
+
+The maintainer then listened to the named 32kbit/s keyboard and babble chain
+outputs. This is an informal, unblinded comparison, not a MOS study:
+
+- Keyboard: bypass retains keyboard noise; Speex does not adequately suppress
+  it in either build. Both RNNoise models almost remove it. Regular subjectively
+  seems slightly better than little; that tentative preference is preserved.
+- Babble: little suppresses the background but distorts the desired voice.
+  Regular also suppresses the background and the desired voice sounds more
+  normal than little. Speex may reduce some background, but conversation remains.
+  This does not establish that regular is distortion-free or separates speakers.
+
+The chain feedback reinforces regular as the quality-first candidate and little
+as the lower-cost alternative. It also shows why lower pause RMS alone cannot
+choose the better-sounding model. Product defaults remain unchanged. Next listen
+to level steps and soft input for initial audibility, speech completeness and
+AGC pumping; compare ANS/decoded/AGC2 stages if artifacts need localization.
+Real capture, memory and in-game workload qualification remain open.
