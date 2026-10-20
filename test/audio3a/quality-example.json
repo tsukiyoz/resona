@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "seed": 20261020,
+  "warmup_ms": 1000,
+  "duration_ms": 9000,
+  "repeats": 3,
+  "scenes": [
+    {
+      "name": "voices-pink-5db",
+      "clean": "clean.wav",
+      "noise": "noise.wav",
+      "provenance": "VOiCES Lab41/SRI source sp0307-ch127535-sg0042 (CC BY 4.0), 16k resampled to 48k and repeated twice with pauses; synthetic seeded FFmpeg pink noise. See ATTRIBUTION.md. English single-speaker smoke only.",
+      "snr_db": 5,
+      "speech_ms": [[0, 3400], [4400, 7800]]
+    },
+    {
+      "name": "voices-pink-15db",
+      "clean": "clean.wav",
+      "noise": "noise.wav",
+      "provenance": "Same VOiCES human speech and synthetic pink noise as 5dB scene; only SNR differs. See ATTRIBUTION.md.",
+      "snr_db": 15,
+      "speech_ms": [[0, 3400], [4400, 7800]]
+    }
+  ]
+}

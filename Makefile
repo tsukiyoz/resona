@@ -6,7 +6,7 @@ GOEXE = $(shell go env GOEXE)
 CORE_BINARY = $(CURDIR)/build/bin/resona-core$(GOEXE)
 GOFUMPT ?= go run mvdan.cc/gofumpt@v0.10.0
 STATICCHECK ?= go run honnef.co/go/tools/cmd/staticcheck@v0.8.1
-GO_MODULES := . test/controlcodec test/opuscodec
+GO_MODULES := . test/controlcodec test/opuscodec test/audio3a/chain
 
 # Cleaning and building in the same invocation can race under make -j.
 ifneq ($(filter clean clean-all,$(MAKECMDGOALS)),)
@@ -35,7 +35,7 @@ help:
 	@echo 'make test-build     Check cleanup boundaries in a temporary directory'
 	@echo 'make test-deploy    Check deployment scripts without a real server'
 	@echo 'make format         Format Go (gofumpt v0.10.0) and Rust sources'
-	@echo 'make lint           Run go vet and Staticcheck for all three Go modules'
+	@echo 'make lint           Run go vet and Staticcheck for all Go modules'
 	@echo 'VERSION=vX.Y.Z      Override Go metadata (default: v + root VERSION file)'
 	@echo 'Windows desktop: use build-windows.cmd (MSVC + UCRT64 setup)'
 
