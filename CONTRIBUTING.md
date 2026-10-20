@@ -4,7 +4,7 @@
 
 `main` is the integration and release baseline. Start short-lived branches from
 the latest main using `feature/tsukiyo/{module}-{YYYYMMDD}_{task}` or
-`fix/tsukiyo/{module}-{YYYYMMDD}_{task}` as specified in AGENTS.md. Keep each branch
+`fix/tsukiyo/{module}-{YYYYMMDD}_{task}`. Keep each branch
 focused on a reviewable change. Do not maintain a permanent develop or release
 branch while only one release line is supported.
 

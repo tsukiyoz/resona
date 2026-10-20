@@ -104,6 +104,7 @@ clean-all: clean
 
 test-build:
 	sh tools/test-build-toolchain.sh
+	sh tools/test-macos-signing.sh
 
 test-deploy:
 	go test ./deploy

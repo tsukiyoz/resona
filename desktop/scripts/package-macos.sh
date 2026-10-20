@@ -11,12 +11,7 @@ fi
 core_binary=${RESONA_CORE_BINARY:-"$repo_dir/build/bin/resona-core"}
 bundle_dir=${RESONA_BUNDLE_DIR:-"$desktop_dir/dist/Resona.app"}
 profile=${RESONA_CARGO_PROFILE:-release}
-sign_identity=${RESONA_CODESIGN_IDENTITY:-}
-
-if [ "$sign_identity" = - ]; then
-  echo 'RESONA_CODESIGN_IDENTITY must be a certificate identity, not ad-hoc (-)' >&2
-  exit 1
-fi
+sign_identity=$(sh "$script_dir/macos-signing-identity.sh")
 
 case "$profile" in
   debug|release) ;;
