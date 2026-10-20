@@ -14,6 +14,8 @@ const speexAvailable = true
 
 func webRtcAvailable() bool { return webrtc.Available() }
 
+func rnnoiseAvailable() bool { return webrtc.RNNoiseAvailable() }
+
 func newPlaybackProcessor() (speechProcessor, error) {
 	return speexdsp.NewAGC(FrameSamples, SampleRate)
 }
@@ -45,13 +47,20 @@ func (p *webRTCProcessor) Process(samples, reference []float32) {
 	}
 	if code := p.stage.Process(samples, reference); code != 0 && !p.failed {
 		p.failed = true
-		slog.Warn("WebRTC 音频处理失败", "code", code)
+		slog.Warn("原生音频处理失败", "code", code)
 	}
 }
 
 func (p *webRTCProcessor) Close() { p.stage.Close() }
 
 func newProcessor(spec ProcessorSpec) (speechProcessor, error) {
+	if spec.Backend == "rnnoise" && spec.Name == "ans" {
+		stage, err := webrtc.New(4, 0, 0, 0)
+		if err != nil {
+			return nil, fmt.Errorf("RNNoise 初始化失败: %w", err)
+		}
+		return &webRTCProcessor{stage: stage}, nil
+	}
 	if spec.Backend == "webrtc" {
 		kind := uint32(1)
 		switch spec.Name {

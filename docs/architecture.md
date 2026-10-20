@@ -42,6 +42,12 @@
 
 ## 桌面状态
 
+2026-10-21：发送 ANS 增加上游 RNNoise regular 可选实现，保留 Speex 默认和
+已保存选择。与 WebRTC 共用已有原生音频动态库，C ABI 2 的 kind 4 按两个 10ms
+子帧处理；控制端准备、编码 worker 独占替换/销毁，不新增线程、PCM IPC 或后台
+下载。Core 按实际 ABI 提供选项及悬停说明；旧 ABI 1 不展示 RNNoise。
+源码/model 固定版本与集成证据见 native/rnnoise/README.md。
+
 本地偏好和书签使用独立的 `schema_version`（当前 1），无版本旧文件只在内存迁移，
 首次保存前备份原始字节。无法读取的偏好使用静音进入、3A 全关的只读恢复配置，
 界面提示并跳过退出保存；书签读取失败仍阻止 Core 启动。保存重新校验现存文件，

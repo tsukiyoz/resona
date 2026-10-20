@@ -97,6 +97,7 @@ fn webrtc(aec: bool, ns: bool, agc: bool) -> Result<Stage, String> {
         gain_controller: agc.then_some(GainController::GainController2(GainController2 {
             input_volume_controller_enabled: false,
             adaptive_digital: Some(AdaptiveDigital {
+                headroom_db: 5.0,
                 max_gain_db: 18.0,
                 initial_gain_db: 0.0,
                 ..Default::default()

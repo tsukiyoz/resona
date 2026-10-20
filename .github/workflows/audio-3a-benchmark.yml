@@ -11,7 +11,28 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  quality-input:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prepare shared human-speech smoke input
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          bash test/audio3a/prepare-quality-smoke.sh
+          python3 test/audio3a/quality-round2.py self-test
+          python3 test/audio3a/quality-round2.py prepare build/audio3a/quality-round2-input
+      - uses: actions/upload-artifact@v6
+        with:
+          name: audio-3a-quality-input-${{ github.sha }}
+          path: |
+            build/audio3a/quality-input/
+            build/audio3a/quality-round2-input/
+          retention-days: 14
+
   benchmark:
+    needs: quality-input
     strategy:
       fail-fast: false
       matrix:
@@ -31,6 +52,10 @@ jobs:
         shell: ${{ matrix.shell }}
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: test/audio3a/chain/go.mod
+          cache-dependency-path: test/audio3a/chain/go.sum
       - name: Checkout pinned RNNoise
         uses: actions/checkout@v5
         with:
@@ -71,6 +96,23 @@ jobs:
         run: bash test/audio3a/build.sh
       - name: Benchmark independent modules and chains
         run: bash test/audio3a/run-ci.sh
+      - uses: actions/download-artifact@v8
+        with:
+          name: audio-3a-quality-input-${{ github.sha }}
+          path: build/audio3a
+      - name: Screen human-speech quality with identical PCM across platforms
+        run: |
+          suffix=
+          if [[ "$(uname -s)" == MINGW* ]]; then suffix=.exe; fi
+          build/audio3a/package/resona-3a-bench$suffix quality build/audio3a/quality-input/manifest.json build/audio3a/reports/quality-regular
+          build/audio3a/package/resona-3a-bench-little$suffix quality build/audio3a/quality-input/manifest.json build/audio3a/reports/quality-little
+      - name: Verify sender ANS, product gopus and independent receiver AGC2
+        run: |
+          suffix=
+          if [[ "$(uname -s)" == MINGW* ]]; then suffix=.exe; fi
+          build/audio3a/package/resona-3a-bench$suffix chain-input build/audio3a/quality-round2-input/manifest.json build/audio3a/package/chain-input
+          build/audio3a/package/resona-chain-regular$suffix -input build/audio3a/package/chain-input/manifest.json -out build/audio3a/reports/chain-regular
+          build/audio3a/package/resona-chain-little$suffix -input build/audio3a/package/chain-input/manifest.json -out build/audio3a/reports/chain-little
       - name: Upload tools, reports and listening samples
         if: always()
         uses: actions/upload-artifact@v6

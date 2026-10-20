@@ -1,6 +1,7 @@
 """Collect the native audio dependency notices into a shipped package."""
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -16,6 +17,9 @@ def main() -> None:
         )
     )
     output.mkdir(parents=True, exist_ok=True)
+    rnnoise = Path(os.environ.get("RNNOISE_SOURCE", Path(__file__).resolve().parents[2] / "build/native/rnnoise"))
+    copy2(rnnoise / "COPYING", output / "RNNoise-COPYING")
+    copy2(rnnoise / "AUTHORS", output / "RNNoise-AUTHORS")
     for package in metadata["packages"]:
         source = Path(package["manifest_path"]).parent
         for file in source.iterdir():

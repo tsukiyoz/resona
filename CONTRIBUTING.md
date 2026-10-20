@@ -25,7 +25,7 @@ needed; never force-push shared main.
 - Core: `go test ./internal/...`; use `go test -race` for affected concurrency and
   lifecycle packages.
 - Go static analysis: `make lint` runs `go vet` and pinned Staticcheck v0.8.1
-  across the root module and both codec benchmark modules. An installed matching
+  across the root module and all Go benchmark modules. An installed matching
   version can be selected with `make lint STATICCHECK=staticcheck`.
   The first default run may download the tool.
 - Desktop: `cargo test --locked --manifest-path desktop/Cargo.toml`, native build

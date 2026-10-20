@@ -6,7 +6,7 @@ GOEXE = $(shell go env GOEXE)
 CORE_BINARY = $(CURDIR)/build/bin/resona-core$(GOEXE)
 GOFUMPT ?= go run mvdan.cc/gofumpt@v0.10.0
 STATICCHECK ?= go run honnef.co/go/tools/cmd/staticcheck@v0.8.1
-GO_MODULES := . test/controlcodec test/opuscodec
+GO_MODULES := . test/controlcodec test/opuscodec test/audio3a/chain
 
 # Cleaning and building in the same invocation can race under make -j.
 ifneq ($(filter clean clean-all,$(MAKECMDGOALS)),)
@@ -24,7 +24,7 @@ UPDATE_LDFLAGS = -X github.com/tsukiyoz/resona/internal/updates.ManifestURL=$(RE
 help:
 	@echo 'make / make build   Build core, native desktop and server'
 	@echo 'make build-core     Build the CGO audio core into build/bin/'
-	@echo 'make build-apm      Build optional WebRTC AEC3/NS/AGC2 library into build/bin/'
+	@echo 'make build-apm      Build native WebRTC and RNNoise audio library into build/bin/'
 	@echo 'make build-desktop  Build core and desktop (macOS: desktop/dist/Resona.app)'
 	@echo 'make build-server   Build the pure-Go server into build/bin/'
 	@echo 'make deploy         Generate a Linux server package in build/deploy/ (no upload)'
@@ -35,7 +35,7 @@ help:
 	@echo 'make test-build     Check cleanup boundaries in a temporary directory'
 	@echo 'make test-deploy    Check deployment scripts without a real server'
 	@echo 'make format         Format Go (gofumpt v0.10.0) and Rust sources'
-	@echo 'make lint           Run go vet and Staticcheck for all three Go modules'
+	@echo 'make lint           Run go vet and Staticcheck for all Go modules'
 	@echo 'VERSION=vX.Y.Z      Override Go metadata (default: v + root VERSION file)'
 	@echo 'Windows desktop: use build-windows.cmd (MSVC + UCRT64 setup)'
 
@@ -63,7 +63,7 @@ build: build-desktop build-server
 
 build-apm:
 	mkdir -p build/bin
-	PKG_CONFIG_LIBDIR=/nonexistent cargo build --locked --release --manifest-path native/webrtc-apm/Cargo.toml
+	bash -c 'source native/rnnoise/prepare.sh; PKG_CONFIG_LIBDIR=/nonexistent cargo build --locked --release --manifest-path native/webrtc-apm/Cargo.toml'
 ifeq ($(HOST_OS),Darwin)
 	cp native/webrtc-apm/target/release/libresona_webrtc_apm.dylib build/bin/
 	install_name_tool -id @rpath/libresona_webrtc_apm.dylib build/bin/libresona_webrtc_apm.dylib
@@ -112,7 +112,7 @@ test-deploy:
 test: test-build test-deploy
 	go test ./internal/...
 	cargo test --locked --manifest-path desktop/Cargo.toml
-	cargo test --locked --manifest-path native/webrtc-apm/Cargo.toml
+	bash -c 'source native/rnnoise/prepare.sh; cargo test --locked --manifest-path native/webrtc-apm/Cargo.toml'
 
 test-native:
 	go test -race ./internal/protocol ./internal/protocol/native ./internal/nativewire ./internal/nativeidentity ./internal/noiseudp ./internal/server ./internal/audio ./internal/client ./internal/desktopipc ./cmd/resona-core

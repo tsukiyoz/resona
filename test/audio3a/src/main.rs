@@ -1,8 +1,9 @@
 mod fixture;
 mod measure;
-mod processor;
+mod quality;
 
 use processor::Choice;
+use resona_3a_bench::processor;
 use std::{collections::BTreeMap, fmt::Write as _, fs, path::PathBuf};
 
 fn main() {
@@ -13,6 +14,12 @@ fn main() {
 }
 
 fn execute() -> Result<(), String> {
+    if std::env::args().nth(1).as_deref() == Some("chain-input") {
+        return quality::export_inputs(std::env::args().skip(2).collect());
+    }
+    if std::env::args().nth(1).as_deref() == Some("quality") {
+        return quality::execute(std::env::args().skip(2).collect());
+    }
     let mut seconds = 6usize;
     let mut warmup = 3usize;
     let mut repeats = 3usize;
@@ -25,7 +32,7 @@ fn execute() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--help" || arg == "-h" {
-            println!("resona-3a-bench [--seconds 6] [--warmup 3] [--repeats 3] [--out DIR] [--wavs]\n[--near speech-48k-mono.wav] [--far far-end-48k-mono.wav]\nDefault: all 13 presets. Custom: --aec off|speex|aec3 --ns off|speex|webrtc|rnnoise|nnnoiseless --agc off|speex|agc2\nInput WAVs must cover warmup + measured duration; no microphone/network is used.");
+            println!("resona-3a-bench [--seconds 6] [--warmup 3] [--repeats 3] [--out DIR] [--wavs]\n[--near speech-48k-mono.wav] [--far far-end-48k-mono.wav]\nDefault: all 13 presets. Custom: --aec off|speex|aec3 --ns off|speex|webrtc|rnnoise|nnnoiseless --agc off|speex|agc2\nInput WAVs must cover warmup + measured duration; no microphone/network is used.\nReal speech evaluation: resona-3a-bench quality MANIFEST.json OUTPUT_DIR\nExport identical mixed float PCM for the Go codec chain: resona-3a-bench chain-input MANIFEST.json NEW_OUTPUT_DIR");
             return Ok(());
         }
         if arg == "--wavs" {
