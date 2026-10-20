@@ -36,6 +36,8 @@ var (
 )
 
 type RemoteState struct {
+	ChatState                string
+	ChatEpoch                uint32
 	ServerName               string
 	ChannelID                string
 	SelfID                   string
@@ -57,6 +59,32 @@ type RemoteState struct {
 	Error     string
 	Closed    bool
 	Retryable bool
+}
+
+// Setup snapshots coalesce presentation state, but message deltas must survive
+// until admission. Channel changes discard the previous channel's buffered text.
+func mergeSetupState(previous, next RemoteState) RemoteState {
+	if previous.Closed {
+		return previous
+	}
+	if previous.ChannelID == next.ChannelID && !next.Closed {
+		next.Messages = append(previous.Messages, next.Messages...)
+	}
+	bytes := 0
+	start := len(next.Messages)
+	for start > 0 && len(next.Messages)-start < maxMessages {
+		message := next.Messages[start-1]
+		size := len(message.Text) + len(message.Author)
+		if bytes+size > maxMessageBytes {
+			break
+		}
+		bytes += size
+		start--
+	}
+	if start > 0 {
+		next.Messages = append([]RemoteMessage(nil), next.Messages[start:]...)
+	}
+	return next
 }
 
 func (s *Service) ConnectServer(id, password string) (Workspace, error) {
@@ -152,9 +180,7 @@ func (s *Service) connect(ctx context.Context, connector RemoteConnector, profil
 			setupMu.Lock()
 			defer setupMu.Unlock()
 			if !ready {
-				if !latest.Closed {
-					latest = state
-				}
+				latest = mergeSetupState(latest, state)
 				return
 			}
 			s.applyRemoteState(attemptGeneration, state)
@@ -315,6 +341,8 @@ func (s *Service) applyRemoteState(generation uint64, remote RemoteState) {
 	s.state.Session.CanConfigureChannelAudio = remote.CanConfigureChannelAudio
 	s.state.Session.MemberSyncState = remote.MemberSyncState
 	s.state.Session.MemberSyncError = remote.MemberSyncError
+	s.state.Session.ChatState = remote.ChatState
+	s.state.Session.ChatEpoch = remote.ChatEpoch
 	if remote.Error != "" {
 		s.state.Session.Error = remote.Error
 	}

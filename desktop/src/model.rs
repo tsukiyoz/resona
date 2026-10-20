@@ -22,6 +22,8 @@ impl ServerProfile {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Session {
+    pub chat_state: String,
+    pub chat_epoch: u32,
     pub protocol: String,
     pub id: String,
     #[serde(rename = "sendingMessageID")]
@@ -100,6 +102,7 @@ fn default_playback_volume() -> u16 {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Message {
+    pub history: bool,
     pub id: String,
     #[serde(rename = "channelID")]
     pub channel_id: String,

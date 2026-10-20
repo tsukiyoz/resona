@@ -59,8 +59,8 @@ func marshalBody(kind uint8, value any) (proto.Message, error) {
 		}
 		return s, nil
 	case Command:
-		if kind == MoveKind || kind == ChatKind || kind == VoiceStateKind {
-			return &pb.Command{Channel: uint32(v.Channel), Text: v.Text, Muted: v.Muted, Deafened: v.Deafened}, nil
+		if kind == MoveKind || kind == ChatKind || kind == VoiceStateKind || kind == ChatSyncKind {
+			return &pb.Command{Channel: uint32(v.Channel), Text: v.Text, Muted: v.Muted, Deafened: v.Deafened, MessageId: v.MessageID}, nil
 		}
 	case Reply:
 		if kind == ReplyKind {
@@ -68,7 +68,11 @@ func marshalBody(kind uint8, value any) (proto.Message, error) {
 		}
 	case Message:
 		if kind == MessageKind {
-			return &pb.Message{Channel: uint32(v.Channel), Sender: uint32(v.Sender), Nickname: v.Nickname, Text: v.Text}, nil
+			return &pb.Message{Channel: uint32(v.Channel), Sender: uint32(v.Sender), Nickname: v.Nickname, Text: v.Text, Sequence: v.Sequence, Timestamp: v.Timestamp, AuthorUid: v.AuthorUID, ClientId: v.ClientID, Self: v.Self, Epoch: v.Epoch, History: v.History}, nil
+		}
+	case ChatStatus:
+		if kind == ChatStatusKind {
+			return &pb.ChatStatus{Channel: uint32(v.Channel), Epoch: v.Epoch, Generation: v.Generation, Status: uint32(v.Status)}, nil
 		}
 	}
 	return nil, ErrPacket
@@ -140,7 +144,7 @@ func decodeBody(f Frame, value any) error {
 		}
 		*out = ClaimOwner{Token: v.Token}
 	case *Command:
-		if out == nil || (f.Kind != MoveKind && f.Kind != ChatKind && f.Kind != VoiceStateKind) {
+		if out == nil || (f.Kind != MoveKind && f.Kind != ChatKind && f.Kind != VoiceStateKind && f.Kind != ChatSyncKind) {
 			return ErrPacket
 		}
 		var v pb.Command
@@ -150,7 +154,7 @@ func decodeBody(f Frame, value any) error {
 		if v.Channel > math.MaxUint16 {
 			return ErrPacket
 		}
-		*out = Command{Channel: uint16(v.Channel), Text: v.Text, Muted: v.Muted, Deafened: v.Deafened}
+		*out = Command{Channel: uint16(v.Channel), Text: v.Text, Muted: v.Muted, Deafened: v.Deafened, MessageID: v.MessageId}
 	case *Reply:
 		if out == nil || f.Kind != ReplyKind {
 			return ErrPacket
@@ -174,7 +178,19 @@ func decodeBody(f Frame, value any) error {
 		if v.Channel > math.MaxUint16 || v.Sender > math.MaxUint16 {
 			return ErrPacket
 		}
-		*out = Message{Channel: uint16(v.Channel), Sender: uint16(v.Sender), Nickname: v.Nickname, Text: v.Text}
+		*out = Message{Channel: uint16(v.Channel), Sender: uint16(v.Sender), Nickname: v.Nickname, Text: v.Text, Sequence: v.Sequence, Timestamp: v.Timestamp, AuthorUID: v.AuthorUid, ClientID: v.ClientId, Self: v.Self, Epoch: v.Epoch, History: v.History}
+	case *ChatStatus:
+		if out == nil || f.Kind != ChatStatusKind {
+			return ErrPacket
+		}
+		var v pb.ChatStatus
+		if err := unmarshal.Unmarshal(f.Body, &v); err != nil {
+			return err
+		}
+		if v.Channel == 0 || v.Channel > math.MaxUint16 || v.Epoch == 0 || v.Generation == 0 || v.Status > 2 {
+			return ErrPacket
+		}
+		*out = ChatStatus{Channel: uint16(v.Channel), Epoch: v.Epoch, Generation: v.Generation, Status: uint8(v.Status)}
 	case *State:
 		if out == nil || (f.Kind != StateKind && f.Kind != WelcomeKind) || !boundedState(f.Body) {
 			return ErrPacket

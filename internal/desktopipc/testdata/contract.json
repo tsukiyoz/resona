@@ -30,6 +30,8 @@
       "switchingChannelID": "channel-2",
       "credentialError": "",
       "memberSyncState": "ready",
+      "chatState": "",
+      "chatEpoch": 0,
       "memberSyncError": "",
       "canManageChannels": false
     },

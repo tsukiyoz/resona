@@ -264,7 +264,7 @@ func Run(ctx context.Context, service *client.Service, input io.ReadCloser, outp
 				}
 				continue
 			}
-			if req.Method == "ExportDiagnostics" || req.Method == "GetIconResource" || req.Method == "GetChannelDetails" || req.Method == "GetUserDetails" {
+			if req.Method == "ExportDiagnostics" || req.Method == "GetIconResource" || req.Method == "GetChannelDetails" || req.Method == "GetUserDetails" || req.Method == "RetryChannelChat" {
 				select {
 				case readSlots <- struct{}{}:
 				default:
@@ -588,6 +588,8 @@ func dispatchWithContext(ctx context.Context, s *client.Service, req request) (a
 		return s.SendChannelMessage(p.SessionID, p.ChannelID, p.Text)
 	case "RetryMessage":
 		return s.RetryMessage(p.ID, p.AllowDuplicate)
+	case "RetryChannelChat":
+		return struct{}{}, s.RetryChannelChat(ctx, p.SessionID, p.ChannelID)
 	case "OpenPreview":
 		return s.OpenPreview()
 	case "LeavePreview":

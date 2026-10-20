@@ -38,6 +38,8 @@ const (
 	Kind_KIND_UPDATE_CHANNEL  Kind = 11
 	Kind_KIND_DELETE_CHANNEL  Kind = 12
 	Kind_KIND_WATCH_RESOURCES Kind = 13
+	Kind_KIND_CHAT_SYNC       Kind = 14
+	Kind_KIND_CHAT_STATUS     Kind = 15
 )
 
 // Enum value maps for Kind.
@@ -57,6 +59,8 @@ var (
 		11: "KIND_UPDATE_CHANNEL",
 		12: "KIND_DELETE_CHANNEL",
 		13: "KIND_WATCH_RESOURCES",
+		14: "KIND_CHAT_SYNC",
+		15: "KIND_CHAT_STATUS",
 	}
 	Kind_value = map[string]int32{
 		"KIND_UNSPECIFIED":     0,
@@ -73,6 +77,8 @@ var (
 		"KIND_UPDATE_CHANNEL":  11,
 		"KIND_DELETE_CHANNEL":  12,
 		"KIND_WATCH_RESOURCES": 13,
+		"KIND_CHAT_SYNC":       14,
+		"KIND_CHAT_STATUS":     15,
 	}
 )
 
@@ -826,6 +832,7 @@ type Command struct {
 	Text          string                 `protobuf:"bytes,2,opt,name=text,proto3" json:"text,omitempty"`
 	Muted         bool                   `protobuf:"varint,3,opt,name=muted,proto3" json:"muted,omitempty"`
 	Deafened      bool                   `protobuf:"varint,4,opt,name=deafened,proto3" json:"deafened,omitempty"`
+	MessageId     string                 `protobuf:"bytes,5,opt,name=message_id,json=messageId,proto3" json:"message_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -888,6 +895,13 @@ func (x *Command) GetDeafened() bool {
 	return false
 }
 
+func (x *Command) GetMessageId() string {
+	if x != nil {
+		return x.MessageId
+	}
+	return ""
+}
+
 type Reply struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Code          uint32                 `protobuf:"varint,1,opt,name=code,proto3" json:"code,omitempty"` // Application range: 0..255; unknown codes mean failure.
@@ -938,6 +952,13 @@ type Message struct {
 	Sender        uint32                 `protobuf:"varint,2,opt,name=sender,proto3" json:"sender,omitempty"`
 	Nickname      string                 `protobuf:"bytes,3,opt,name=nickname,proto3" json:"nickname,omitempty"`
 	Text          string                 `protobuf:"bytes,4,opt,name=text,proto3" json:"text,omitempty"`
+	Sequence      uint64                 `protobuf:"varint,5,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	Timestamp     int64                  `protobuf:"varint,6,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+	AuthorUid     string                 `protobuf:"bytes,7,opt,name=author_uid,json=authorUid,proto3" json:"author_uid,omitempty"`
+	ClientId      string                 `protobuf:"bytes,8,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"`
+	Self          bool                   `protobuf:"varint,9,opt,name=self,proto3" json:"self,omitempty"`
+	Epoch         uint32                 `protobuf:"varint,10,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	History       bool                   `protobuf:"varint,11,opt,name=history,proto3" json:"history,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -998,6 +1019,124 @@ func (x *Message) GetText() string {
 		return x.Text
 	}
 	return ""
+}
+
+func (x *Message) GetSequence() uint64 {
+	if x != nil {
+		return x.Sequence
+	}
+	return 0
+}
+
+func (x *Message) GetTimestamp() int64 {
+	if x != nil {
+		return x.Timestamp
+	}
+	return 0
+}
+
+func (x *Message) GetAuthorUid() string {
+	if x != nil {
+		return x.AuthorUid
+	}
+	return ""
+}
+
+func (x *Message) GetClientId() string {
+	if x != nil {
+		return x.ClientId
+	}
+	return ""
+}
+
+func (x *Message) GetSelf() bool {
+	if x != nil {
+		return x.Self
+	}
+	return false
+}
+
+func (x *Message) GetEpoch() uint32 {
+	if x != nil {
+		return x.Epoch
+	}
+	return 0
+}
+
+func (x *Message) GetHistory() bool {
+	if x != nil {
+		return x.History
+	}
+	return false
+}
+
+// Status: 0 loading, 1 ready, 2 failed. Scoped to the current channel entry.
+type ChatStatus struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Channel       uint32                 `protobuf:"varint,1,opt,name=channel,proto3" json:"channel,omitempty"`
+	Epoch         uint32                 `protobuf:"varint,2,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	Generation    uint64                 `protobuf:"varint,3,opt,name=generation,proto3" json:"generation,omitempty"`
+	Status        uint32                 `protobuf:"varint,4,opt,name=status,proto3" json:"status,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ChatStatus) Reset() {
+	*x = ChatStatus{}
+	mi := &file_control_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ChatStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ChatStatus) ProtoMessage() {}
+
+func (x *ChatStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_control_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ChatStatus.ProtoReflect.Descriptor instead.
+func (*ChatStatus) Descriptor() ([]byte, []int) {
+	return file_control_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *ChatStatus) GetChannel() uint32 {
+	if x != nil {
+		return x.Channel
+	}
+	return 0
+}
+
+func (x *ChatStatus) GetEpoch() uint32 {
+	if x != nil {
+		return x.Epoch
+	}
+	return 0
+}
+
+func (x *ChatStatus) GetGeneration() uint64 {
+	if x != nil {
+		return x.Generation
+	}
+	return 0
+}
+
+func (x *ChatStatus) GetStatus() uint32 {
+	if x != nil {
+		return x.Status
+	}
+	return 0
 }
 
 var File_control_proto protoreflect.FileDescriptor
@@ -1064,19 +1203,38 @@ const file_control_proto_rawDesc = "" +
 	"\fall_channels\x18\r \x01(\bR\vallChannels\x12\x1f\n" +
 	"\vall_members\x18\x0e \x01(\bR\n" +
 	"allMembers\x12'\n" +
-	"\x0fdefault_channel\x18\x0f \x01(\rR\x0edefaultChannel\"i\n" +
+	"\x0fdefault_channel\x18\x0f \x01(\rR\x0edefaultChannel\"\x88\x01\n" +
 	"\aCommand\x12\x18\n" +
 	"\achannel\x18\x01 \x01(\rR\achannel\x12\x12\n" +
 	"\x04text\x18\x02 \x01(\tR\x04text\x12\x14\n" +
 	"\x05muted\x18\x03 \x01(\bR\x05muted\x12\x1a\n" +
-	"\bdeafened\x18\x04 \x01(\bR\bdeafened\"\x1b\n" +
+	"\bdeafened\x18\x04 \x01(\bR\bdeafened\x12\x1d\n" +
+	"\n" +
+	"message_id\x18\x05 \x01(\tR\tmessageId\"\x1b\n" +
 	"\x05Reply\x12\x12\n" +
-	"\x04code\x18\x01 \x01(\rR\x04code\"k\n" +
+	"\x04code\x18\x01 \x01(\rR\x04code\"\xa5\x02\n" +
 	"\aMessage\x12\x18\n" +
 	"\achannel\x18\x01 \x01(\rR\achannel\x12\x16\n" +
 	"\x06sender\x18\x02 \x01(\rR\x06sender\x12\x1a\n" +
 	"\bnickname\x18\x03 \x01(\tR\bnickname\x12\x12\n" +
-	"\x04text\x18\x04 \x01(\tR\x04text*\x9f\x02\n" +
+	"\x04text\x18\x04 \x01(\tR\x04text\x12\x1a\n" +
+	"\bsequence\x18\x05 \x01(\x04R\bsequence\x12\x1c\n" +
+	"\ttimestamp\x18\x06 \x01(\x03R\ttimestamp\x12\x1d\n" +
+	"\n" +
+	"author_uid\x18\a \x01(\tR\tauthorUid\x12\x1b\n" +
+	"\tclient_id\x18\b \x01(\tR\bclientId\x12\x12\n" +
+	"\x04self\x18\t \x01(\bR\x04self\x12\x14\n" +
+	"\x05epoch\x18\n" +
+	" \x01(\rR\x05epoch\x12\x18\n" +
+	"\ahistory\x18\v \x01(\bR\ahistory\"t\n" +
+	"\n" +
+	"ChatStatus\x12\x18\n" +
+	"\achannel\x18\x01 \x01(\rR\achannel\x12\x14\n" +
+	"\x05epoch\x18\x02 \x01(\rR\x05epoch\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x03 \x01(\x04R\n" +
+	"generation\x12\x16\n" +
+	"\x06status\x18\x04 \x01(\rR\x06status*\xc9\x02\n" +
 	"\x04Kind\x12\x14\n" +
 	"\x10KIND_UNSPECIFIED\x10\x00\x12\x0e\n" +
 	"\n" +
@@ -1095,7 +1253,9 @@ const file_control_proto_rawDesc = "" +
 	"\x12\x17\n" +
 	"\x13KIND_UPDATE_CHANNEL\x10\v\x12\x17\n" +
 	"\x13KIND_DELETE_CHANNEL\x10\f\x12\x18\n" +
-	"\x14KIND_WATCH_RESOURCES\x10\rB3Z1github.com/tsukiyoz/resona/internal/nativewire/pbb\x06proto3"
+	"\x14KIND_WATCH_RESOURCES\x10\r\x12\x12\n" +
+	"\x0eKIND_CHAT_SYNC\x10\x0e\x12\x14\n" +
+	"\x10KIND_CHAT_STATUS\x10\x0fB3Z1github.com/tsukiyoz/resona/internal/nativewire/pbb\x06proto3"
 
 var (
 	file_control_proto_rawDescOnce sync.Once
@@ -1110,7 +1270,7 @@ func file_control_proto_rawDescGZIP() []byte {
 }
 
 var file_control_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_control_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_control_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_control_proto_goTypes = []any{
 	(Kind)(0),              // 0: resona.control.v1.Kind
 	(*Frame)(nil),          // 1: resona.control.v1.Frame
@@ -1126,6 +1286,7 @@ var file_control_proto_goTypes = []any{
 	(*Command)(nil),        // 11: resona.control.v1.Command
 	(*Reply)(nil),          // 12: resona.control.v1.Reply
 	(*Message)(nil),        // 13: resona.control.v1.Message
+	(*ChatStatus)(nil),     // 14: resona.control.v1.ChatStatus
 }
 var file_control_proto_depIdxs = []int32{
 	0, // 0: resona.control.v1.Frame.kind:type_name -> resona.control.v1.Kind
@@ -1149,7 +1310,7 @@ func file_control_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_control_proto_rawDesc), len(file_control_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   13,
+			NumMessages:   14,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

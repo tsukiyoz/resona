@@ -1,6 +1,6 @@
 # Resona Noise UDP experiment
 
-Version/prologue: `resona-noise-exp-5` (native identity and scoped resource watch; matching client/server required). Noise suite:
+Version/prologue: `resona-noise-exp-6` (bounded channel chat and stable message identity; matching client/server required). Noise suite:
 `Noise_NK_25519_ChaChaPoly_SHA256`. The server relays plaintext Opus between
 separately encrypted client/server sessions; this is hop encryption, not E2EE.
 All Resona multi-byte header integers are big-endian. Noise primitives use the
@@ -9,16 +9,16 @@ passed as uint64. The generation is reconstructed locally, not added to each pac
 
 ## Handshake
 
-1. Client sends `RN05 | type=1:u8 | cookie:20 | NK message1:48` (73 bytes).
+1. Client sends `RN06 | type=1:u8 | cookie:20 | NK message1:48` (73 bytes).
    Initially cookie is zero. NK payload is empty; no password or audio is sent.
-2. Server sends `RN05 | type=2:u8 | cookie:20` (25 bytes), without allocating
+2. Server sends `RN06 | type=2:u8 | cookie:20` (25 bytes), without allocating
    a session or performing DH. Cookie is `timeSlot:u32 | HMAC-SHA256[:16]`,
    bound to protocol, source IP/port, slot and exact NK message. Slots are
    30 seconds; current/previous slots are accepted. Cookie secret is generated
    per server start. It is distinct from the Noise private key.
 3. Client repeats message1 with that cookie. Server checks it, connection cap
    and global handshake budget (10/s, burst 20), then performs Noise NK.
-4. Server replies `RN05 | type=3:u8 | NK message2:48` (53 bytes). Identical
+4. Server replies `RN06 | type=3:u8 | NK message2:48` (53 bytes). Identical
    message1 retries on an existing endpoint receive the cached identical reply,
    never a reset or second session. An established session is not replaced by
    an unauthenticated new handshake.

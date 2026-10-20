@@ -15,6 +15,49 @@ type fakeMessageConnection struct {
 	send func(context.Context, string, string) error
 }
 
+func TestRetainedMessagesMergeOwnEchoAndKeepStableHistoryOrder(t *testing.T) {
+	s := &Service{}
+	s.state.Session.ChannelID, s.state.Session.SelfID = "1", "1"
+	s.state.Messages = []Message{{ID: "local-request", ChannelID: "1", Status: "sending", Text: "mine"}}
+	mine := RemoteMessage{ChannelID: "1", UserID: "stable-self", Sequence: 5, Timestamp: 1234567890, ClientID: "local-request", Self: true, Text: "mine", Author: "Old name"}
+	s.appendRemoteMessagesLocked([]RemoteMessage{mine})
+	s.appendRemoteMessagesLocked([]RemoteMessage{
+		{ChannelID: "1", UserID: "1", Sequence: 4, Timestamp: 1234567880, Text: "another identity with a reused member number", History: true},
+		mine,
+		{ChannelID: "1", UserID: "other", Sequence: 6, Timestamp: 1234567891, Text: "same text"},
+		{ChannelID: "1", UserID: "other", Sequence: 7, Timestamp: 1234567892, Text: "same text"},
+		{ChannelID: "2", UserID: "other", Sequence: 8, Text: "wrong channel"},
+	})
+	if len(s.state.Messages) != 4 {
+		t.Fatal(s.state.Messages)
+	}
+	for i, msg := range s.state.Messages {
+		if msg.Sequence != uint64(4+i) {
+			t.Fatal(s.state.Messages)
+		}
+	}
+	got := s.state.Messages[1]
+	if got.ID != "local-request" || got.Status != "sent" || got.CreatedAt != time.Unix(0, mine.Timestamp).UTC().Format(time.RFC3339Nano) {
+		t.Fatal(got)
+	}
+}
+
+func TestConfirmedOwnEchoSurvivesLostPublishReply(t *testing.T) {
+	finish := make(chan struct{})
+	connection := &fakeMessageConnection{send: func(context.Context, string, string) error { <-finish; return ErrMessageDeliveryUnknown }}
+	s, update := connectedMessageService(t, connection)
+	state := sendTestMessage(t, s, "mine")
+	id := state.Messages[0].ID
+	remote := channelState("1")
+	remote.Messages = []RemoteMessage{{ChannelID: "1", UserID: "stable-self", Sequence: 1, Timestamp: time.Now().UnixNano(), ClientID: id, Self: true, Text: "mine"}}
+	update(remote)
+	close(finish)
+	state = waitForMessageResult(t, s, id, "sent")
+	if len(state.Messages) != 1 {
+		t.Fatal(state.Messages)
+	}
+}
+
 func TestTranscriptByteLimitPreservesPendingSend(t *testing.T) {
 	s := &Service{}
 	s.state.Session.SendingMessageID = "pending"

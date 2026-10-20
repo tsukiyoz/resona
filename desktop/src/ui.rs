@@ -71,6 +71,7 @@ impl IconNamed for VoiceIcon {
 
 #[derive(Clone)]
 enum Pending {
+    ChatRetry(String, String, u32),
     Update(&'static str),
     ExportDiagnostics,
     Probe(Instant),
@@ -706,6 +707,12 @@ impl ResonaApp {
 
     fn request_failed(&mut self, pending: Pending, error: String) {
         match pending {
+            Pending::ChatRetry(session, channel, epoch) => {
+                if chat_retry_is_current(&self.workspace, &session, &channel, epoch) {
+                    self.workspace.session.chat_state = "failed".into();
+                    self.error = error;
+                }
+            }
             Pending::Update(_) => self.update_notice = error,
             Pending::ResourceInterest(generation) => {
                 if generation == self.resource_generation {
@@ -858,6 +865,18 @@ impl ResonaApp {
             Incoming::Response { id, result } => {
                 let pending = self.pending.remove(&id);
                 match (pending, result) {
+                    (Some(Pending::ChatRetry(session, channel, epoch)), result) => {
+                        if self.workspace.session.id == session
+                            && self.workspace.session.channel_id == channel
+                        {
+                            if let Err(error) = result {
+                                self.request_failed(
+                                    Pending::ChatRetry(session, channel, epoch),
+                                    error,
+                                );
+                            }
+                        }
+                    }
                     (Some(Pending::ResourceInterest(generation)), result) => {
                         if generation == self.resource_generation {
                             if let Err(error) = result {
@@ -1303,7 +1322,12 @@ impl ResonaApp {
                     self.chat_follow_bottom = true;
                     self.chat_scroll = gpui::ScrollHandle::new();
                     self.submitted_drafts.clear();
-                } else if new_message && !workspace.messages.is_empty() {
+                } else if workspace.session.chat_state == "ready"
+                    && self.workspace.session.chat_state == "loading"
+                    && self.chat_follow_bottom
+                {
+                    self.chat_scroll.scroll_to_bottom();
+                } else if new_message && workspace.messages.last().is_some_and(|m| !m.history) {
                     if !self.chat_collapsed && self.chat_follow_bottom {
                         self.chat_scroll.scroll_to_bottom();
                     } else {
@@ -1656,7 +1680,8 @@ impl ResonaApp {
                 workspace.messages.iter().find(|message| {
                     !submitted.before_ids.contains(&message.id)
                         && (workspace.session.mode == "preview"
-                            || message.author_id == workspace.session.self_id)
+                            || message.author_id == workspace.session.self_id
+                            || message.author_id == workspace.session.identity_uid)
                         && message.channel_id == workspace.session.channel_id
                         && message.text == submitted.text
                 })
@@ -2354,6 +2379,10 @@ impl ResonaApp {
 
     fn send_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.resources_blocked()
+            || matches!(
+                self.workspace.session.chat_state.as_str(),
+                "loading" | "failed"
+            )
             || visible_text_channel(&self.workspace, &self.selected_server).is_none()
             || !self.workspace.session.switching_channel_id.is_empty()
             || !self.workspace.session.sending_message_id.is_empty()
@@ -2370,7 +2399,8 @@ impl ResonaApp {
         if self.workspace.connected()
             && let Some(message) = self.workspace.messages.iter().find(|message| {
                 message.status == "unconfirmed"
-                    && message.author_id == self.workspace.session.self_id
+                    && (message.author_id == self.workspace.session.self_id
+                        || message.author_id == self.workspace.session.identity_uid)
                     && message.channel_id == self.workspace.session.channel_id
                     && message.text == text
             })
@@ -3751,12 +3781,17 @@ impl ResonaApp {
             && !self.resources_blocked()
             && self.workspace.session.switching_channel_id.is_empty()
             && self.workspace.session.sending_message_id.is_empty()
+            && !matches!(
+                self.workspace.session.chat_state.as_str(),
+                "loading" | "failed"
+            )
             && !self.pending.values().any(|p| matches!(p, Pending::Send(_)));
         let toggle = view.clone();
         let latest = view.clone();
         let send = view.clone();
         let drag = view.clone();
         let scrolled = view.clone();
+        let retry_chat = view.clone();
         div()
             .w_full()
             .flex_shrink_0()
@@ -3874,13 +3909,62 @@ impl ResonaApp {
                                     });
                                 });
                             })
-                            .when(self.workspace.messages.is_empty(), |list| {
+                            .when(self.workspace.session.chat_state == "loading", |list| {
                                 list.child(
                                     div()
                                         .py_2()
                                         .text_xs()
                                         .text_color(rgb(MUTED))
-                                        .child("暂无实时消息"),
+                                        .child("正在加载频道消息…"),
+                                )
+                            })
+                            .when(self.workspace.session.chat_state == "failed", |list| {
+                                list.child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .py_2()
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(rgb(RED))
+                                                .child("频道消息加载失败"),
+                                        )
+                                        .child(
+                                            Button::new("retry-channel-chat")
+                                                .label("重试")
+                                                .on_click(move |_, _, cx| {
+                                                    retry_chat.update(cx, |this, cx| {
+                                                        if this.workspace.session.chat_state != "failed"
+                                                            || !this.workspace.connected()
+                                                        {
+                                                            return;
+                                                        }
+                                                        let session = this.workspace.session.id.clone();
+                                                        let channel = this.workspace.session.channel_id.clone();
+                                                        let epoch = this.workspace.session.chat_epoch;
+                                                        this.workspace.session.chat_state = "loading".into();
+                                                        this.pending.retain(|_, pending| !matches!(pending, Pending::ChatRetry(..)));
+                                                        this.request(
+                                                            "RetryChannelChat",
+                                                            json!({"sessionID": session, "channelID": channel}),
+                                                            Pending::ChatRetry(session, channel, epoch),
+                                                        );
+                                                        cx.notify();
+                                                    });
+                                                }),
+                                        ),
+                                )
+                            })
+                            .when(self.workspace.messages.is_empty()
+                                && !matches!(self.workspace.session.chat_state.as_str(), "loading" | "failed"), |list| {
+                                list.child(
+                                    div()
+                                        .py_2()
+                                        .text_xs()
+                                        .text_color(rgb(MUTED))
+                                        .child("暂无频道消息"),
                                 )
                             })
                             .children(
@@ -3918,6 +4002,7 @@ impl ResonaApp {
                                                     .text_color(rgb(
                                                         if message.author_id
                                                             == self.workspace.session.self_id
+                                                            || message.author_id == self.workspace.session.identity_uid
                                                         {
                                                             MINT
                                                         } else {
@@ -7494,6 +7579,14 @@ fn notification_applies(workspace: &Workspace, notification: &crate::model::Noti
     }
 }
 
+fn chat_retry_is_current(workspace: &Workspace, session: &str, channel: &str, epoch: u32) -> bool {
+    workspace.connected()
+        && workspace.session.id == session
+        && workspace.session.channel_id == channel
+        && workspace.session.chat_epoch == epoch
+        && workspace.session.chat_state == "loading"
+}
+
 fn resource_session_matches(workspace: &Workspace, session: &str) -> bool {
     if session.is_empty() {
         !workspace.connected()
@@ -8030,6 +8123,26 @@ fn ordered_channels(channels: &[crate::model::Channel]) -> Vec<(crate::model::Ch
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn late_chat_failure_cannot_replace_reentered_channel_or_ready_state() {
+        let mut workspace = Workspace::default();
+        workspace.session.mode = "connected".into();
+        workspace.session.id = "session".into();
+        workspace.session.channel_id = "A".into();
+        workspace.session.chat_state = "loading".into();
+        workspace.session.chat_epoch = 1;
+        assert!(super::chat_retry_is_current(&workspace, "session", "A", 1));
+        workspace.session.channel_id = "B".into();
+        workspace.session.chat_epoch = 2;
+        assert!(!super::chat_retry_is_current(&workspace, "session", "A", 1));
+        workspace.session.channel_id = "A".into();
+        workspace.session.chat_epoch = 3;
+        assert!(!super::chat_retry_is_current(&workspace, "session", "A", 1));
+        assert!(super::chat_retry_is_current(&workspace, "session", "A", 3));
+        workspace.session.chat_state = "ready".into();
+        assert!(!super::chat_retry_is_current(&workspace, "session", "A", 3));
+    }
+
     #[test]
     fn resource_refresh_is_silent_until_failure_and_scoped_to_session() {
         use super::{ResourceState, next_resource_state, resource_session_matches};

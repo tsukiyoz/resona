@@ -358,3 +358,31 @@ B 删除返回 `errSecInvalidOwnerEdit`（-25244），随后由创建程序 A �
 本轮未读取、删除或更改现有服务器密码、ACL 或 partition。临时程序的成功仅验证
 新条目的跨构建读取连续性；用户原条目的首次迁移提示次数仍需在新版包中实测，
 不保证既有双提示由签名选择调整自动合并。此次不改变连接/音频热路径或空闲任务。
+
+## 2026-10-21：RNNoise 与有界频道历史
+
+RNNoise regular 产品接入提交 c686be1，已通过 1b8b11c 合并本地主分支；未推送。
+保留 Speex 默认与已有选择，Core 提供算法说明、GUI 菜单项和当前选项 tooltip；
+原生音频测试、核心全量/相关 race、桌面测试、make lint、macOS 签名打包通过。
+自动化验证过离线 RNNoise 草稿选择/取消及等级隐藏；实际鼠标悬停说明、Windows
+产品包与游戏负载尚待实机验收。源码与模型固定及测量限制见 native/rnnoise/README.md。
+
+随后在 feature/tsukiyo/server-20261021_nats-chat 实现 ADR-0031，尚未提交或部署。
+用户确认默认每频道 200 条、全流逻辑 64 MiB、7 天；嵌入 JetStream，无外部 NATS
+端口。go list -deps ./cmd/resona-core 确认客户端没有 nats-io 依赖。
+
+本地 Go 测试验证条数/字节/过期淘汰、重启后保留身份/顺序/时间、调小配置恢复、
+历史连续转实时、本人去重、频道隔离、消费者退出、首次/重连 admission 消息增量、
+聊天超时保持语音连接、IPC 读取/关闭不被重试阻塞。增加独立四槽聊天发送队列，
+验证历史背压不占关键控制容量且可取消，写循环优先发送 Welcome/控制回复。
+频道 epoch 传到 GUI，A→B→A 的旧失败不能覆盖新加载，历史不增加未读提示。
+产品体验只读复核后修复了两项超时/IPC 阻塞问题和迟到回复隔离问题。
+
+go test ./internal/... ./cmd/...、相关 race、48 项锁定 Rust 桌面测试、make lint、
+go test ./deploy 通过。make build 完成本机 core/server 与 macOS release 包，
+严格签名校验通过；make deploy 验证 Linux amd64 纯 Go 部署包和许可证。
+构建另补 build/native 忽略规则，缓存源码/模型不进入 Git。
+
+握手为 RN06，需 client/server 同步升级。没有更改 tsukiyo 服务或操作其他用户。
+尚未做聊天加载/失败的完整实窗、Windows、长期磁盘/运行内存及等负载性能验收；
+不据集成测试宣称 JetStream 比原直接广播更省资源。64 MiB 不是物理目录配额。

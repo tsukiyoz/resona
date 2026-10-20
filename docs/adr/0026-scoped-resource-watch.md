@@ -2,6 +2,10 @@
 
 Date: 2026-09-14
 
+Protocol update (2026-10-21): ADR-0031 adds bounded channel chat and changes the
+current handshake to RN06. The RN05 deployment notes below describe this ADR's
+original introduction; the resource observation decision remains in force.
+
 ## Decision
 
 Treat resource observation and voice relay as distinct responsibilities. A resource

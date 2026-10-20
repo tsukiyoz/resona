@@ -36,6 +36,7 @@ func NewDefault() (Connector, error) {
 }
 
 type connection struct {
+	chatStatus   w.ChatStatus
 	voiceBitrate atomic.Uint32
 	conn         w.Connection
 	stream       w.Stream
@@ -156,6 +157,19 @@ func validState(s w.State) bool {
 func id(v uint16) string { return strconv.Itoa(int(v)) }
 func (c *connection) remote(s w.State, messages []client.RemoteMessage) client.RemoteState {
 	r := client.RemoteState{ServerName: s.Name, SelfID: id(s.Self), MemberSyncState: "ready", Messages: messages, IdentityUID: s.IdentityUID, ServerRole: s.ServerRole, CanClaimOwner: s.CanClaimOwner}
+	c.mu.Lock()
+	status := c.chatStatus
+	c.mu.Unlock()
+	r.ChatState = "loading"
+	r.ChatEpoch = s.Epoch
+	if status.Epoch == s.Epoch {
+		switch status.Status {
+		case 1:
+			r.ChatState = "ready"
+		case 2:
+			r.ChatState = "failed"
+		}
+	}
 	r.CanManageChannels = s.CanManageChannels
 	r.CanConfigureChannelAudio = s.CanConfigureChannelAudio
 	if s.CanWatchResources && !s.AllMembers {
@@ -258,7 +272,27 @@ func (c *connection) readLoop() {
 			c.mu.Lock()
 			s := c.state
 			c.mu.Unlock()
-			c.onState(c.remote(s, []client.RemoteMessage{{ChannelID: id(m.Channel), UserID: id(m.Sender), Author: m.Nickname, Text: m.Text}}))
+			if m.Epoch != s.Epoch {
+				continue
+			}
+			if m.Sequence == 0 || m.Timestamp <= 0 || len(m.AuthorUID) != 64 {
+				return
+			}
+			c.onState(c.remote(s, []client.RemoteMessage{{ChannelID: id(m.Channel), UserID: m.AuthorUID, Author: m.Nickname, Text: m.Text, Sequence: m.Sequence, Timestamp: m.Timestamp, ClientID: m.ClientID, Self: m.Self, History: m.History}}))
+		case w.ChatStatusKind:
+			var status w.ChatStatus
+			if w.Decode(f, &status) != nil {
+				return
+			}
+			c.mu.Lock()
+			s := c.state
+			if status.Epoch != s.Epoch || status.Generation < c.chatStatus.Generation {
+				c.mu.Unlock()
+				continue
+			}
+			c.chatStatus = status
+			c.mu.Unlock()
+			c.onState(c.remote(s, nil))
 		default:
 			return
 		}
@@ -316,10 +350,11 @@ func (c *connection) command(ctx context.Context, kind uint8, cmd any) error {
 		deadline = d
 	}
 	_ = c.stream.SetWriteDeadline(deadline)
-	// A resource watch is idempotent. A missing reply must not disconnect an
-	// otherwise healthy voice session; a blocked write still has its deadline.
+	// Chat and resource failures must not end a healthy voice session. A failed
+	// stream write still closes the transport because framing may be incomplete.
+	softTimeout := kind == w.WatchResourcesKind || kind == w.ChatKind || kind == w.ChatSyncKind
 	stop := func() bool { return false }
-	if kind != w.WatchResourcesKind {
+	if !softTimeout {
 		stop = context.AfterFunc(ctx, func() { _ = c.conn.CloseWithError(0, "operation cancelled") })
 	}
 	defer stop()
@@ -327,13 +362,13 @@ func (c *connection) command(ctx context.Context, kind uint8, cmd any) error {
 		_ = c.conn.CloseWithError(1, "control write failed")
 		return err
 	}
-	if kind == w.WatchResourcesKind {
+	if softTimeout {
 		stop()
 	}
 	select {
 	case code := <-reply:
 		if ctx.Err() != nil {
-			if kind != w.WatchResourcesKind {
+			if !softTimeout {
 				_ = c.conn.CloseWithError(0, "operation cancelled")
 			}
 			return ctx.Err()
@@ -358,14 +393,19 @@ func (c *connection) command(ctx context.Context, kind uint8, cmd any) error {
 		case w.DefaultChannel:
 			return errors.New("默认频道不能删除")
 		case w.StorageFailed:
+			if kind == w.ChatKind {
+				return &client.MessageSendError{Message: "服务器未能保存消息，请稍后重试"}
+			}
 			return errors.New("服务器保存失败，结果未确认，请检查频道列表后再操作")
+		case w.DeliveryUnknown:
+			return &client.MessageSendError{Message: client.ErrMessageDeliveryUnknown.Error(), Uncertain: true}
 		case w.ChannelLimit:
 			return errors.New("频道数量或 ID 已达上限")
 		default:
 			return &client.MessageSendError{Message: "服务器拒绝此操作"}
 		}
 	case <-ctx.Done():
-		if kind != w.WatchResourcesKind {
+		if !softTimeout {
 			_ = c.conn.CloseWithError(0, "operation cancelled")
 		}
 		return ctx.Err()
@@ -383,11 +423,23 @@ func (c *connection) MoveChannel(ctx context.Context, channel string) error {
 }
 
 func (c *connection) SendChannelMessage(ctx context.Context, channel, text string) error {
+	return c.SendIdentifiedChannelMessage(ctx, channel, text, rand.Text())
+}
+
+func (c *connection) SendIdentifiedChannelMessage(ctx context.Context, channel, text, messageID string) error {
 	n, err := strconv.ParseUint(channel, 10, 16)
 	if err != nil {
 		return client.ErrMessageChannelChanged
 	}
-	return c.command(ctx, w.ChatKind, w.Command{Channel: uint16(n), Text: text})
+	return c.command(ctx, w.ChatKind, w.Command{Channel: uint16(n), Text: text, MessageID: messageID})
+}
+
+func (c *connection) SyncChannelChat(ctx context.Context, channel string) error {
+	n, err := strconv.ParseUint(channel, 10, 16)
+	if err != nil {
+		return client.ErrMessageChannelChanged
+	}
+	return c.command(ctx, w.ChatSyncKind, w.Command{Channel: uint16(n)})
 }
 
 func (c *connection) Close() error {

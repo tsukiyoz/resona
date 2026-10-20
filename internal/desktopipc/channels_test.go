@@ -15,6 +15,10 @@ type blockingChannel struct {
 	started chan struct{}
 }
 
+func (c *blockingChannel) SyncChannelChat(ctx context.Context, _ string) error {
+	return c.CreateChannel(ctx, "", "")
+}
+
 func (c *blockingChannel) CreateChannel(ctx context.Context, _, _ string) error {
 	close(c.started)
 	<-ctx.Done()
@@ -37,6 +41,12 @@ func (c channelConnector) Connect(_ context.Context, _ client.ServerProfile, _ s
 }
 
 func TestPendingChannelCommandDoesNotBlockIPCOrShutdown(t *testing.T) {
+	for _, method := range []string{"CreateChannel", "RetryChannelChat"} {
+		t.Run(method, func(t *testing.T) { testPendingChannelCommand(t, method) })
+	}
+}
+
+func testPendingChannelCommand(t *testing.T, method string) {
 	c := &blockingChannel{started: make(chan struct{})}
 	s, err := client.NewWithConnector(&memoryProfiles{profiles: []client.ServerProfile{{Protocol: "resona-noise", ServerPublicKey: "abababababababababababababababababababababababababababababababab", ID: "test", Name: "Test", Address: "example.invalid", Nickname: "Tester"}}}, channelConnector{c})
 	if err != nil {
@@ -83,7 +93,7 @@ func TestPendingChannelCommandDoesNotBlockIPCOrShutdown(t *testing.T) {
 		}
 	}()
 	e := json.NewEncoder(parent)
-	if err = e.Encode(map[string]any{"id": 1, "method": "CreateChannel", "params": map[string]string{"sessionID": workspace.Session.ID, "name": "New"}}); err != nil {
+	if err = e.Encode(map[string]any{"id": 1, "method": method, "params": map[string]string{"sessionID": workspace.Session.ID, "channelID": "1", "name": "New"}}); err != nil {
 		t.Fatal(err)
 	}
 	select {
