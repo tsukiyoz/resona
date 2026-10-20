@@ -27,6 +27,12 @@ Makefile 面向 macOS/Linux。macOS 桌面产物为 `desktop/dist/Resona.app`；
 
 直接执行 `./desktop/scripts/package-macos.sh` 也会通过 `make build-core` 构建当前核心。`make build-desktop` 复用其刚构建的核心，避免重复编译。只有显式设置 `RESONA_CORE_BINARY` 才会复用指定外部核心，需自行确保版本配套。先退出旧进程，再清理/打包并打开新应用。
 
+macOS 本机构建自动使用唯一有效的代码签名证书；存在多个证书时须通过
+`RESONA_CODESIGN_IDENTITY` 指定证书 SHA-1。没有证书时仍生成 ad-hoc 开发包，
+重建后可能重复触发钥匙串授权；CI 只使用显式配置的签名身份。签名不等于 Apple
+公证。更换签名身份或证书续期后仍需重新验证授权。旧 ad-hoc 钥匙串条目可能需要
+在稳定签名包中重新保存，不自动清除或放宽权限。
+
 `make deploy` 从 `VERSION` 读取版本，在 `build/deploy/` 生成静态 Linux 服务端、Dockerfile、升级脚本及压缩包。通用源码在 [deploy/](deploy/README.md)，支持 amd64/arm64，默认 amd64；不依赖本机 Docker，不执行远端操作。
 
 `clean` 不删除 `build/appicon.png`、旧的 `build/deploy-*`、`build/` 下其他目录中的性能报告、用户配置或全局 Go/Cargo 下载缓存。不要把需要保留的数据放在 `build/bin/`、新的 `build/deploy/` 或 `desktop/dist/`。不要在同一次调用中混用 `clean` 和构建目标；按顺序分别执行。
