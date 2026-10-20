@@ -35,6 +35,8 @@ const (
 	UpdateChannelKind
 	DeleteChannelKind
 	WatchResourcesKind
+	ChatSyncKind
+	ChatStatusKind
 )
 
 var ErrPacket = errors.New("invalid Resona packet")
@@ -112,10 +114,11 @@ func ChannelBitrate(b uint32) uint32 {
 }
 
 type Command struct {
-	Channel  uint16
-	Text     string
-	Muted    bool
-	Deafened bool
+	MessageID string
+	Channel   uint16
+	Text      string
+	Muted     bool
+	Deafened  bool
 }
 type Reply struct {
 	Code uint8
@@ -131,13 +134,28 @@ const (
 	DefaultChannel
 	StorageFailed
 	ChannelLimit
+	DeliveryUnknown
 )
 
 type Message struct {
-	Channel  uint16
-	Sender   uint16
-	Nickname string
-	Text     string
+	Sequence  uint64
+	Timestamp int64
+	AuthorUID string
+	ClientID  string
+	Self      bool
+	Epoch     uint32
+	History   bool
+	Channel   uint16
+	Sender    uint16
+	Nickname  string
+	Text      string
+}
+
+type ChatStatus struct {
+	Channel    uint16
+	Epoch      uint32
+	Generation uint64
+	Status     uint8
 }
 
 var unmarshal = proto.UnmarshalOptions{RecursionLimit: 8, DiscardUnknown: true}

@@ -109,7 +109,7 @@ func (s *Service) startReconnectLocked(plan reconnectPlan, old RemoteConnection,
 				setupMu.Lock()
 				defer setupMu.Unlock()
 				if !ready {
-					latest = state
+					latest = mergeSetupState(latest, state)
 					return
 				}
 				s.applyRemoteState(attemptGeneration, state)
@@ -170,6 +170,8 @@ func (s *Service) startReconnectLocked(plan reconnectPlan, old RemoteConnection,
 				}
 				continue
 			}
+			messages := latest.Messages
+			latest.Messages = nil
 			s.applyRemoteState(generation, latest)
 			s.mu.Lock()
 			if ctx.Err() != nil || attemptCtx.Err() != nil || generation != s.generation || s.state.Session.Mode != "reconnecting" {
@@ -189,6 +191,7 @@ func (s *Service) startReconnectLocked(plan reconnectPlan, old RemoteConnection,
 			s.reconnect = &plan
 			s.state.Session.ID = rand.Text()
 			s.state.Messages = []Message{}
+			s.appendRemoteMessagesLocked(messages)
 			s.state.Session.Mode = "connected"
 			s.state.Session.ConnectionAttempt = 0
 			s.state.Session.ConnectionWaiting = false

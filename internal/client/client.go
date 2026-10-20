@@ -28,6 +28,8 @@ type ServerProfile struct {
 }
 
 type Session struct {
+	ChatState                string `json:"chatState"`
+	ChatEpoch                uint32 `json:"chatEpoch"`
 	Protocol                 string `json:"protocol,omitempty"`
 	ID                       string `json:"id"`
 	SendingMessageID         string `json:"sendingMessageID"`
@@ -83,6 +85,8 @@ type User struct {
 }
 
 type Message struct {
+	Sequence  uint64 `json:"sequence,omitempty"`
+	History   bool   `json:"history,omitempty"`
 	AuthorID  string `json:"authorID"`
 	Status    string `json:"status"`
 	Error     string `json:"error"`

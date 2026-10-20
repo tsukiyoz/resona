@@ -76,6 +76,30 @@ func TestResourceTimeoutCancelAndPermanentRefusalKeepHealthyTransport(t *testing
 	}
 }
 
+func TestChatTimeoutAndCancellationKeepVoiceTransport(t *testing.T) {
+	for _, kind := range []uint8{w.ChatKind, w.ChatSyncKind} {
+		for _, canceled := range []bool{false, true} {
+			transport := &resourceTestTransport{}
+			c := &connection{conn: transport, gate: make(chan struct{}, 1), pending: make(map[uint32]chan uint8)}
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+			c.stream = resourceTestStream{write: func(data []byte) (int, error) {
+				if canceled {
+					cancel()
+				}
+				return len(data), nil
+			}}
+			err := c.command(ctx, kind, w.Command{Channel: 1, Text: "test", MessageID: "abcdefgh"})
+			cancel()
+			if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+				t.Fatalf("kind %d: unexpected result %v", kind, err)
+			}
+			if transport.closes.Load() != 0 || len(c.pending) != 0 || len(c.gate) != 0 {
+				t.Fatal("chat timeout closed voice or retained command state")
+			}
+		}
+	}
+}
+
 func TestResourceWatchScopesResyncAndKeepsVoiceAndChat(t *testing.T) {
 	t.Run("noise", func(t *testing.T) {
 		profile, stop, done := startServer(t)

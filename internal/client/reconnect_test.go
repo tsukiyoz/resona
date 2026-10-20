@@ -3,12 +3,65 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/tsukiyoz/resona/internal/audio"
 )
+
+func TestHistoryArrivingDuringConnectionAdmissionSurvivesReconnect(t *testing.T) {
+	var calls atomic.Int32
+	updates := make(chan func(RemoteState), 2)
+	s, _ := serviceWithProfile(t, connectorFunc(func(_ context.Context, _ ServerProfile, _ string, update func(RemoteState)) (RemoteConnection, error) {
+		n := calls.Add(1)
+		updates <- update
+		state := RemoteState{ChannelID: "1", SelfID: "1", ChatState: "loading", Channels: []Channel{{ID: "1"}}}
+		update(state)
+		for seq := uint64(1); seq <= 3; seq++ {
+			state.Messages = []RemoteMessage{{ChannelID: "1", UserID: "stable-author", Sequence: seq, Timestamp: time.Now().UnixNano(), Text: fmt.Sprintf("attempt-%d-message-%d", n, seq), History: true}}
+			update(state)
+		}
+		state.Messages = nil
+		state.ChatState = "ready"
+		update(state)
+		return &fakeConnection{}, nil
+	}))
+	defer s.Shutdown()
+	s.reconnectDelay = time.Millisecond
+	if _, err := s.ConnectServer("home", ""); err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 1; attempt <= 2; attempt++ {
+		state := waitForMode(t, s, "connected")
+		if len(state.Messages) != 3 || state.Messages[0].Text != fmt.Sprintf("attempt-%d-message-1", attempt) || state.Session.ChatState != "ready" {
+			t.Fatalf("admission lost history on attempt %d: %+v", attempt, state.Messages)
+		}
+		update := <-updates
+		if attempt == 1 {
+			update(RemoteState{Closed: true, Retryable: true})
+		}
+	}
+}
+
+func TestSetupMessageBufferIsBoundedAndChannelScoped(t *testing.T) {
+	state := RemoteState{ChannelID: "1"}
+	for i := range maxMessages + 20 {
+		state = mergeSetupState(state, RemoteState{ChannelID: "1", Messages: []RemoteMessage{{Text: fmt.Sprint(i)}}})
+	}
+	if len(state.Messages) != maxMessages || state.Messages[0].Text != "20" {
+		t.Fatal("setup history was not bounded")
+	}
+	state = mergeSetupState(state, RemoteState{ChannelID: "2"})
+	if len(state.Messages) != 0 {
+		t.Fatal("setup history leaked across channels")
+	}
+	state = mergeSetupState(state, RemoteState{Closed: true})
+	if !mergeSetupState(state, RemoteState{ChannelID: "1"}).Closed {
+		t.Fatal("setup closure was overwritten")
+	}
+}
 
 func TestReconnectDoesNotRepeatAutomaticUnmute(t *testing.T) {
 	updates := make(chan func(RemoteState), 2)

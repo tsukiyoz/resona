@@ -1,5 +1,6 @@
 AGENTS.md
 /build/bin/
+/build/native/
 /build/opuscodec/
 /build/audio3a/
 /build/listening/

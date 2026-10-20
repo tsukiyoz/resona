@@ -3,3 +3,4 @@
 !.dockerignore
 !resona-server
 !noise-license.txt
+!nats-license.txt

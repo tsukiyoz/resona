@@ -16,13 +16,13 @@ import (
 	"github.com/flynn/noise"
 )
 
-const prologue = "resona-noise-exp-5"
+const prologue = "resona-noise-exp-6"
 
 var ErrServerAuthentication = errors.New("noiseudp: server authentication failed")
 
 var (
 	suite = noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashSHA256)
-	magic = []byte{'R', 'N', '0', '5'}
+	magic = []byte{'R', 'N', '0', '6'}
 )
 
 func PublicKey(private []byte) ([]byte, error) {

@@ -22,6 +22,7 @@ import (
 )
 
 type Config struct {
+	Chat         ChatConfig
 	ChannelStore *ChannelStore
 	Ownership    *Ownership
 	NoiseKey     []byte
@@ -31,6 +32,7 @@ type Config struct {
 	MaxClients   int
 }
 type Server struct {
+	chat            *chatStore
 	channelMu       sync.Mutex
 	deletingChannel uint16
 	listener        w.Listener
@@ -41,19 +43,23 @@ type Server struct {
 	wg              sync.WaitGroup
 }
 type peer struct {
-	watch         w.WatchResources
-	lastState     *w.State
-	revision      uint64
-	identity      string
-	conn          w.Connection
-	stream        w.Stream
-	member        w.Member
-	epoch         uint32
-	out           chan []byte
-	voiceOut      *w.VoiceRing
-	done          chan struct{}
-	commandBucket bucket
-	voiceBucket   bucket
+	chatGeneration uint64
+	chatCancel     context.CancelFunc
+	chatWake       chan struct{}
+	chatOut        chan []byte
+	watch          w.WatchResources
+	lastState      *w.State
+	revision       uint64
+	identity       string
+	conn           w.Connection
+	stream         w.Stream
+	member         w.Member
+	epoch          uint32
+	out            chan []byte
+	voiceOut       *w.VoiceRing
+	done           chan struct{}
+	commandBucket  bucket
+	voiceBucket    bucket
 }
 type bucket struct {
 	at     time.Time
@@ -99,11 +105,16 @@ func Listen(address string, cfg Config) (*Server, error) {
 		return nil, errors.New("channel configuration exceeds snapshot budget")
 	}
 	cfg.Channels = append([]w.Channel(nil), cfg.Channels...)
-	l, err := w.ListenNoise(address, cfg.NoiseKey, cfg.MaxClients)
+	chat, err := openChat(cfg.Chat)
 	if err != nil {
 		return nil, err
 	}
-	return &Server{listener: l, config: cfg, peers: map[uint16]*peer{}}, nil
+	l, err := w.ListenNoise(address, cfg.NoiseKey, cfg.MaxClients)
+	if err != nil {
+		chat.close()
+		return nil, err
+	}
+	return &Server{listener: l, config: cfg, chat: chat, peers: map[uint16]*peer{}}, nil
 }
 func (s *Server) Addr() net.Addr { return s.listener.Addr() }
 
@@ -113,7 +124,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	slots := make(chan struct{}, s.config.MaxClients)
 	stop := context.AfterFunc(ctx, func() { _ = s.listener.Close() })
 	defer stop()
-	defer func() { cancelAll(); _ = s.listener.Close(); s.wg.Wait() }()
+	defer func() { cancelAll(); _ = s.listener.Close(); s.wg.Wait(); s.chat.close() }()
 	for {
 		c, err := s.listener.Accept(ctx)
 		if err != nil {
@@ -162,7 +173,7 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 		return
 	}
 	_ = stream.SetDeadline(time.Time{})
-	p := &peer{conn: c, stream: stream, epoch: 1, out: make(chan []byte, 16), voiceOut: w.NewVoiceRing(4), done: make(chan struct{})}
+	p := &peer{conn: c, stream: stream, epoch: 1, out: make(chan []byte, 16), voiceOut: w.NewVoiceRing(4), done: make(chan struct{}), chatWake: make(chan struct{}, 1), chatOut: make(chan []byte, 4)}
 	p.identity = nativeidentity.UID(hello.PublicKey)
 	// Bootstrap only the current channel; the client explicitly lists what its UI needs.
 	s.mu.Lock()
@@ -175,6 +186,7 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 	p.member = w.Member{ID: uint16(s.next), Channel: s.config.Channels[0].ID, Nickname: hello.Nickname, Instance: rand.Text(), Muted: true, Epoch: 1}
 	s.peers[p.member.ID] = p
 	s.sendStateLocked(p, w.WelcomeKind, true)
+	s.restartChatLocked(p)
 	s.broadcastLocked(p)
 	member := p.member
 	s.mu.Unlock()
@@ -190,7 +202,8 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 	connectedAt := time.Now()
 	logger.Info("client connected")
 	var workers sync.WaitGroup
-	workers.Add(3)
+	workers.Add(4)
+	go func() { defer workers.Done(); s.chatLoop(p) }()
 	go func() { defer workers.Done(); s.writeLoop(p) }()
 	go func() { defer workers.Done(); s.voiceLoop(p) }()
 	go func() { defer workers.Done(); w.SendVoiceRing(p.conn, p.voiceOut) }()
@@ -260,6 +273,10 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 		if w.Decode(f, &cmd) != nil {
 			return
 		}
+		if f.Kind == w.ChatKind {
+			s.chatCommand(p, f, cmd)
+			continue
+		}
 		s.mu.Lock()
 		if !p.commandBucket.take(10, 20) {
 			s.enqueueLocked(p, w.ReplyKind, f.Request, w.Reply{Code: w.RateLimited})
@@ -286,19 +303,13 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 				p.member.Epoch = p.epoch
 				p.member.Channel = cmd.Channel
 				s.broadcastLocked(nil)
+				s.restartChatLocked(p)
 			}
-		case w.ChatKind:
+		case w.ChatSyncKind:
 			if cmd.Channel != p.member.Channel {
 				code = w.WrongChannel
-			} else if !utf8.ValidString(cmd.Text) || len(cmd.Text) > 8192 || strings.TrimSpace(cmd.Text) == "" || strings.ContainsRune(cmd.Text, 0) {
-				code = w.Rejected
 			} else {
-				msg := w.Message{Channel: p.member.Channel, Sender: p.member.ID, Nickname: p.member.Nickname, Text: cmd.Text}
-				for _, other := range s.peers {
-					if other != p && other.member.Channel == p.member.Channel {
-						s.enqueueLocked(other, w.MessageKind, 0, msg)
-					}
-				}
+				s.restartChatLocked(p)
 			}
 		case w.VoiceStateKind:
 			if p.member.Muted != cmd.Muted || p.member.Deafened != cmd.Deafened {
@@ -380,16 +391,31 @@ func (s *Server) writeLoop(p *peer) {
 			return
 		case <-p.conn.Context().Done():
 			return
-		case b := <-p.out:
-			_ = p.stream.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			for len(b) > 0 {
-				n, err := p.stream.Write(b)
-				if err != nil || n == 0 {
-					_ = p.conn.CloseWithError(1, "control write failed")
-					return
-				}
-				b = b[n:]
+		default:
+		}
+		var b []byte
+		// Catch-up cannot fill the critical control queue. Reuse this writer and
+		// prefer queued state/replies before taking another bounded chat frame.
+		select {
+		case b = <-p.out:
+		default:
+			select {
+			case <-p.done:
+				return
+			case <-p.conn.Context().Done():
+				return
+			case b = <-p.out:
+			case b = <-p.chatOut:
 			}
+		}
+		_ = p.stream.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		for len(b) > 0 {
+			n, err := p.stream.Write(b)
+			if err != nil || n == 0 {
+				_ = p.conn.CloseWithError(1, "control write failed")
+				return
+			}
+			b = b[n:]
 		}
 	}
 }

@@ -49,6 +49,8 @@ func TestControlBoundsAndTypeSafety(t *testing.T) {
 		{MoveKind, &pb.Command{Channel: 65536}, &Command{}},
 		{ReplyKind, &pb.Reply{Code: 256}, &Reply{}},
 		{MessageKind, &pb.Message{Sender: 65536}, &Message{}},
+		{ChatStatusKind, &pb.ChatStatus{Channel: 65536}, &ChatStatus{}},
+		{ChatStatusKind, &pb.ChatStatus{Status: 3}, &ChatStatus{}},
 		{StateKind, &pb.State{Self: 65536}, &State{}},
 		{StateKind, &pb.State{Channels: []*pb.Channel{{Id: 65536}}}, &State{}},
 		{StateKind, &pb.State{Members: []*pb.Member{{Channel: 65536}}}, &State{}},
@@ -87,6 +89,19 @@ func TestControlBoundsAndTypeSafety(t *testing.T) {
 	}
 	if _, err := Pack(HelloKind, 0, Hello{Nickname: string([]byte{0xff})}); err == nil {
 		t.Fatal("invalid UTF-8 accepted")
+	}
+}
+
+func TestRetainedChatMetadataRoundTrip(t *testing.T) {
+	want := Message{Channel: 3, Sender: 4, Nickname: "author", Text: "retained", Sequence: 4294967297, Timestamp: 1792540800123456789, AuthorUID: "stable-uid", ClientID: "request-1", Self: true, Epoch: 8, History: true}
+	data, err := Pack(MessageKind, 0, want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := Read(bytes.NewReader(data))
+	var got Message
+	if err != nil || Decode(frame, &got) != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("chat metadata changed: %+v (%v)", got, err)
 	}
 }
 

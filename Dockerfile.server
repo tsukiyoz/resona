@@ -23,6 +23,7 @@ RUN addgroup -S -g 10001 resona && adduser -S -D -H -u 10001 -G resona resona \
 COPY --from=build /out/resona-server /usr/local/bin/resona-server
 COPY --chmod=755 deploy/server-entrypoint.sh /usr/local/bin/server-entrypoint
 COPY docs/noise-license.txt /usr/share/licenses/resona/noise-license.txt
+COPY docs/nats-license.txt /usr/share/licenses/resona/nats-license.txt
 ENV XDG_CONFIG_HOME=/data
 USER 10001:10001
 EXPOSE 9988/udp

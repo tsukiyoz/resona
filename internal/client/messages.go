@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -34,7 +36,35 @@ func (e *MessageSendError) Error() string { return e.Message }
 type ChannelMessageSender interface {
 	SendChannelMessage(context.Context, string, string) error
 }
-type RemoteMessage struct{ ChannelID, UserID, Author, Text string }
+type IdentifiedMessageSender interface {
+	SendIdentifiedChannelMessage(context.Context, string, string, string) error
+}
+type (
+	ChannelChatSynchronizer interface {
+		SyncChannelChat(context.Context, string) error
+	}
+	RemoteMessage struct {
+		ChannelID, UserID, Author, Text string
+		Sequence                        uint64
+		Timestamp                       int64
+		ClientID                        string
+		Self, History                   bool
+	}
+)
+
+func (s *Service) RetryChannelChat(ctx context.Context, sessionID, channelID string) error {
+	s.mu.Lock()
+	if s.state.Session.ID != sessionID || s.state.Session.ChannelID != channelID || s.state.Session.Mode != "connected" {
+		s.mu.Unlock()
+		return ErrMessageChannelChanged
+	}
+	remote, ok := s.connection.(ChannelChatSynchronizer)
+	s.mu.Unlock()
+	if !ok {
+		return ErrMessageUnavailable
+	}
+	return remote.SyncChannelChat(ctx, channelID)
+}
 
 func (s *Service) SendChannelMessage(sessionID, channelID, text string) (Workspace, error) {
 	s.mu.Lock()
@@ -104,6 +134,9 @@ func (s *Service) canSendMessageLocked() error {
 	if s.state.Session.SwitchingChannelID != "" {
 		return errors.New("正在切换频道，请等待服务器确认")
 	}
+	if s.state.Session.ChatState == "loading" || s.state.Session.ChatState == "failed" {
+		return errors.New("频道消息尚未就绪，请等待或重试加载")
+	}
 	if s.state.Session.SendingMessageID != "" {
 		return errors.New("上一条消息仍在发送")
 	}
@@ -133,7 +166,12 @@ func (s *Service) startMessageLocked(id string) {
 	go func() {
 		defer s.cleanupWG.Done()
 		defer cancel()
-		err := sender.SendChannelMessage(ctx, outgoing.ChannelID, outgoing.Text)
+		var err error
+		if identified, ok := sender.(IdentifiedMessageSender); ok {
+			err = identified.SendIdentifiedChannelMessage(ctx, outgoing.ChannelID, outgoing.Text, outgoing.ID)
+		} else {
+			err = sender.SendChannelMessage(ctx, outgoing.ChannelID, outgoing.Text)
+		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		defer s.notifyChangedLocked()
@@ -147,7 +185,9 @@ func (s *Service) startMessageLocked(id string) {
 			if message.ID != id {
 				continue
 			}
-			message.Status, message.Error = messageResult(err)
+			if message.Sequence == 0 || err == nil {
+				message.Status, message.Error = messageResult(err)
+			}
 			break
 		}
 	}()
@@ -189,11 +229,38 @@ func (s *Service) cancelMessageLocked() {
 
 func (s *Service) appendRemoteMessagesLocked(messages []RemoteMessage) {
 	for _, remote := range messages {
-		if remote.UserID == "" || remote.UserID == s.state.Session.SelfID || remote.ChannelID == "" || remote.ChannelID != s.state.Session.ChannelID || !utf8.ValidString(remote.Text) || len(remote.Text) > MaxChannelMessageBytes {
+		if remote.UserID == "" || (remote.Sequence == 0 && remote.UserID == s.state.Session.SelfID) || remote.ChannelID == "" || remote.ChannelID != s.state.Session.ChannelID || !utf8.ValidString(remote.Text) || len(remote.Text) > MaxChannelMessageBytes {
 			continue
 		}
-		s.state.Messages = append(s.state.Messages, Message{ID: rand.Text(), ChannelID: remote.ChannelID, AuthorID: remote.UserID, Author: remote.Author, Text: remote.Text, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Status: "received"})
+		message := Message{ID: rand.Text(), ChannelID: remote.ChannelID, AuthorID: remote.UserID, Author: remote.Author, Text: remote.Text, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Status: "received", Sequence: remote.Sequence, History: remote.History}
+		if remote.Sequence != 0 {
+			message.ID = "chat-" + strconv.FormatUint(remote.Sequence, 10)
+			message.CreatedAt = time.Unix(0, remote.Timestamp).UTC().Format(time.RFC3339Nano)
+			if remote.Self {
+				message.Status = "sent"
+			}
+			found := false
+			for i, prior := range s.state.Messages {
+				if prior.Sequence == remote.Sequence || (remote.Self && remote.ClientID != "" && prior.ID == remote.ClientID) {
+					message.ID = prior.ID
+					s.state.Messages[i] = message
+					found = true
+					break
+				}
+			}
+			if found {
+				continue
+			}
+		}
+		s.state.Messages = append(s.state.Messages, message)
 	}
+	sort.SliceStable(s.state.Messages, func(i, j int) bool {
+		a, b := s.state.Messages[i].Sequence, s.state.Messages[j].Sequence
+		if a == 0 || b == 0 {
+			return a != 0 && b == 0
+		}
+		return a < b
+	})
 	s.trimMessagesLocked()
 }
 

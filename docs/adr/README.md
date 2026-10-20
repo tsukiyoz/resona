@@ -14,3 +14,4 @@
 | [0028 重连与诊断](0028-reconnect-and-client-diagnostics.md) | Accepted |
 | [0029 本地配置升级与发布入口](0029-local-config-upgrades.md) | Accepted（配置保护），更新分发方案由 0030 取代 |
 | [0030 分发方式与更新](0030-distribution-and-updates.md) | Accepted（便携手动更新），Pending（安装包与安装器升级） |
+| [0031 有界频道历史](0031-bounded-channel-chat.md) | Accepted，实验协议 RN06 |

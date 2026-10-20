@@ -22,6 +22,8 @@ func dispatchRead(ctx context.Context, s *client.Service, req request) (any, err
 		return nil, err
 	}
 	switch req.Method {
+	case "RetryChannelChat":
+		return struct{}{}, s.RetryChannelChat(ctx, p.SessionID, p.ChannelID)
 	case "GetIconResource":
 		return s.GetIconResource(ctx, p.SessionID, p.Ref)
 	case "GetChannelDetails":

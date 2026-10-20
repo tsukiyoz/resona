@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	w "github.com/tsukiyoz/resona/internal/nativewire"
 	"github.com/tsukiyoz/resona/internal/noiseudp"
@@ -44,6 +45,10 @@ func run() error {
 	channelsPath := flag.String("channels", "", "JSON channel array file (ID, Name, Description)")
 	maxClients := flag.Int("max-clients", 64, "maximum simultaneous connections (1-64)")
 	accessDir := flag.String("access-dir", filepath.Join(configDir, "resona-server", "access"), "persistent server ownership directory")
+	chatDir := flag.String("chat-dir", "", "JetStream chat directory (default: access-dir/chat)")
+	chatMessages := flag.Int64("chat-max-messages", 200, "maximum retained messages per channel")
+	chatBytes := flag.Int64("chat-max-bytes", 64<<20, "maximum retained chat stream bytes across channels")
+	chatAge := flag.Duration("chat-max-age", 7*24*time.Hour, "maximum retained chat message age")
 	initOwner := flag.Bool("init-owner", false, "offline: create a one-time owner claim (24h), print once, never overwrite")
 	resetOwner := flag.Bool("reset-owner-claim", false, "offline: replace unused owner claim with a new 24h code; refuses an existing owner")
 	showVersion := flag.Bool("version", false, "print build version and exit")
@@ -121,7 +126,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	s, err := server.Listen(*address, server.Config{ChannelStore: channelStore, Ownership: ownership, NoiseKey: noiseKey, Name: *name, Password: os.Getenv("RESONA_SERVER_PASSWORD"), Channels: channels, MaxClients: *maxClients})
+	if *chatDir == "" {
+		*chatDir = filepath.Join(*accessDir, "chat")
+	}
+	s, err := server.Listen(*address, server.Config{Chat: server.ChatConfig{Directory: *chatDir, MaxMessagesPerChannel: *chatMessages, MaxBytes: *chatBytes, MaxAge: *chatAge}, ChannelStore: channelStore, Ownership: ownership, NoiseKey: noiseKey, Name: *name, Password: os.Getenv("RESONA_SERVER_PASSWORD"), Channels: channels, MaxClients: *maxClients})
 	if err != nil {
 		return err
 	}
