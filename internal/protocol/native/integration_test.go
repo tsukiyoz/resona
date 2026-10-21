@@ -20,8 +20,8 @@ func startServer(t *testing.T) (client.ServerProfile, context.CancelFunc, <-chan
 	return startServerOwned(t, nil)
 }
 
-func startServerOwned(t *testing.T, ownership *server.Ownership) (client.ServerProfile, context.CancelFunc, <-chan error) {
-	return startServerConfigured(t, server.Config{Name: "test", Password: "test-password", Channels: []w.Channel{{ID: 1, Name: "one"}, {ID: 2, Name: "two"}}, Ownership: ownership})
+func startServerOwned(t *testing.T, store *server.Store) (client.ServerProfile, context.CancelFunc, <-chan error) {
+	return startServerConfigured(t, server.Config{Name: "test", Password: "test-password", Channels: []w.Channel{{ID: 1, Name: "one"}, {ID: 2, Name: "two"}}, Store: store})
 }
 
 func startServerConfigured(t *testing.T, cfg server.Config) (client.ServerProfile, context.CancelFunc, <-chan error) {

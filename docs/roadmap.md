@@ -4,6 +4,10 @@
 
 ## 当前已有
 
+- 2026-10-21：服务端 Cobra CLI、internal 包文档与共享 JetStream 管理资源 KV
+  已实现；旧 JSON 首次导入，CAS 保存频道/owner/认领状态，共享 watch 按已有兴趣
+  推送。桌面移除 Core 探测入口。验证范围与平台限制见 verification.md、ADR-0033。
+
 - 2026-10-21：发送 ANS 接入 RNNoise regular，与 SpeexDSP/现有 WebRTC NS 可选；
   算法菜单项和当前选项提供 Core 描述悬停提示，保留现有默认值及异步应用流程。
   本机 Core 全量/相关 race、原生库、桌面单测通过；Windows 产品包和游戏负载待验收。

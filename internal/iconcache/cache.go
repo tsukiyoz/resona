@@ -1,4 +1,3 @@
-// Package iconcache caches validated PNG thumbnails for protocol adapters.
 package iconcache
 
 import (

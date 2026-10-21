@@ -10,7 +10,7 @@ fi
 
 noise_key=/data/noise.key
 if [ ! -e "$noise_key" ]; then
-    resona-server --init-key --noise-key "$noise_key"
+    resona-server identity init --noise-key "$noise_key"
 fi
 # Existing invalid identities fail in the server; never silently rotate a key.
 exec resona-server --noise-key "$noise_key" "$@"

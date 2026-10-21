@@ -472,3 +472,40 @@ Windows CI 增加原生 Credential API 合成条目测试，以及无编译器 P
 响应，原卡住动作未复现。Cmd-Q 后进程退出；重新启动并点击系统关闭按钮后再次
 验证进程退出，无 resona-core。没有进入服务器、打开实际音频设备或修改用户设置。
 这些结果只覆盖本机离线交互与退出，不替代连接中退出、真实驱动或 Windows 验收。
+
+## 2026-10-21：服务端 Cobra、KV 管理资源与单进程诊断
+
+Rust 客户端迁移已通过 8a096bb 合入本地 main；随后从 main 创建
+feature/tsukiyo/server-20261021_kv-resources。本轮未推送、打 tag 或部署。
+
+Cobra 子命令覆盖 serve、identity init、owner init/reset-claim、version，保留旧部署
+标志兼容。所有 Go internal 包均有独立 doc.go。频道、owner 与 claim 摘要迁入
+共享嵌入式 JetStream 的文件 KV，以一个有界文档的 CAS 保持原子性；旧 JSON 仅在
+首次建桶时导入，原文件保留。一个服务端 watcher 驱动现有兴趣范围内的资源推送，
+没有逐连接 KV consumer、轮询定时器或语音包日志。未来 HTTP 入口仍需走已授权的
+管理方法；本轮没有开放 HTTP 管理接口。
+
+go test ./internal/... ./cmd/resona-server ./deploy、make lint 和相关 server/native/CLI
+race 测试通过。补充验证了 CAS 冲突重试上限、排队取消、重启持久化、导入失败恢复、
+损坏或删除状态拒绝启动、按兴趣推送、拒绝修改后的投影更新，以及关闭时回收 watcher。
+KV/磁盘等待不持有语音路由锁；这些正确性测试不代表已完成并发性能测量。
+
+50 项桌面测试、Rust 客户端 21 项单元与 18 项 Go 回环互通测试通过。诊断页移除
+Core 探测，自动加载能力信息；导出等待、失败和重试在本页显示，退出后迟到回执
+不打开文件管理器。关于页保留实际构建版本标记。产品体验只读复核无剩余阻断。
+
+make build-desktop build-server 完成本机 release 构建及严格签名校验，独立验收包为
+desktop/dist/Resona-KV-Review.app，未替换或操作用户运行中的应用。本轮未做新版本
+实窗、真实音频设备、Windows、游戏负载或长期资源验收，也未操作线上服务和凭据。
+
+### 授权远端 KV Review 部署
+
+随后经用户授权，将当前未提交工作树构建为 Linux amd64 Docker 镜像
+resona-server:v0.1.5-kv-review.20261021，并部署到 tsukiyo。上传包 SHA-256 校验一致；
+停止旧服务后备份完整 data/access，保留旧容器，沿用原身份、密码环境与 9988/UDP。
+镜像版本明确保留 dirty=true，本次不是发布或 Git 推送。
+
+启动日志确认监听成功，文件 KV_RESONA_RESOURCES 已创建；检查时容器运行且重启次数
+为零。备份目录/归档权限为 0700/0600。此次检查仅覆盖部署、存储初始化与监听，
+尚不代表客户端握手、旧频道/Owner 显示、实时同步或语音验收通过；由用户使用独立
+Resona-KV-Review.app 继续验证。跨格式回退需同时恢复停服时的数据备份。

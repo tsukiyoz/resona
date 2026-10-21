@@ -1,4 +1,3 @@
-// Package config persists server bookmarks without authentication secrets.
 package config
 
 import (

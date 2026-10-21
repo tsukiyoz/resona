@@ -1,7 +1,6 @@
 package server
 
 import (
-	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -14,24 +13,16 @@ import (
 func channelTestServer(t *testing.T) (*Server, *peer, string) {
 	t.Helper()
 	dir := t.TempDir()
-	token, err := InitOwnerClaim(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	owner, err := OpenOwnership(dir)
+	store := testStore(t, dir)
+	token, err := store.ProvisionOwnerClaim(false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	p := &peer{identity: strings.Repeat("a", 64)}
-	if err = owner.Claim(p.identity, token); err != nil {
+	if err = store.Claim(p.identity, token); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, "channels.json")
-	store, err := OpenChannelStore(path, []w.Channel{{ID: 1, Name: "Lobby"}, {ID: 2, Name: "Gaming"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return &Server{config: Config{Ownership: owner, ChannelStore: store, Channels: store.record.Channels}, peers: map[uint16]*peer{}}, p, path
+	return &Server{config: Config{Store: store, Channels: store.snapshot().Channels.Channels}, peers: map[uint16]*peer{}}, p, dir
 }
 
 func TestChannelsPermissionPersistenceAndStableIDs(t *testing.T) {
@@ -56,14 +47,12 @@ func TestChannelsPermissionPersistenceAndStableIDs(t *testing.T) {
 	if code := s.manageChannel(owner, w.DeleteChannelKind, 2, "", ""); code != w.OK {
 		t.Fatal(code)
 	}
-	reloaded, err := OpenChannelStore(path, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(s.config.Channels, reloaded.record.Channels) || reloaded.record.Next != 4 {
+	s.config.Store.Close()
+	reloaded := testStore(t, path)
+	if !reflect.DeepEqual(s.config.Channels, reloaded.snapshot().Channels.Channels) || reloaded.snapshot().Channels.Next != 4 {
 		t.Fatal("restart mismatch")
 	}
-	s.config.ChannelStore = reloaded
+	s.config.Store = reloaded
 	if code := s.manageChannel(owner, w.CreateChannelKind, 0, "Later", ""); code != w.OK {
 		t.Fatal(code)
 	}
@@ -73,7 +62,7 @@ func TestChannelsPermissionPersistenceAndStableIDs(t *testing.T) {
 }
 
 func TestChannelsFailedStorageAndValidationPreserveState(t *testing.T) {
-	s, owner, path := channelTestServer(t)
+	s, owner, _ := channelTestServer(t)
 	before := append([]w.Channel(nil), s.config.Channels...)
 	for _, name := range []string{" ", "bad\nname", strings.Repeat("x", 101)} {
 		if code := s.manageChannel(owner, w.CreateChannelKind, 0, name, ""); code != w.Rejected {
@@ -83,16 +72,11 @@ func TestChannelsFailedStorageAndValidationPreserveState(t *testing.T) {
 	if code := s.manageChannel(owner, w.UpdateChannelKind, 2, "valid", strings.Repeat("x", 1025)); code != w.Rejected {
 		t.Fatal(code)
 	}
-	if err := os.Rename(path, path+".backup"); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(path, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	s.config.Store.chat.conn.Close()
 	if code := s.manageChannel(owner, w.DeleteChannelKind, 2, "", ""); code != w.StorageFailed {
 		t.Fatal(code)
 	}
-	if !reflect.DeepEqual(before, s.config.Channels) || s.deletingChannel != 0 || s.config.ChannelStore.record.Next != 3 {
+	if !reflect.DeepEqual(before, s.config.Channels) || s.deletingChannel != 0 || s.config.Store.snapshot().Channels.Next != 3 {
 		t.Fatal("failed operation changed state")
 	}
 }
@@ -139,8 +123,19 @@ func TestChannelAudioPersistenceValidationAndLegacyEdits(t *testing.T) {
 	if !reflect.DeepEqual(before, s.config.Channels) {
 		t.Fatal("rejection changed metadata")
 	}
-	reloaded, err := OpenChannelStore(path, nil)
-	if err != nil || !reflect.DeepEqual(before, reloaded.record.Channels) {
-		t.Fatalf("restart lost audio: %v", err)
+	s.config.Store.Close()
+	reloaded := testStore(t, path)
+	if !reflect.DeepEqual(before, reloaded.snapshot().Channels.Channels) {
+		t.Fatal("restart lost audio")
 	}
+}
+
+func testStore(t *testing.T, dir string) *Store {
+	t.Helper()
+	s, err := OpenStore(ChatConfig{Directory: filepath.Join(dir, "chat")}, dir, []w.Channel{{ID: 1, Name: "Lobby"}, {ID: 2, Name: "Gaming"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	return s
 }

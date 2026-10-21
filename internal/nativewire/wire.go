@@ -1,4 +1,3 @@
-// Package nativewire defines the versioned Resona protocol, independent of GUI and audio devices.
 package nativewire
 
 import (

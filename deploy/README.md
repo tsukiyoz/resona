@@ -31,7 +31,8 @@ docker run --rm resona-server:v0.1.1 --version
 ```text
 /opt/resona/
   data/noise.key
-  access/              # 所有者、权限和频道数据
+  access/              # 旧 JSON（仅迁移读取）和运行锁
+    chat/              # JetStream 聊天与管理资源 KV，必须完整备份
   backups/             # 升级时生成，包含敏感数据，不上传
 ```
 

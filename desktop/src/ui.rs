@@ -74,7 +74,6 @@ enum Pending {
     ChatRetry(String, String, u32),
     Update(&'static str),
     ExportDiagnostics,
-    Probe(Instant),
     CoreInfo,
     ResourceInterest(u64),
     ChannelMutation {
@@ -258,8 +257,9 @@ pub struct ResonaApp {
     _settings_watch: Option<gpui::Task<()>>,
     settings_notice: String,
     settings_discard: bool,
-    probe_result: String,
     core_info: Option<Value>,
+    diagnostic_error: String,
+    build_info_error: String,
     update_status: Value,
     update_notice: String,
     preference_revision: u64,
@@ -546,8 +546,9 @@ impl ResonaApp {
             _settings_watch: None,
             settings_notice: String::new(),
             settings_discard: false,
-            probe_result: String::new(),
             core_info: None,
+            diagnostic_error: String::new(),
+            build_info_error: String::new(),
             update_status: json!({"state":"idle"}),
             update_notice: String::new(),
             preference_revision: 0,
@@ -692,7 +693,7 @@ impl ResonaApp {
         let result = self
             .core
             .as_ref()
-            .ok_or_else(|| "客户端核心不可用".to_owned())
+            .ok_or_else(|| "应用尚未就绪，请重启应用".to_owned())
             .and_then(|core| {
                 core.request(method, params)
                     .map_err(|error| error.to_string())
@@ -714,6 +715,11 @@ impl ResonaApp {
                 }
             }
             Pending::Update(_) => self.update_notice = error,
+            Pending::ExportDiagnostics => self.diagnostic_error = format!("导出诊断失败：{error}"),
+            Pending::CoreInfo => self.build_info_error = format!("无法读取应用构建信息：{error}"),
+            Pending::Capabilities => {
+                self.diagnostic_error = format!("无法读取音频能力：{error}，请重启应用")
+            }
             Pending::ResourceInterest(generation) => {
                 if generation == self.resource_generation {
                     self.resource_state = ResourceState::Failed;
@@ -1160,22 +1166,9 @@ impl ResonaApp {
                             if let Some(path) = value.as_str() {
                                 cx.reveal_path(std::path::Path::new(path));
                             } else {
-                                self.error = "诊断导出结果无效".into();
+                                self.diagnostic_error = "诊断导出结果无效，请重试".into();
                             }
                         }
-                    }
-                    (Some(Pending::Probe(started)), Ok(value)) => {
-                        self.probe_result = match self.update_capabilities(value) {
-                            Ok(()) => format!(
-                                "核心响应正常 · {} ms · {}",
-                                started.elapsed().as_millis(),
-                                self.capabilities.platform
-                            ),
-                            Err(error) => format!("核心探测失败：{error}"),
-                        };
-                    }
-                    (Some(Pending::Probe(_)), Err(error)) => {
-                        self.probe_result = format!("核心探测失败：{error}");
                     }
                     (Some(Pending::Update(method)), Ok(value)) => {
                         if method == "GetUpdateStatus" {
@@ -1189,10 +1182,13 @@ impl ResonaApp {
                         }
                     }
                     (Some(Pending::Update(_)), Err(error)) => self.update_notice = error,
-                    (Some(Pending::CoreInfo), Ok(value)) => self.core_info = Some(value),
+                    (Some(Pending::CoreInfo), Ok(value)) => {
+                        self.core_info = Some(value);
+                        self.build_info_error.clear();
+                    }
                     (Some(Pending::CoreInfo), Err(error)) => {
                         self.core_info = None;
-                        self.error = format!("无法读取核心版本：{error}");
+                        self.build_info_error = format!("无法读取应用构建信息：{error}");
                     }
                     (Some(Pending::Devices), Ok(value)) => match serde_json::from_value(value) {
                         Ok(devices) => self.devices = devices,
@@ -1200,8 +1196,14 @@ impl ResonaApp {
                     },
                     (Some(Pending::Capabilities), Ok(value)) => {
                         if let Err(error) = self.update_capabilities(value) {
-                            self.error = error;
+                            self.diagnostic_error = error;
                         }
+                    }
+                    (Some(Pending::Capabilities), Err(error)) => {
+                        self.request_failed(Pending::Capabilities, error)
+                    }
+                    (Some(Pending::ExportDiagnostics), Err(error)) => {
+                        self.request_failed(Pending::ExportDiagnostics, error)
                     }
                     (Some(Pending::Notification), Ok(_)) => {}
                     (Some(Pending::Send(submitted)), Ok(value)) => {
@@ -2569,11 +2571,11 @@ impl ResonaApp {
     }
 
     fn update_capabilities(&mut self, value: Value) -> Result<(), String> {
-        let capabilities: Capabilities =
-            serde_json::from_value(value).map_err(|error| format!("无法读取核心能力：{error}"))?;
+        let capabilities: Capabilities = serde_json::from_value(value)
+            .map_err(|error| format!("无法读取音频能力：{error}，请重启应用"))?;
         if capabilities.protocol_version != 1 {
             return Err(format!(
-                "不支持的核心协议版本：{}",
+                "不支持的应用接口版本：{}，请重启或重新安装应用",
                 capabilities.protocol_version
             ));
         }
@@ -5549,7 +5551,7 @@ impl ResonaApp {
             .collect::<Vec<_>>()
             .join("\n");
         if description.is_empty() {
-            description = "尚未取得可用处理器信息，可在诊断页重新探测 Core。".into();
+            description = "音频处理器信息尚未就绪；若持续不可用，请重启应用。".into();
         }
         let selected_label = options
             .iter()
@@ -5566,7 +5568,7 @@ impl ResonaApp {
             .iter()
             .find(|option| option.id == selected.backend)
             .map(|option| option.description.clone())
-            .unwrap_or_else(|| "此处理器当前不可用，请在诊断页重新探测 Core。".into());
+            .unwrap_or_else(|| "此处理器当前不可用，请检查安装是否完整并重启应用。".into());
         let selected_backend = selected.backend.clone();
         let entity = view.clone();
         div()
@@ -6540,10 +6542,6 @@ impl ResonaApp {
                     )
             }
             Modal::Diagnostics => {
-                let probing = self
-                    .pending
-                    .values()
-                    .any(|p| matches!(p, Pending::Probe(_)));
                 let exporting = self
                     .pending
                     .values()
@@ -6587,51 +6585,6 @@ impl ResonaApp {
                             }),
                     )
                     .child(div().w_full().h(px(1.)).bg(rgb(LINE)))
-                    .child(div().text_sm().text_color(rgb(MUTED)).child("核心状态"))
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(rgb(TEXT))
-                            .child(if self.core.is_some() {
-                                "客户端核心已就绪"
-                            } else {
-                                "客户端核心不可用"
-                            }),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .child(
-                                Button::new("probe-core")
-                                    .label(if probing { "探测中" } else { "探测 Core" })
-                                    .icon(IconName::CircleCheck)
-                                    .outline()
-                                    .disabled(self.core.is_none() || probing)
-                                    .on_click({
-                                        let entity = entity.clone();
-                                        move |_, _, cx| {
-                                            entity.update(cx, |this, cx| {
-                                                this.probe_result = "正在等待核心响应".into();
-                                                this.request(
-                                                    "GetCapabilities",
-                                                    json!({}),
-                                                    Pending::Probe(Instant::now()),
-                                                );
-                                                cx.notify();
-                                            });
-                                        }
-                                    }),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(MUTED))
-                                    .child(self.probe_result.clone()),
-                            ),
-                    )
-                    .child(div().w_full().h(px(1.)).bg(rgb(LINE)))
                     .child(div().text_sm().text_color(rgb(MUTED)).child("本机诊断"))
                     .child(
                         Button::new("export-diagnostics")
@@ -6647,6 +6600,7 @@ impl ResonaApp {
                                 let entity = entity.clone();
                                 move |_, _, cx| {
                                     entity.update(cx, |this, cx| {
+                                        this.diagnostic_error.clear();
                                         this.request(
                                             "ExportDiagnostics",
                                             json!({}),
@@ -6657,6 +6611,7 @@ impl ResonaApp {
                                 }
                             }),
                     )
+                    .child(div().text_xs().text_color(rgb(0xe57878)).child(self.diagnostic_error.clone()))
                     )
                     )
             }
@@ -6695,11 +6650,13 @@ impl ResonaApp {
                                     .flex_col()
                                     .gap_4()
                                     .child(field(
-                                        "桌面版本",
-                                        div().text_sm().child(env!("CARGO_PKG_VERSION")),
+                                        "应用版本",
+                                        div().text_sm().child(
+                                            resona_client::build_info::BuildInfo::default().version,
+                                        ),
                                     ))
                                     .child(field(
-                                        "桌面平台",
+                                        "运行平台",
                                         div().text_sm().child(format!(
                                             "{}/{}",
                                             std::env::consts::OS,
@@ -6715,10 +6672,6 @@ impl ResonaApp {
                                     .flex_col()
                                     .gap_4()
                                     .child(field(
-                                        "Core 版本",
-                                        div().text_sm().child(value("version")),
-                                    ))
-                                    .child(field(
                                         "提交版本",
                                         div().text_sm().child(
                                             value("commit").chars().take(12).collect::<String>(),
@@ -6731,12 +6684,14 @@ impl ResonaApp {
                                     .child(field(
                                         "Rust 运行时",
                                         div().text_sm().child(value("rustVersion")),
-                                    ))
-                                    .child(field(
-                                        "Core 平台",
-                                        div().text_sm().child(value("platform")),
                                     )),
                             ),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0xe57878))
+                            .child(self.build_info_error.clone()),
                     )
                     .child(self.render_updates(&entity))
             }

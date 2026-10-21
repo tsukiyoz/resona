@@ -1,4 +1,3 @@
-// Package version reports reproducible build metadata without initializing services.
 package version
 
 import (

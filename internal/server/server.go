@@ -1,4 +1,3 @@
-// Package server is the authoritative Resona native channel and relay service.
 package server
 
 import (
@@ -22,25 +21,25 @@ import (
 )
 
 type Config struct {
-	Chat         ChatConfig
-	ChannelStore *ChannelStore
-	Ownership    *Ownership
-	NoiseKey     []byte
-	Name         string
-	Password     string
-	Channels     []w.Channel
-	MaxClients   int
+	Chat       ChatConfig
+	Store      *Store
+	NoiseKey   []byte
+	Name       string
+	Password   string
+	Channels   []w.Channel
+	MaxClients int
 }
 type Server struct {
-	chat            *chatStore
-	channelMu       sync.Mutex
-	deletingChannel uint16
-	listener        w.Listener
-	config          Config
-	mu              sync.Mutex
-	peers           map[uint16]*peer
-	next            uint32
-	wg              sync.WaitGroup
+	chat             *chatStore
+	channelMu        sync.Mutex
+	deletingChannel  uint16
+	resourceRevision uint64
+	listener         w.Listener
+	config           Config
+	mu               sync.Mutex
+	peers            map[uint16]*peer
+	next             uint32
+	wg               sync.WaitGroup
 }
 type peer struct {
 	chatGeneration uint64
@@ -82,8 +81,8 @@ func (b *bucket) take(rate, burst float64) bool {
 }
 
 func Listen(address string, cfg Config) (*Server, error) {
-	if cfg.ChannelStore != nil {
-		cfg.Channels = cfg.ChannelStore.record.Channels
+	if cfg.Store != nil {
+		cfg.Channels = cfg.Store.snapshot().Channels.Channels
 	}
 	if cfg.MaxClients == 0 {
 		cfg.MaxClients = w.MaxMembers
@@ -105,16 +104,22 @@ func Listen(address string, cfg Config) (*Server, error) {
 		return nil, errors.New("channel configuration exceeds snapshot budget")
 	}
 	cfg.Channels = append([]w.Channel(nil), cfg.Channels...)
-	chat, err := openChat(cfg.Chat)
-	if err != nil {
-		return nil, err
+	owned := cfg.Store == nil
+	if owned {
+		var err error
+		cfg.Store, err = OpenStore(cfg.Chat, "", cfg.Channels)
+		if err != nil {
+			return nil, err
+		}
 	}
 	l, err := w.ListenNoise(address, cfg.NoiseKey, cfg.MaxClients)
 	if err != nil {
-		chat.close()
+		if owned {
+			cfg.Store.Close()
+		}
 		return nil, err
 	}
-	return &Server{listener: l, config: cfg, chat: chat, peers: map[uint16]*peer{}}, nil
+	return &Server{listener: l, config: cfg, chat: cfg.Store.chat, peers: map[uint16]*peer{}}, nil
 }
 func (s *Server) Addr() net.Addr { return s.listener.Addr() }
 
@@ -124,11 +129,25 @@ func (s *Server) Serve(ctx context.Context) error {
 	slots := make(chan struct{}, s.config.MaxClients)
 	stop := context.AfterFunc(ctx, func() { _ = s.listener.Close() })
 	defer stop()
-	defer func() { cancelAll(); _ = s.listener.Close(); s.wg.Wait(); s.chat.close() }()
+	watchDone := make(chan error, 1)
+	go func() {
+		err := s.config.Store.watch(ctx, s.applyResources)
+		watchDone <- err
+		if err != nil {
+			cancelAll()
+		}
+	}()
+	defer func() { cancelAll(); _ = s.listener.Close(); s.wg.Wait(); s.config.Store.Close() }()
 	for {
 		c, err := s.listener.Accept(ctx)
 		if err != nil {
-			if ctx.Err() != nil {
+			canceled := ctx.Err() != nil
+			cancelAll()
+			watchErr := <-watchDone
+			if watchErr != nil {
+				return watchErr
+			}
+			if canceled {
 				return nil
 			}
 			return err
@@ -260,7 +279,7 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 				continue
 			}
 			code := uint8(w.OK)
-			if s.config.Ownership.Claim(p.identity, claim.Token) != nil {
+			if s.config.Store.claim(c.Context(), p.identity, claim.Token) != nil {
 				code = w.Rejected
 			}
 			s.mu.Lock()
@@ -334,7 +353,7 @@ func (s *Server) stateLocked(p *peer) w.State {
 		}
 	}
 	sort.Slice(members, func(i, j int) bool { return members[i].ID < members[j].ID })
-	role, canClaim := s.config.Ownership.Status(p.identity)
+	role, canClaim := s.config.Store.Status(p.identity)
 	channels := s.config.Channels
 	if !p.watch.AllChannels {
 		channels = nil
@@ -344,7 +363,38 @@ func (s *Server) stateLocked(p *peer) w.State {
 			}
 		}
 	}
-	return w.State{Name: s.config.Name, Self: p.member.ID, Epoch: p.epoch, Channels: channels, Members: members, IdentityUID: p.identity, ServerRole: role, CanClaimOwner: canClaim, CanManageChannels: role == "owner" && s.config.ChannelStore != nil, CanConfigureChannelAudio: role == "owner" && s.config.ChannelStore != nil, CanWatchResources: true, AllChannels: p.watch.AllChannels, AllMembers: p.watch.AllMembers, DefaultChannel: s.config.Channels[0].ID}
+	return w.State{Name: s.config.Name, Self: p.member.ID, Epoch: p.epoch, Channels: channels, Members: members, IdentityUID: p.identity, ServerRole: role, CanClaimOwner: canClaim, CanManageChannels: role == "owner", CanConfigureChannelAudio: role == "owner", CanWatchResources: true, AllChannels: p.watch.AllChannels, AllMembers: p.watch.AllMembers, DefaultChannel: s.config.Channels[0].ID}
+}
+
+// One shared KV informer feeds the existing per-session interest projection.
+// Future admin transports must use the same validated mutation methods; raw KV
+// edits that would orphan active members fail closed instead of breaking voice.
+func (s *Server) applyResources(r resourceRecord, revision uint64) error {
+	s.channelMu.Lock()
+	defer s.channelMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if revision <= s.resourceRevision {
+		return nil
+	}
+	if err := s.config.Store.install(r, revision); err != nil {
+		return err
+	}
+	// A local writer can already have observed a newer revision. Project the
+	// newest cache, not the stale watch payload, even after a rejected command.
+	r, revision = s.config.Store.state()
+	for _, p := range s.peers {
+		found := false
+		for _, ch := range r.Channels.Channels {
+			found = found || ch.ID == p.member.Channel
+		}
+		if !found {
+			return errors.New("resource update removed an occupied channel")
+		}
+	}
+	s.config.Channels, s.resourceRevision = r.Channels.Channels, revision
+	s.broadcastLocked(nil)
+	return nil
 }
 
 // A scoped snapshot replaces prior resource state. Reliable stream ordering plus

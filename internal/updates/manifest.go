@@ -1,4 +1,3 @@
-// Package updates verifies release manifests and checks desktop updates outside audio paths.
 package updates
 
 import (

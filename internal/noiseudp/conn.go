@@ -1,4 +1,3 @@
-// Package noiseudp provides the experimental Resona Noise datagram session.
 package noiseudp
 
 import (
