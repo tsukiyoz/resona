@@ -47,6 +47,16 @@ CPU 和 I/O 的 P95 是按持续时间加权的**采样间隔平均速率**，�
 
 报告不输出 Windows 的唤醒、上下文切换、GPU、瓦数、音频延迟或游戏 FPS。它们不能用进程 I/O 或线程数替代，需要后续专门的 ETW/WPR、GPU 或帧时间测量。也不把 Windows 和 macOS 不同内存接口混成一个跨系统排名。
 
+## GPU 占用采样
+
+`gpu-sample.ps1` 补上报告缺少的 GPU 维度：按进程 id 汇总 `\GPU Engine(*)\Utilization Percentage`（整机归一化、1 秒窗口），同时读取 `\GPU Process Memory(*)\Dedicated Usage`、CPU 与窗口状态。
+
+```powershell
+.\tools\desktop-perf\gpu-sample.ps1 -ProcessName resona-desktop -Seconds 20 -Label idle -Json idle.json
+```
+
+该百分比与任务管理器“GPU”列口径不同（后者取各引擎的最大值），只适合在同一台机器上做改前/改后对比，不能换算成帧时间。输出包含窗口状态；最小化、可见、前台必须分别采样，否则数据不可比。脚本只读取计数器，不启动或结束被测进程。
+
 ## 分析既有 macOS CSV
 
 分析器可在 Windows、macOS、Linux 运行。继续使用仓库原有 `tools/desktop-metrics.c` 采集 macOS；指定原 CSV 中的进程归属：
