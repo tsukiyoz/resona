@@ -459,3 +459,16 @@ resignKeyWindow 后同步回调重锁；Core、音频和提示音线程正常等
 Windows CI 增加原生 Credential API 合成条目测试，以及无编译器 PATH 的 Rust
 音频 DLL 加载检查；macOS CI 校验 Rust 包及签名。Windows、Intel macOS、真实
 设备多人长听、游戏负载和等负载性能测量尚未执行；不据语言切换宣称资源下降。
+
+### GPUI 焦点重入修复后复测
+
+固定 vendored gpui 0.2.2，仅在 resignKeyWindow 前释放窗口状态锁，来源、许可、
+包校验和及移除条件见 desktop/vendor/gpui/RESONA-PATCH.md。只读复核确认没有
+异步间隔、同步回调可重新取锁，整个桌面依赖图共用此补丁实例。
+50 项桌面测试和 Rust 格式检查再次通过；release 打包和严格签名校验通过。
+上游 shaders.metal 原有的七处空格/tab 缩进原样保留，项目改动差异检查通过。
+
+实际离线实窗重新执行设置打开、关于、诊断、核心探测（4ms）、关闭设置，均正常
+响应，原卡住动作未复现。Cmd-Q 后进程退出；重新启动并点击系统关闭按钮后再次
+验证进程退出，无 resona-core。没有进入服务器、打开实际音频设备或修改用户设置。
+这些结果只覆盖本机离线交互与退出，不替代连接中退出、真实驱动或 Windows 验收。
