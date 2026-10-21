@@ -240,6 +240,101 @@ async fn wait_state(
 }
 
 #[tokio::test]
+async fn channel_order_is_authoritative_and_does_not_change_default_or_voice_route() {
+    use resona_client::session::{Command as AppCommand, Error as AppError};
+    let (peer, address, key) = start_peer(&["-server"]);
+    let mut owner = app_session(address, key, "owner").await;
+    let mut member = app_session(address, key, "member").await;
+    let cancel = CancellationToken::new();
+    for session in [&owner, &member] {
+        session
+            .handle
+            .command(
+                AppCommand::Watch {
+                    channels: true,
+                    members: true,
+                },
+                Instant::now() + Duration::from_secs(3),
+                &cancel,
+            )
+            .await
+            .unwrap();
+    }
+    owner
+        .handle
+        .command(
+            AppCommand::ClaimOwner(peer.2.clone().unwrap()),
+            Instant::now() + Duration::from_secs(3),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    wait_state(&mut owner.handle, |s| s.state.can_reorder_channels).await;
+    assert!(!member.handle.state.borrow().state.can_reorder_channels);
+    assert!(matches!(
+        member
+            .handle
+            .command(
+                AppCommand::ReorderChannel { id: 1, before: 0 },
+                Instant::now() + Duration::from_secs(3),
+                &cancel
+            )
+            .await,
+        Err(AppError::Rejected(4))
+    ));
+    let before = owner.handle.state.borrow().clone();
+    owner
+        .handle
+        .command(
+            AppCommand::ReorderChannel { id: 1, before: 0 },
+            Instant::now() + Duration::from_secs(3),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    wait_state(&mut member.handle, |s| {
+        s.state.channels.first().is_some_and(|c| c.id == 2)
+    })
+    .await;
+    wait_state(&mut owner.handle, |s| {
+        s.state.channels.first().is_some_and(|c| c.id == 2)
+    })
+    .await;
+    let ordered = owner.handle.state.borrow().clone();
+    assert_eq!(
+        ordered
+            .state
+            .channels
+            .iter()
+            .map(|c| c.id)
+            .collect::<Vec<_>>(),
+        [2, 1]
+    );
+    assert_eq!(ordered.state.default_channel, 1);
+    assert_eq!(ordered.channel(), before.channel());
+    assert_eq!(ordered.state.epoch, before.state.epoch);
+    assert_eq!(ordered.bitrate(), before.bitrate());
+    let newcomer = app_session(address, key, "newcomer").await;
+    assert_eq!(newcomer.handle.state.borrow().channel(), 1);
+    assert_eq!(newcomer.handle.state.borrow().state.default_channel, 1);
+    assert!(matches!(
+        owner
+            .handle
+            .command(
+                AppCommand::ReorderChannel { id: 2, before: 99 },
+                Instant::now() + Duration::from_secs(3),
+                &cancel
+            )
+            .await,
+        Err(AppError::Rejected(2))
+    ));
+    assert_eq!(owner.handle.state.borrow().state.channels[0].id, 2);
+    owner.close().await;
+    member.close().await;
+    newcomer.close().await;
+}
+
+#[tokio::test]
 async fn application_session_watches_moves_chats_and_routes_voice() {
     use resona_client::session::Command as AppCommand;
     let (_peer, address, key) = start_peer(&["-server"]);
@@ -643,7 +738,7 @@ async fn lifecycle_disconnect_cancels_pending_handshake() {
     assert!(start.elapsed() < Duration::from_secs(1));
 }
 
-struct Peer(Child, Option<std::net::SocketAddr>);
+struct Peer(Child, Option<std::net::SocketAddr>, Option<String>);
 impl Drop for Peer {
     fn drop(&mut self) {
         self.0.stdin.take();
@@ -692,7 +787,7 @@ fn start_peer(args: &[&str]) -> (Peer, std::net::SocketAddr, [u8; 32]) {
         .stderr(Stdio::inherit())
         .spawn()
         .unwrap();
-    let mut peer = Peer(child, None);
+    let mut peer = Peer(child, None, None);
     let stdout = peer.0.stdout.take().unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     let reader = std::thread::spawn(move || {
@@ -707,6 +802,7 @@ fn start_peer(args: &[&str]) -> (Peer, std::net::SocketAddr, [u8; 32]) {
     let info: serde_json::Value = serde_json::from_str(&line).unwrap();
     let address = info["address"].as_str().unwrap().parse().unwrap();
     peer.1 = info["backend"].as_str().map(|s| s.parse().unwrap());
+    peer.2 = info["claim"].as_str().map(str::to_owned);
     let key = info["public_key"].as_str().unwrap();
     let mut public = [0; 32];
     for (i, byte) in public.iter_mut().enumerate() {

@@ -116,6 +116,12 @@ func decodeResources(data []byte) (resourceRecord, error) {
 	d := json.NewDecoder(bytes.NewReader(data))
 	d.DisallowUnknownFields()
 	err := d.Decode(&r)
+	// Version 1 bound the default to the first entry. Normalize once in memory;
+	// the next successful CAS persists version 2 with an independent identity.
+	if err == nil && r.Channels.Version == 1 && r.Channels.Default == 0 && len(r.Channels.Channels) > 0 {
+		r.Channels.Default = r.Channels.Channels[0].ID
+		r.Channels.Version = 2
+	}
 	var extra any
 	if err != nil || len(data) > 128<<10 || d.Decode(&extra) != io.EOF || r.Version != 1 || !validChannelRecord(r.Channels) ||
 		(r.Owner != "" && !validIdentity(r.Owner)) ||
@@ -127,15 +133,17 @@ func decodeResources(data []byte) (resourceRecord, error) {
 }
 
 func validChannelRecord(r channelRecord) bool {
-	if r.Version != 1 || !validChannels(r.Channels) || r.Next == 0 || r.Next > 65536 {
+	if r.Version != 2 || !validChannels(r.Channels) || r.Next == 0 || r.Next > 65536 {
 		return false
 	}
+	defaultFound := false
 	for _, ch := range r.Channels {
+		defaultFound = defaultFound || ch.ID == r.Default
 		if uint32(ch.ID) >= r.Next {
 			return false
 		}
 	}
-	return true
+	return defaultFound
 }
 
 func (s *Store) install(r resourceRecord, revision uint64) error {
@@ -153,7 +161,7 @@ func (s *Store) install(r resourceRecord, revision uint64) error {
 
 func validResourceTransition(before, after resourceRecord) error {
 	if (before.Owner != "" && after.Owner != before.Owner) || after.Channels.Next < before.Channels.Next ||
-		after.Channels.Channels[0].ID != before.Channels.Channels[0].ID {
+		after.Channels.Default != before.Channels.Default {
 		return errors.New("resource update violates immutable owner/default channel/ID sequence")
 	}
 	for _, ch := range after.Channels.Channels {

@@ -19,10 +19,19 @@ Schema 在 `internal/nativewire/pb/control.proto`，用 `make generate` 生成 G
 | 13 | 原子替换 List+Watch 关注范围 |
 | 14 | 重建当前频道历史/实时消息订阅 |
 | 15 | 频道消息加载、就绪或失败通知 |
+| 16 | 调整已有频道的显示顺序 |
 
 Hello 的 Ed25519 签名绑定 Noise 握手和登录参数，验证成功后才加入成员。服务器角色目前为 owner/member；owner 可管理频道。频道数量与并发成员上限均为 64，服务端限制命令与发言速率。
 
 Watch 选择全部频道、全部成员，全部成员要求全部频道。当前频道成员、音质、本人身份和权限始终存在。初始快照在 Reply 前排入同一可靠流，随后递增 revision，避免 list/watch 间隙。当前是范围集合快照，不是逐对象 delta。Watch 等待回复超时不直接关闭健康语音连接；被取消的部分控制写仍关闭连接。
+
+ReorderChannel 包含 id 与 before_id（0 表示末尾），仅 owner 可调用。按最新持久
+顺序将源频道插入目标之前，不改变频道 ID、默认频道或成员/epoch。缺失的源或目标
+返回 WrongChannel；自身表示无位置变化。State.channels 数组就是显示顺序，
+default_channel 独立于首项；具有全频道兴趣的客户端通过常规快照收到改序。
+客户端只在 State.can_reorder_channels 为真时提供排序入口，旧服务端缺失字段时
+不发送新命令。此次为 Protobuf 增量扩展，Noise 握手版本不变；KV 格式升级另见
+ADR-0033。未知结果不自动重发，也不能用旧数组覆盖后续权威快照。
 
 ## 频道文字
 

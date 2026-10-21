@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -22,7 +23,81 @@ func channelTestServer(t *testing.T) (*Server, *peer, string) {
 	if err = store.Claim(p.identity, token); err != nil {
 		t.Fatal(err)
 	}
-	return &Server{config: Config{Store: store, Channels: store.snapshot().Channels.Channels}, peers: map[uint16]*peer{}}, p, dir
+	return &Server{config: Config{Store: store, Channels: store.snapshot().Channels.Channels}, defaultChannel: store.snapshot().Channels.Default, peers: map[uint16]*peer{}}, p, dir
+}
+
+func TestChannelOrderPersistsWithoutChangingDefaultOrMembership(t *testing.T) {
+	s, owner, path := channelTestServer(t)
+	if code := s.manageChannel(owner, w.CreateChannelKind, 0, "Third", "metadata", 20000); code != w.OK {
+		t.Fatal(code)
+	}
+	// An occupied channel may move; membership and voice epochs must not change.
+	p := &peer{member: w.Member{ID: 9, Channel: 1, Epoch: 7}, epoch: 7, out: make(chan []byte, 8), done: make(chan struct{})}
+	s.peers[9] = p
+	before := p.member
+	ctx := context.Background()
+	if code := s.ReorderChannel(ctx, strings.Repeat("b", 64), 1, 0); code != w.PermissionDenied {
+		t.Fatal(code)
+	}
+	order := func(want ...uint16) {
+		t.Helper()
+		got := make([]uint16, len(s.config.Channels))
+		for i, ch := range s.config.Channels {
+			got[i] = ch.ID
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("order=%v want=%v", got, want)
+		}
+	}
+	for _, move := range []struct {
+		id, before uint16
+		want       []uint16
+	}{
+		{1, 0, []uint16{2, 3, 1}},
+		{3, 2, []uint16{3, 2, 1}},
+		{1, 3, []uint16{1, 3, 2}},
+		{1, 1, []uint16{1, 3, 2}},
+	} {
+		if code := s.ReorderChannel(ctx, owner.identity, move.id, move.before); code != w.OK {
+			t.Fatal(code)
+		}
+		order(move.want...)
+	}
+	for _, ids := range [][2]uint16{{99, 1}, {1, 99}, {0, 0}} {
+		if code := s.ReorderChannel(ctx, owner.identity, ids[0], ids[1]); code != w.WrongChannel {
+			t.Fatal(code)
+		}
+		order(1, 3, 2)
+	}
+	if code := s.ReorderChannel(ctx, owner.identity, 1, 0); code != w.OK {
+		t.Fatal(code)
+	}
+	if s.defaultChannel != 1 || s.stateLocked(p).DefaultChannel != 1 || p.member != before || p.epoch != 7 {
+		t.Fatal("ordering changed default or voice route")
+	}
+	if code := s.manageChannel(owner, w.DeleteChannelKind, 1, "", ""); code != w.DefaultChannel {
+		t.Fatal(code)
+	}
+	if code := s.manageChannel(owner, w.DeleteChannelKind, 3, "", ""); code != w.OK {
+		t.Fatal(code)
+	}
+	order(2, 1)
+	delete(s.peers, 9)
+	s.config.Store.Close()
+	s.config.Store = testStore(t, path)
+	r := s.config.Store.snapshot().Channels
+	if r.Default != 1 || r.Version != 2 || r.Channels[0].ID != 2 || r.Channels[1].ID != 1 || r.Next != 4 {
+		t.Fatalf("restart lost order/default: %+v", r)
+	}
+	if code := s.manageChannel(owner, w.CreateChannelKind, 0, "New", ""); code != w.OK {
+		t.Fatal(code)
+	}
+	order(2, 1, 4)
+	s.config.Store.chat.conn.Close()
+	if code := s.ReorderChannel(ctx, owner.identity, 4, 2); code != w.StorageFailed {
+		t.Fatal(code)
+	}
+	order(2, 1, 4)
 }
 
 func TestChannelsPermissionPersistenceAndStableIDs(t *testing.T) {

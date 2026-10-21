@@ -27,6 +27,7 @@ enum Kind {
   KIND_WATCH_RESOURCES = 13;
   KIND_CHAT_SYNC = 14;
   KIND_CHAT_STATUS = 15;
+  KIND_REORDER_CHANNEL = 16;
 }
 message Hello {
   string nickname = 1;
@@ -38,6 +39,9 @@ message ClaimOwner { string token = 1; }
 message CreateChannel { string name = 1; string description = 2; uint32 bitrate = 3; }
 message UpdateChannel { uint32 id = 1; string name = 2; string description = 3; uint32 bitrate = 4; }
 message DeleteChannel { uint32 id = 1; }
+// Move an existing channel before another channel; before_id=0 appends.
+// This changes presentation order, never the default channel or membership.
+message ReorderChannel { uint32 id = 1; uint32 before_id = 2; }
 // Atomically replace interest and enqueue its initial snapshot before the reply.
 // Current-channel voice state and the caller's permissions are always included.
 message WatchResources { bool all_channels = 1; bool all_members = 2; }
@@ -72,6 +76,7 @@ message State {
   bool all_channels = 13;
   bool all_members = 14;
   uint32 default_channel = 15;
+  bool can_reorder_channels = 16;
 }
 // VoiceState sets both flags; it is not a partial update. Missing flags mean false.
 message Command {

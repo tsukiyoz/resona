@@ -46,6 +46,9 @@ func TestControlBoundsAndTypeSafety(t *testing.T) {
 	}{
 		{UpdateChannelKind, &pb.UpdateChannel{Id: 65536}, &UpdateChannel{}},
 		{DeleteChannelKind, &pb.DeleteChannel{Id: 65536}, &DeleteChannel{}},
+		{ReorderChannelKind, &pb.ReorderChannel{Id: 65536}, &ReorderChannel{}},
+		{ReorderChannelKind, &pb.ReorderChannel{Id: 1, BeforeId: 65536}, &ReorderChannel{}},
+		{ReorderChannelKind, &pb.ReorderChannel{}, &ReorderChannel{}},
 		{MoveKind, &pb.Command{Channel: 65536}, &Command{}},
 		{ReplyKind, &pb.Reply{Code: 256}, &Reply{}},
 		{MessageKind, &pb.Message{Sender: 65536}, &Message{}},

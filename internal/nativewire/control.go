@@ -28,6 +28,10 @@ func marshalBody(kind uint8, value any) (proto.Message, error) {
 		if kind == DeleteChannelKind {
 			return &pb.DeleteChannel{Id: uint32(v.ID)}, nil
 		}
+	case ReorderChannel:
+		if kind == ReorderChannelKind {
+			return &pb.ReorderChannel{Id: uint32(v.ID), BeforeId: uint32(v.BeforeID)}, nil
+		}
 	case Hello:
 		if kind == HelloKind {
 			return &pb.Hello{Nickname: v.Nickname, Password: v.Password, PublicKey: v.PublicKey, Signature: v.Signature}, nil
@@ -42,6 +46,7 @@ func marshalBody(kind uint8, value any) (proto.Message, error) {
 		}
 		s := &pb.State{Name: v.Name, Self: uint32(v.Self), Epoch: v.Epoch, Channels: make([]*pb.Channel, len(v.Channels)), Members: make([]*pb.Member, len(v.Members)), IdentityUid: v.IdentityUID, ServerRole: v.ServerRole, CanClaimOwner: v.CanClaimOwner}
 		s.CanManageChannels = v.CanManageChannels
+		s.CanReorderChannels = v.CanReorderChannels
 		s.CanConfigureChannelAudio = v.CanConfigureChannelAudio
 		s.CanWatchResources, s.Revision = v.CanWatchResources, v.Revision
 		s.AllChannels, s.AllMembers, s.DefaultChannel = v.AllChannels, v.AllMembers, uint32(v.DefaultChannel)
@@ -122,6 +127,18 @@ func decodeBody(f Frame, value any) error {
 			return ErrPacket
 		}
 		*out = DeleteChannel{ID: uint16(v.Id)}
+	case *ReorderChannel:
+		if out == nil || f.Kind != ReorderChannelKind {
+			return ErrPacket
+		}
+		var v pb.ReorderChannel
+		if err := unmarshal.Unmarshal(f.Body, &v); err != nil {
+			return err
+		}
+		if v.Id == 0 || v.Id > math.MaxUint16 || v.BeforeId > math.MaxUint16 {
+			return ErrPacket
+		}
+		*out = ReorderChannel{ID: uint16(v.Id), BeforeID: uint16(v.BeforeId)}
 	case *Hello:
 		if out == nil || f.Kind != HelloKind {
 			return ErrPacket
@@ -204,6 +221,7 @@ func decodeBody(f Frame, value any) error {
 		}
 		s := State{Name: v.Name, Self: uint16(v.Self), Epoch: v.Epoch, Channels: make([]Channel, len(v.Channels)), Members: make([]Member, len(v.Members)), IdentityUID: v.IdentityUid, ServerRole: v.ServerRole, CanClaimOwner: v.CanClaimOwner}
 		s.CanManageChannels = v.CanManageChannels
+		s.CanReorderChannels = v.CanReorderChannels
 		s.CanConfigureChannelAudio = v.CanConfigureChannelAudio
 		s.CanWatchResources, s.Revision = v.CanWatchResources, v.Revision
 		s.AllChannels, s.AllMembers, s.DefaultChannel = v.AllChannels, v.AllMembers, uint16(v.DefaultChannel)

@@ -40,6 +40,7 @@ const (
 	Kind_KIND_WATCH_RESOURCES Kind = 13
 	Kind_KIND_CHAT_SYNC       Kind = 14
 	Kind_KIND_CHAT_STATUS     Kind = 15
+	Kind_KIND_REORDER_CHANNEL Kind = 16
 )
 
 // Enum value maps for Kind.
@@ -61,6 +62,7 @@ var (
 		13: "KIND_WATCH_RESOURCES",
 		14: "KIND_CHAT_SYNC",
 		15: "KIND_CHAT_STATUS",
+		16: "KIND_REORDER_CHANNEL",
 	}
 	Kind_value = map[string]int32{
 		"KIND_UNSPECIFIED":     0,
@@ -79,6 +81,7 @@ var (
 		"KIND_WATCH_RESOURCES": 13,
 		"KIND_CHAT_SYNC":       14,
 		"KIND_CHAT_STATUS":     15,
+		"KIND_REORDER_CHANNEL": 16,
 	}
 )
 
@@ -455,6 +458,60 @@ func (x *DeleteChannel) GetId() uint32 {
 	return 0
 }
 
+// Move an existing channel before another channel; before_id=0 appends.
+// This changes presentation order, never the default channel or membership.
+type ReorderChannel struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            uint32                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	BeforeId      uint32                 `protobuf:"varint,2,opt,name=before_id,json=beforeId,proto3" json:"before_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReorderChannel) Reset() {
+	*x = ReorderChannel{}
+	mi := &file_control_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReorderChannel) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReorderChannel) ProtoMessage() {}
+
+func (x *ReorderChannel) ProtoReflect() protoreflect.Message {
+	mi := &file_control_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReorderChannel.ProtoReflect.Descriptor instead.
+func (*ReorderChannel) Descriptor() ([]byte, []int) {
+	return file_control_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *ReorderChannel) GetId() uint32 {
+	if x != nil {
+		return x.Id
+	}
+	return 0
+}
+
+func (x *ReorderChannel) GetBeforeId() uint32 {
+	if x != nil {
+		return x.BeforeId
+	}
+	return 0
+}
+
 // Atomically replace interest and enqueue its initial snapshot before the reply.
 // Current-channel voice state and the caller's permissions are always included.
 type WatchResources struct {
@@ -467,7 +524,7 @@ type WatchResources struct {
 
 func (x *WatchResources) Reset() {
 	*x = WatchResources{}
-	mi := &file_control_proto_msgTypes[6]
+	mi := &file_control_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -479,7 +536,7 @@ func (x *WatchResources) String() string {
 func (*WatchResources) ProtoMessage() {}
 
 func (x *WatchResources) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[6]
+	mi := &file_control_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -492,7 +549,7 @@ func (x *WatchResources) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchResources.ProtoReflect.Descriptor instead.
 func (*WatchResources) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{6}
+	return file_control_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *WatchResources) GetAllChannels() bool {
@@ -521,7 +578,7 @@ type Channel struct {
 
 func (x *Channel) Reset() {
 	*x = Channel{}
-	mi := &file_control_proto_msgTypes[7]
+	mi := &file_control_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -533,7 +590,7 @@ func (x *Channel) String() string {
 func (*Channel) ProtoMessage() {}
 
 func (x *Channel) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[7]
+	mi := &file_control_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -546,7 +603,7 @@ func (x *Channel) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Channel.ProtoReflect.Descriptor instead.
 func (*Channel) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{7}
+	return file_control_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *Channel) GetId() uint32 {
@@ -592,7 +649,7 @@ type Member struct {
 
 func (x *Member) Reset() {
 	*x = Member{}
-	mi := &file_control_proto_msgTypes[8]
+	mi := &file_control_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -604,7 +661,7 @@ func (x *Member) String() string {
 func (*Member) ProtoMessage() {}
 
 func (x *Member) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[8]
+	mi := &file_control_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -617,7 +674,7 @@ func (x *Member) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Member.ProtoReflect.Descriptor instead.
 func (*Member) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{8}
+	return file_control_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *Member) GetId() uint32 {
@@ -686,13 +743,14 @@ type State struct {
 	AllChannels              bool                   `protobuf:"varint,13,opt,name=all_channels,json=allChannels,proto3" json:"all_channels,omitempty"`
 	AllMembers               bool                   `protobuf:"varint,14,opt,name=all_members,json=allMembers,proto3" json:"all_members,omitempty"`
 	DefaultChannel           uint32                 `protobuf:"varint,15,opt,name=default_channel,json=defaultChannel,proto3" json:"default_channel,omitempty"`
+	CanReorderChannels       bool                   `protobuf:"varint,16,opt,name=can_reorder_channels,json=canReorderChannels,proto3" json:"can_reorder_channels,omitempty"`
 	unknownFields            protoimpl.UnknownFields
 	sizeCache                protoimpl.SizeCache
 }
 
 func (x *State) Reset() {
 	*x = State{}
-	mi := &file_control_proto_msgTypes[9]
+	mi := &file_control_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -704,7 +762,7 @@ func (x *State) String() string {
 func (*State) ProtoMessage() {}
 
 func (x *State) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[9]
+	mi := &file_control_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -717,7 +775,7 @@ func (x *State) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use State.ProtoReflect.Descriptor instead.
 func (*State) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{9}
+	return file_control_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *State) GetName() string {
@@ -825,6 +883,13 @@ func (x *State) GetDefaultChannel() uint32 {
 	return 0
 }
 
+func (x *State) GetCanReorderChannels() bool {
+	if x != nil {
+		return x.CanReorderChannels
+	}
+	return false
+}
+
 // VoiceState sets both flags; it is not a partial update. Missing flags mean false.
 type Command struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -839,7 +904,7 @@ type Command struct {
 
 func (x *Command) Reset() {
 	*x = Command{}
-	mi := &file_control_proto_msgTypes[10]
+	mi := &file_control_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -851,7 +916,7 @@ func (x *Command) String() string {
 func (*Command) ProtoMessage() {}
 
 func (x *Command) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[10]
+	mi := &file_control_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -864,7 +929,7 @@ func (x *Command) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Command.ProtoReflect.Descriptor instead.
 func (*Command) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{10}
+	return file_control_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *Command) GetChannel() uint32 {
@@ -911,7 +976,7 @@ type Reply struct {
 
 func (x *Reply) Reset() {
 	*x = Reply{}
-	mi := &file_control_proto_msgTypes[11]
+	mi := &file_control_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -923,7 +988,7 @@ func (x *Reply) String() string {
 func (*Reply) ProtoMessage() {}
 
 func (x *Reply) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[11]
+	mi := &file_control_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -936,7 +1001,7 @@ func (x *Reply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Reply.ProtoReflect.Descriptor instead.
 func (*Reply) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{11}
+	return file_control_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *Reply) GetCode() uint32 {
@@ -965,7 +1030,7 @@ type Message struct {
 
 func (x *Message) Reset() {
 	*x = Message{}
-	mi := &file_control_proto_msgTypes[12]
+	mi := &file_control_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -977,7 +1042,7 @@ func (x *Message) String() string {
 func (*Message) ProtoMessage() {}
 
 func (x *Message) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[12]
+	mi := &file_control_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -990,7 +1055,7 @@ func (x *Message) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Message.ProtoReflect.Descriptor instead.
 func (*Message) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{12}
+	return file_control_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *Message) GetChannel() uint32 {
@@ -1083,7 +1148,7 @@ type ChatStatus struct {
 
 func (x *ChatStatus) Reset() {
 	*x = ChatStatus{}
-	mi := &file_control_proto_msgTypes[13]
+	mi := &file_control_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1095,7 +1160,7 @@ func (x *ChatStatus) String() string {
 func (*ChatStatus) ProtoMessage() {}
 
 func (x *ChatStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[13]
+	mi := &file_control_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1108,7 +1173,7 @@ func (x *ChatStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChatStatus.ProtoReflect.Descriptor instead.
 func (*ChatStatus) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{13}
+	return file_control_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ChatStatus) GetChannel() uint32 {
@@ -1167,7 +1232,10 @@ const file_control_proto_rawDesc = "" +
 	"\vdescription\x18\x03 \x01(\tR\vdescription\x12\x18\n" +
 	"\abitrate\x18\x04 \x01(\rR\abitrate\"\x1f\n" +
 	"\rDeleteChannel\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\rR\x02id\"T\n" +
+	"\x02id\x18\x01 \x01(\rR\x02id\"=\n" +
+	"\x0eReorderChannel\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\rR\x02id\x12\x1b\n" +
+	"\tbefore_id\x18\x02 \x01(\rR\bbeforeId\"T\n" +
 	"\x0eWatchResources\x12!\n" +
 	"\fall_channels\x18\x01 \x01(\bR\vallChannels\x12\x1f\n" +
 	"\vall_members\x18\x02 \x01(\bR\n" +
@@ -1184,7 +1252,7 @@ const file_control_proto_rawDesc = "" +
 	"\binstance\x18\x04 \x01(\tR\binstance\x12\x14\n" +
 	"\x05muted\x18\x05 \x01(\bR\x05muted\x12\x1a\n" +
 	"\bdeafened\x18\x06 \x01(\bR\bdeafened\x12\x14\n" +
-	"\x05epoch\x18\a \x01(\rR\x05epoch\"\xc6\x04\n" +
+	"\x05epoch\x18\a \x01(\rR\x05epoch\"\xf8\x04\n" +
 	"\x05State\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04self\x18\x02 \x01(\rR\x04self\x12\x14\n" +
@@ -1203,7 +1271,8 @@ const file_control_proto_rawDesc = "" +
 	"\fall_channels\x18\r \x01(\bR\vallChannels\x12\x1f\n" +
 	"\vall_members\x18\x0e \x01(\bR\n" +
 	"allMembers\x12'\n" +
-	"\x0fdefault_channel\x18\x0f \x01(\rR\x0edefaultChannel\"\x88\x01\n" +
+	"\x0fdefault_channel\x18\x0f \x01(\rR\x0edefaultChannel\x120\n" +
+	"\x14can_reorder_channels\x18\x10 \x01(\bR\x12canReorderChannels\"\x88\x01\n" +
 	"\aCommand\x12\x18\n" +
 	"\achannel\x18\x01 \x01(\rR\achannel\x12\x12\n" +
 	"\x04text\x18\x02 \x01(\tR\x04text\x12\x14\n" +
@@ -1234,7 +1303,7 @@ const file_control_proto_rawDesc = "" +
 	"\n" +
 	"generation\x18\x03 \x01(\x04R\n" +
 	"generation\x12\x16\n" +
-	"\x06status\x18\x04 \x01(\rR\x06status*\xc9\x02\n" +
+	"\x06status\x18\x04 \x01(\rR\x06status*\xe3\x02\n" +
 	"\x04Kind\x12\x14\n" +
 	"\x10KIND_UNSPECIFIED\x10\x00\x12\x0e\n" +
 	"\n" +
@@ -1255,7 +1324,8 @@ const file_control_proto_rawDesc = "" +
 	"\x13KIND_DELETE_CHANNEL\x10\f\x12\x18\n" +
 	"\x14KIND_WATCH_RESOURCES\x10\r\x12\x12\n" +
 	"\x0eKIND_CHAT_SYNC\x10\x0e\x12\x14\n" +
-	"\x10KIND_CHAT_STATUS\x10\x0fB3Z1github.com/tsukiyoz/resona/internal/nativewire/pbb\x06proto3"
+	"\x10KIND_CHAT_STATUS\x10\x0f\x12\x18\n" +
+	"\x14KIND_REORDER_CHANNEL\x10\x10B3Z1github.com/tsukiyoz/resona/internal/nativewire/pbb\x06proto3"
 
 var (
 	file_control_proto_rawDescOnce sync.Once
@@ -1270,7 +1340,7 @@ func file_control_proto_rawDescGZIP() []byte {
 }
 
 var file_control_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_control_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
+var file_control_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_control_proto_goTypes = []any{
 	(Kind)(0),              // 0: resona.control.v1.Kind
 	(*Frame)(nil),          // 1: resona.control.v1.Frame
@@ -1279,24 +1349,25 @@ var file_control_proto_goTypes = []any{
 	(*CreateChannel)(nil),  // 4: resona.control.v1.CreateChannel
 	(*UpdateChannel)(nil),  // 5: resona.control.v1.UpdateChannel
 	(*DeleteChannel)(nil),  // 6: resona.control.v1.DeleteChannel
-	(*WatchResources)(nil), // 7: resona.control.v1.WatchResources
-	(*Channel)(nil),        // 8: resona.control.v1.Channel
-	(*Member)(nil),         // 9: resona.control.v1.Member
-	(*State)(nil),          // 10: resona.control.v1.State
-	(*Command)(nil),        // 11: resona.control.v1.Command
-	(*Reply)(nil),          // 12: resona.control.v1.Reply
-	(*Message)(nil),        // 13: resona.control.v1.Message
-	(*ChatStatus)(nil),     // 14: resona.control.v1.ChatStatus
+	(*ReorderChannel)(nil), // 7: resona.control.v1.ReorderChannel
+	(*WatchResources)(nil), // 8: resona.control.v1.WatchResources
+	(*Channel)(nil),        // 9: resona.control.v1.Channel
+	(*Member)(nil),         // 10: resona.control.v1.Member
+	(*State)(nil),          // 11: resona.control.v1.State
+	(*Command)(nil),        // 12: resona.control.v1.Command
+	(*Reply)(nil),          // 13: resona.control.v1.Reply
+	(*Message)(nil),        // 14: resona.control.v1.Message
+	(*ChatStatus)(nil),     // 15: resona.control.v1.ChatStatus
 }
 var file_control_proto_depIdxs = []int32{
-	0, // 0: resona.control.v1.Frame.kind:type_name -> resona.control.v1.Kind
-	8, // 1: resona.control.v1.State.channels:type_name -> resona.control.v1.Channel
-	9, // 2: resona.control.v1.State.members:type_name -> resona.control.v1.Member
-	3, // [3:3] is the sub-list for method output_type
-	3, // [3:3] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	0,  // 0: resona.control.v1.Frame.kind:type_name -> resona.control.v1.Kind
+	9,  // 1: resona.control.v1.State.channels:type_name -> resona.control.v1.Channel
+	10, // 2: resona.control.v1.State.members:type_name -> resona.control.v1.Member
+	3,  // [3:3] is the sub-list for method output_type
+	3,  // [3:3] is the sub-list for method input_type
+	3,  // [3:3] is the sub-list for extension type_name
+	3,  // [3:3] is the sub-list for extension extendee
+	0,  // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_control_proto_init() }
@@ -1310,7 +1381,7 @@ func file_control_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_control_proto_rawDesc), len(file_control_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   14,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

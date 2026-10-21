@@ -36,6 +36,7 @@ const (
 	WatchResourcesKind
 	ChatSyncKind
 	ChatStatusKind
+	ReorderChannelKind
 )
 
 var ErrPacket = errors.New("invalid Resona packet")
@@ -67,6 +68,7 @@ type UpdateChannel struct {
 }
 type (
 	DeleteChannel  struct{ ID uint16 }
+	ReorderChannel struct{ ID, BeforeID uint16 }
 	WatchResources struct{ AllChannels, AllMembers bool }
 	Channel        struct {
 		ID          uint16
@@ -99,6 +101,7 @@ type State struct {
 	ServerRole               string
 	CanClaimOwner            bool
 	CanManageChannels        bool
+	CanReorderChannels       bool
 	CanConfigureChannelAudio bool
 }
 

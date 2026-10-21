@@ -13,6 +13,7 @@ import (
 type channelRecord struct {
 	Version  int         `json:"version"`
 	Next     uint32      `json:"next"`
+	Default  uint16      `json:"default_id"`
 	Channels []w.Channel `json:"channels"`
 }
 
@@ -46,6 +47,16 @@ func (s *Server) manageChannel(p *peer, kind uint8, id uint16, name, description
 // ManageChannel is the shared authorized mutation boundary for native commands
 // and future admin transports. The actor is an authenticated identity, not a name.
 func (s *Server) ManageChannel(parent context.Context, identity string, kind uint8, id uint16, name, description string, audioBitrate ...uint32) uint8 {
+	return s.mutateChannel(parent, identity, kind, id, 0, name, description, audioBitrate...)
+}
+
+// ReorderChannel moves a channel before beforeID (zero means the end).
+// Only the authenticated owner can change the server-wide persisted order.
+func (s *Server) ReorderChannel(ctx context.Context, identity string, id, beforeID uint16) uint8 {
+	return s.mutateChannel(ctx, identity, w.ReorderChannelKind, id, beforeID, "", "")
+}
+
+func (s *Server) mutateChannel(parent context.Context, identity string, kind uint8, id, beforeID uint16, name, description string, audioBitrate ...uint32) uint8 {
 	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
 	defer cancel()
 	s.channelMu.Lock()
@@ -102,7 +113,7 @@ func (s *Server) ManageChannel(parent context.Context, identity string, kind uin
 				code = w.WrongChannel
 				return errors.New("channel not found")
 			}
-			if index == 0 {
+			if id == r.Channels.Default {
 				code = w.DefaultChannel
 				return errors.New("default channel")
 			}
@@ -113,6 +124,31 @@ func (s *Server) ManageChannel(parent context.Context, identity string, kind uin
 				}
 			}
 			channels = append(channels[:index], channels[index+1:]...)
+		case w.ReorderChannelKind:
+			if index < 0 {
+				code = w.WrongChannel
+				return errors.New("channel not found")
+			}
+			if beforeID != id {
+				moved := channels[index]
+				channels = append(channels[:index], channels[index+1:]...)
+				position := len(channels)
+				if beforeID != 0 {
+					position = -1
+					for i, ch := range channels {
+						if ch.ID == beforeID {
+							position = i
+						}
+					}
+					if position < 0 {
+						code = w.WrongChannel
+						return errors.New("target channel not found")
+					}
+				}
+				channels = append(channels, w.Channel{})
+				copy(channels[position+1:], channels[position:])
+				channels[position] = moved
+			}
 		default:
 			code = w.Rejected
 			return errors.New("invalid channel operation")
@@ -124,7 +160,7 @@ func (s *Server) ManageChannel(parent context.Context, identity string, kind uin
 		if kind == w.DeleteChannelKind {
 			s.deletingChannel = id
 		}
-		r.Channels = channelRecord{Version: 1, Channels: channels, Next: next}
+		r.Channels.Channels, r.Channels.Next = channels, next
 		return nil
 	})
 	s.mu.Lock()
@@ -133,6 +169,7 @@ func (s *Server) ManageChannel(parent context.Context, identity string, kind uin
 	if err == nil {
 		r, revision := s.config.Store.state()
 		s.config.Channels, s.resourceRevision = r.Channels.Channels, revision
+		s.defaultChannel = r.Channels.Default
 		s.broadcastLocked(nil)
 	}
 	if code != w.OK {
@@ -145,7 +182,7 @@ func (s *Server) ManageChannel(parent context.Context, identity string, kind uin
 }
 
 func (s *Server) channelCommand(p *peer, f w.Frame) bool {
-	var id uint16
+	var id, beforeID uint16
 	var bitrate uint32
 	var name, description string
 	switch f.Kind {
@@ -169,10 +206,20 @@ func (s *Server) channelCommand(p *peer, f w.Frame) bool {
 			return false
 		}
 		id = v.ID
+	case w.ReorderChannelKind:
+		var v w.ReorderChannel
+		if w.Decode(f, &v) != nil {
+			return false
+		}
+		id, beforeID = v.ID, v.BeforeID
 	}
 	code := uint8(w.RateLimited)
 	if p.commandBucket.take(2, 4) {
-		code = s.manageChannel(p, f.Kind, id, name, description, bitrate)
+		if f.Kind == w.ReorderChannelKind {
+			code = s.ReorderChannel(p.conn.Context(), p.identity, id, beforeID)
+		} else {
+			code = s.manageChannel(p, f.Kind, id, name, description, bitrate)
+		}
 	}
 	s.mu.Lock()
 	s.enqueueLocked(p, w.ReplyKind, f.Request, w.Reply{Code: code})

@@ -97,6 +97,63 @@ func TestWatchProjectsRevisionAlreadyReadByRejectedMutation(t *testing.T) {
 	}
 }
 
+func TestChannelDefaultMigrationIsIndependentOfDisplayPosition(t *testing.T) {
+	s := testStore(t, t.TempDir())
+	r := s.snapshot()
+	r.Channels.Version, r.Channels.Default = 1, 0
+	data, _ := json.Marshal(r)
+	legacy, err := decodeResources(data)
+	if err != nil || legacy.Channels.Version != 2 || legacy.Channels.Default != 1 {
+		t.Fatalf("legacy migration: %+v %v", legacy.Channels, err)
+	}
+	for _, invalid := range []uint16{0, 99} {
+		r.Channels.Version, r.Channels.Default = 2, invalid
+		data, _ = json.Marshal(r)
+		if _, err := decodeResources(data); err == nil {
+			t.Fatalf("accepted invalid v2 default %d", invalid)
+		}
+	}
+	r = legacy
+	r.Channels.Channels = append([]w.Channel(nil), legacy.Channels.Channels...)
+	r.Channels.Channels[0], r.Channels.Channels[1] = r.Channels.Channels[1], r.Channels.Channels[0]
+	if err := validResourceTransition(legacy, r); err != nil {
+		t.Fatal(err)
+	}
+	r.Channels.Default = 2
+	if err := validResourceTransition(legacy, r); err == nil {
+		t.Fatal("accepted default identity replacement")
+	}
+}
+
+func TestLegacyKVOrderUpgradePersistsOnFirstMutation(t *testing.T) {
+	s, owner, dir := channelTestServer(t)
+	r := s.config.Store.snapshot()
+	r.Channels.Version, r.Channels.Default = 1, 0
+	data, _ := json.Marshal(r)
+	if _, err := s.config.Store.kv.Put(context.Background(), resourceKey, data); err != nil {
+		t.Fatal(err)
+	}
+	s.config.Store.Close()
+	s.config.Store = testStore(t, dir)
+	if got := s.config.Store.snapshot().Channels; got.Version != 2 || got.Default != 1 {
+		t.Fatalf("legacy KV migration: %+v", got)
+	}
+	if code := s.ReorderChannel(context.Background(), owner.identity, 1, 0); code != w.OK {
+		t.Fatal(code)
+	}
+	s.config.Store.Close()
+	s.config.Store = testStore(t, dir)
+	got := s.config.Store.snapshot().Channels
+	if got.Version != 2 || got.Default != 1 || got.Channels[0].ID != 2 || got.Channels[1].ID != 1 {
+		t.Fatalf("upgraded restart lost order/default: %+v", got)
+	}
+	entry, err := s.config.Store.kv.Get(context.Background(), resourceKey)
+	var persisted resourceRecord
+	if err != nil || json.Unmarshal(entry.Value(), &persisted) != nil || persisted.Channels.Version != 2 || persisted.Channels.Default != 1 {
+		t.Fatal("first mutation did not persist v2")
+	}
+}
+
 func TestResourceCASRetriesPreserveConcurrentChangesAndAreBounded(t *testing.T) {
 	for _, alwaysConflict := range []bool{false, true} {
 		s := testStore(t, t.TempDir())

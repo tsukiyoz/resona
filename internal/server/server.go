@@ -33,6 +33,7 @@ type Server struct {
 	chat             *chatStore
 	channelMu        sync.Mutex
 	deletingChannel  uint16
+	defaultChannel   uint16
 	resourceRevision uint64
 	listener         w.Listener
 	config           Config
@@ -119,7 +120,8 @@ func Listen(address string, cfg Config) (*Server, error) {
 		}
 		return nil, err
 	}
-	return &Server{listener: l, config: cfg, chat: cfg.Store.chat, peers: map[uint16]*peer{}}, nil
+	cfg.Channels = cfg.Store.snapshot().Channels.Channels
+	return &Server{listener: l, config: cfg, chat: cfg.Store.chat, defaultChannel: cfg.Store.snapshot().Channels.Default, peers: map[uint16]*peer{}}, nil
 }
 func (s *Server) Addr() net.Addr { return s.listener.Addr() }
 
@@ -202,7 +204,7 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 		return
 	}
 	s.next++
-	p.member = w.Member{ID: uint16(s.next), Channel: s.config.Channels[0].ID, Nickname: hello.Nickname, Instance: rand.Text(), Muted: true, Epoch: 1}
+	p.member = w.Member{ID: uint16(s.next), Channel: s.defaultChannel, Nickname: hello.Nickname, Instance: rand.Text(), Muted: true, Epoch: 1}
 	s.peers[p.member.ID] = p
 	s.sendStateLocked(p, w.WelcomeKind, true)
 	s.restartChatLocked(p)
@@ -261,7 +263,7 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 			s.mu.Unlock()
 			continue
 		}
-		if f.Kind >= w.CreateChannelKind && f.Kind <= w.DeleteChannelKind {
+		if (f.Kind >= w.CreateChannelKind && f.Kind <= w.DeleteChannelKind) || f.Kind == w.ReorderChannelKind {
 			if !s.channelCommand(p, f) {
 				return
 			}
@@ -363,7 +365,7 @@ func (s *Server) stateLocked(p *peer) w.State {
 			}
 		}
 	}
-	return w.State{Name: s.config.Name, Self: p.member.ID, Epoch: p.epoch, Channels: channels, Members: members, IdentityUID: p.identity, ServerRole: role, CanClaimOwner: canClaim, CanManageChannels: role == "owner", CanConfigureChannelAudio: role == "owner", CanWatchResources: true, AllChannels: p.watch.AllChannels, AllMembers: p.watch.AllMembers, DefaultChannel: s.config.Channels[0].ID}
+	return w.State{Name: s.config.Name, Self: p.member.ID, Epoch: p.epoch, Channels: channels, Members: members, IdentityUID: p.identity, ServerRole: role, CanClaimOwner: canClaim, CanManageChannels: role == "owner", CanReorderChannels: role == "owner", CanConfigureChannelAudio: role == "owner", CanWatchResources: true, AllChannels: p.watch.AllChannels, AllMembers: p.watch.AllMembers, DefaultChannel: s.defaultChannel}
 }
 
 // One shared KV informer feeds the existing per-session interest projection.
@@ -393,6 +395,7 @@ func (s *Server) applyResources(r resourceRecord, revision uint64) error {
 		}
 	}
 	s.config.Channels, s.resourceRevision = r.Channels.Channels, revision
+	s.defaultChannel = r.Channels.Default
 	s.broadcastLocked(nil)
 	return nil
 }

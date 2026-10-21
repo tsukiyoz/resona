@@ -143,6 +143,10 @@ pub enum Command {
         bitrate: u32,
     },
     DeleteChannel(u16),
+    ReorderChannel {
+        id: u16,
+        before: u16,
+    },
 }
 impl Command {
     fn frame(&self, id: u32) -> Result<Vec<u8>> {
@@ -243,6 +247,17 @@ impl Command {
                 id,
                 &pb::DeleteChannel {
                     id: (*channel).into(),
+                },
+            ),
+            Self::ReorderChannel {
+                id: channel,
+                before,
+            } if *channel != 0 => wire::pack(
+                Kind::ReorderChannel,
+                id,
+                &pb::ReorderChannel {
+                    id: (*channel).into(),
+                    before_id: (*before).into(),
                 },
             ),
             _ => return Err(Error::InvalidInput),

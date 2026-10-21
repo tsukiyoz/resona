@@ -20,11 +20,20 @@ design, not independent writes to owner/claim. Local mutations serialize outside
 the routing mutex. Authorization reads a short memory lock never held during RPC
 or disk I/O. Voice queues and membership remain transient and outside KV.
 
+Channel ordering extension: channel records now use version 2, keeping array
+order and an explicit immutable default_id separately. Version 1 is normalized
+on read using its original first channel; the next successful CAS writes v2.
+Missing/unknown default IDs in v2 are invalid. Reordering moves an existing ID
+before another ID (zero appends), preserving ID allocation, default identity,
+metadata and live memberships. The authenticated owner uses the same bounded
+mutation/CAS and interest projection path. This adds a Protobuf command and an
+explicit can_reorder_channels capability; no extra watcher or timer is created.
+
 One Serve-owned KV watcher receives initial state and future revisions on the
 same consumer. Valid revisions feed existing scoped snapshots and per-connection
 revisions. State remains queued before the WatchResources reply. Scope comparison
 suppresses unchanged views; no per-user KV consumers, configuration polling or
-client protocol changes. Watch failure, deletion, invalid schemas or illegal
+changes to the existing List+Watch protocol. Watch failure, deletion, invalid schemas or illegal
 transitions stop the service rather than serving stale permissions. Cancellation
 joins observation and peer workers before broker shutdown.
 

@@ -4,6 +4,10 @@
 
 ## 当前已有
 
+- 2026-10-21：频道持久顺序、owner 拖动排序与右键上/下移已实现；默认频道 ID
+  独立于位置，v1 KV 记录读取迁移、首次写入 v2。跨客户端同步、重启、默认入口与
+  权限回归通过；真实桌面拖放及 Windows 验收待完成，见 verification.md。
+
 - 2026-10-21：服务端 Cobra CLI、internal 包文档与共享 JetStream 管理资源 KV
   已实现；旧 JSON 首次导入，CAS 保存频道/owner/认领状态，共享 watch 按已有兴趣
   推送。桌面移除 Core 探测入口。验证范围与平台限制见 verification.md、ADR-0033。
