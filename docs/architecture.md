@@ -17,6 +17,12 @@
 
 客户端与服务端在单仓库演进，客户端核心不依赖 GPUI。音频只在 Go 核心处理；server 解密后转发 Opus，不做编解码或混音。传输为逐跳加密，server 可见明文，不是端到端加密。
 
+2026-10-21 起按 ADR-0032 迁移到 UI 无关的 `client/` Rust library，最终由
+GPUI 通过进程内有界命令/事件通道调用，移除 Go 客户端子进程和桌面 IPC。
+当前新增的是兼容既有 RN06 的传输/Protobuf/身份基础，产品路径仍为上表的 Go Core；
+尚未替换音频、会话与平台凭据。Go server 和内嵌 JetStream 保留，生产聊天目录
+仍显式为 access-dir/chat。迁移目标不等于已经获得内存或游戏性能收益。
+
 更新仅由设置中的关于页启动独立有界检查，通过 IPC 事件回显；没有启动联网或
 空闲轮询。Core 解释 `resona-package.json` 的 distribution，GUI 只按能力渲染。
 当前 Windows ZIP 和 macOS .app 均为 portable：验证签名清单后只打开对应版本

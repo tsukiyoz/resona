@@ -30,6 +30,10 @@ needed; never force-push shared main.
   The first default run may download the tool.
 - Desktop: `cargo test --locked --manifest-path desktop/Cargo.toml`, native build
   and relevant GUI flows. Windows Actions validate Windows-specific code.
+- Rust client migration: `make test-client` runs unit tests and real Go/Rust
+  loopback interoperability (including application login/chat). Go is required
+  for fixtures; CGO/audio hardware and external NATS are not. Run
+  `cargo clippy --locked --manifest-path client/Cargo.toml --all-targets -- -D warnings`.
 - Protocol: regenerate protobuf via `go generate ./internal/nativewire/pb`, test
   the Noise transport and document compatibility/migration.
 - Keep credentials, identities, local test data and build artifacts out of Git.

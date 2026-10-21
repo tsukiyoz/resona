@@ -1,5 +1,13 @@
 # 当前验证记录
 
+## 2026-10-21 Rust Client 迁移第一阶段
+
+- 新增独立 `client/` crate，与现有 Go Server 保持 RN06、Noise NK 和共享 Protobuf 契约；产品桌面仍使用完整 Go Core，尚未切换或删除 IPC。
+- Rust 8 项单元测试及 12 项真实 Go 回环互通测试通过。覆盖双向控制/语音、握手和 ACK 丢包、背压、取消及超时、部分帧保留、释放关闭、身份签名、登录拒绝，以及真实服务端内嵌 JetStream 聊天收发。
+- 后台换钥由 Go 参考密文向量、旧密钥宽限/重放测试及 Rust 双端真实 UDP 同时换钥验证；未以长时间 Go/Rust 运行替代上述分项测试。
+- `go test ./internal/...`、Rust locked/offline Clippy（所有 targets，warnings 视为错误）、Rust 格式检查及临时目录构建清理测试通过。产品流程和协议生命周期复审已完成，并修正缓存读忽略取消/期限和持续收包可能饿死语音发送的问题。
+- 新增独立 Linux、Windows、macOS 互通 CI；尚未推送触发。未做真实设备、GUI、公网长时或性能测量，不能据此声称常驻内存已经降低。本轮不改生产 NATS 数据目录、不部署远端、不更新发布版本或 tag。
+
 ## 2026-09-17 主题应用图标
 
 - 以原有音柱轮廓生成浅/深 PNG 和 ICO；静态 `build/appicon.png`、Windows resource 1 与 SVG 默认白色，resource 2 为深色运行时图标。运行时 PNG 为 256px，应用内及原生图标对象缓存，切换不写安装包、不增加定时器。

@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := build
-.PHONY: help dev build build-core build-apm build-desktop build-server deploy core clean clean-all test test-native test-build test-deploy generate format lint
+.PHONY: help dev build build-core build-apm build-desktop build-server deploy core clean clean-all test test-client test-native test-build test-deploy generate format lint
 
 HOST_OS := $(shell uname -s)
 GOEXE = $(shell go env GOEXE)
@@ -30,8 +30,9 @@ help:
 	@echo 'make deploy         Generate a Linux server package in build/deploy/ (no upload)'
 	@echo 'make dev            Build core and run the debug desktop'
 	@echo 'make clean          Remove build/bin/, build/deploy/ and desktop/dist/'
-	@echo 'make clean-all      Also remove desktop/target/ and native/webrtc-apm/target/ (Rust caches)'
+	@echo 'make clean-all      Also remove desktop, client and native WebRTC Rust caches'
 	@echo 'make test           Run Go and locked Rust tests'
+	@echo 'make test-client    Test the Rust client foundation against a local Go server'
 	@echo 'make test-build     Check cleanup boundaries in a temporary directory'
 	@echo 'make test-deploy    Check deployment scripts without a real server'
 	@echo 'make format         Format Go (gofumpt v0.10.0) and Rust sources'
@@ -43,8 +44,9 @@ generate:
 	go generate ./internal/nativewire/pb
 
 format:
-	$(GOFUMPT) -w cmd internal deploy tools test
+	$(GOFUMPT) -w cmd internal deploy tools test client/tests/peer
 	cargo fmt --manifest-path desktop/Cargo.toml
+	cargo fmt --manifest-path client/Cargo.toml
 	cargo fmt --manifest-path native/webrtc-apm/Cargo.toml
 
 lint:
@@ -100,7 +102,7 @@ clean:
 	rm -rf -- "$(CURDIR)/build/bin" "$(CURDIR)/build/deploy" "$(CURDIR)/desktop/dist"
 
 clean-all: clean
-	rm -rf -- "$(CURDIR)/desktop/target" "$(CURDIR)/native/webrtc-apm/target"
+	rm -rf -- "$(CURDIR)/desktop/target" "$(CURDIR)/client/target" "$(CURDIR)/native/webrtc-apm/target"
 
 test-build:
 	sh tools/test-build-toolchain.sh
@@ -109,7 +111,10 @@ test-build:
 test-deploy:
 	go test ./deploy
 
-test: test-build test-deploy
+test-client:
+	cargo test --locked --manifest-path client/Cargo.toml
+
+test: test-build test-deploy test-client
 	go test ./internal/...
 	cargo test --locked --manifest-path desktop/Cargo.toml
 	bash -c 'source native/rnnoise/prepare.sh; cargo test --locked --manifest-path native/webrtc-apm/Cargo.toml'
