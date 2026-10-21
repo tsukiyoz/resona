@@ -61,11 +61,22 @@ jobs:
       - name: Check Rust formatting and lint
         run: |
           cargo fmt --manifest-path client/Cargo.toml --check
+      - name: Set up Windows pkg-config
+        if: runner.os == 'Windows'
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: mingw-w64-x86_64-pkgconf
       - name: Build official Opus for the Rust client
+        env:
+          RESONA_MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
         run: |
           bash native/opus/build.sh
           if [[ "$RUNNER_OS" == Windows ]]; then
-            echo 'PKG_CONFIG=C:/msys64/mingw64/bin/pkg-config.exe' >> "$GITHUB_ENV"
+            pkg_config=$(cygpath -m "$RESONA_MSYS2_ROOT/mingw64/bin/pkg-config.exe")
+            test -x "$pkg_config"
+            echo "PKG_CONFIG=$pkg_config" >> "$GITHUB_ENV"
           fi
           echo "PKG_CONFIG_PATH=$PWD/build/native/opus-install/lib/pkgconfig" >> "$GITHUB_ENV"
           echo 'OPUS_STATIC=1' >> "$GITHUB_ENV"

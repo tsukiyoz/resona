@@ -548,3 +548,22 @@ resona-server:v0.1.5-channel-review.20261021 并部署到 tsukiyo。上传包 SH
 
 用户随后反馈基本使用无明显问题，并授权提交、合并 main 和推送；这不替代上述
 逐项拖放边界、Windows、游戏负载及长期验收。
+
+## 2026-10-21：Rust 音频 CI 检查修复
+
+Actions 39594487460 在 main 的 a910e75 失败：macOS/Linux 使用 Rust 1.99.1，
+新增 chunks_exact_to_as_chunks lint 被严格警告检查拒绝；Linux 还拒绝未使用的
+凭据服务常量。Windows 在 Rust build.rs 中找不到写死路径的 pkg-config.exe，
+尚未进入 Rust lint 或互通测试。本机原工具链为 1.96.0，不能据其通过推断新版
+Clippy 或其他平台通过。
+
+修复五处固定大小分块为数组分块，保持余项忽略与音频处理顺序；凭据常量仅编译
+到支持的 macOS/Windows。Windows 工作流显式安装 MSYS2 pkgconf，使用 action
+输出的安装目录，并检查可执行文件存在后写入后续步骤环境，保留严格警告检查。
+
+本机 Rust 1.96.0 完整 audio 特性 Clippy（all-targets、-D warnings）、44 项单元
+及 21 项真实 Go/Rust 回环互通测试通过；格式、差异、工作流 YAML 和各 Bash
+步骤语法检查通过。测试使用临时服务和假设备，不访问线上服务或用户凭据。
+首次沙箱测试因禁止绑定 UDP 失败，允许回环网络后完整通过。尝试安装与 CI 相同
+的 1.99.1 因下载缓慢取消，默认工具链未更改；新版本 Clippy、Linux 和 Windows
+执行仍待远端 CI 验证。本轮修复尚未提交、推送或重新触发 Actions。

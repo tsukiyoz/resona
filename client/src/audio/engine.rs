@@ -588,7 +588,7 @@ impl Worker {
                 continue;
             }
             device.reference(&mut reference);
-            for (i, frame) in reference.chunks_exact(2).enumerate() {
+            for (i, frame) in reference.as_chunks::<2>().0.iter().enumerate() {
                 mono[i] = (frame[0] + frame[1]) * 0.5;
             }
             let (epoch, pressed) = {

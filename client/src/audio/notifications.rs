@@ -205,7 +205,7 @@ fn play(shared: &Shared, cue: &Cue) -> Result<()> {
         }
         if pos < cue.pcm.len() {
             let mut out = [0.0; FRAME * 2];
-            for (i, frame) in out.chunks_exact_mut(2).enumerate() {
+            for (i, frame) in out.as_chunks_mut::<2>().0.iter_mut().enumerate() {
                 let sample = cue.pcm.get(pos + i).copied().unwrap_or(0.0) * cue.volume;
                 frame.fill(sample);
             }
@@ -257,8 +257,10 @@ fn decode(bytes: &[u8]) -> Result<Vec<f32>> {
         .filter(|p| !p.is_empty() && p.len() % 2 == 0 && p.len() <= 48_000 * 2 * 10)
         .ok_or("提示音长度无效")?;
     Ok(pcm
-        .chunks_exact(2)
-        .map(|p| f32::from(i16::from_le_bytes(p.try_into().unwrap())) / 32768.0)
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|p| f32::from(i16::from_le_bytes(*p)) / 32768.0)
         .collect())
 }
 #[cfg(test)]

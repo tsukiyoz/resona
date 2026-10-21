@@ -636,11 +636,11 @@ impl Speaker {
             }
             if !lost && let Some(receive) = receive.as_mut() {
                 receive.last = now;
-                for chunk in self.buffer[..n].chunks_exact_mut(FRAME) {
+                for chunk in self.buffer[..n].as_chunks_mut::<FRAME>().0 {
                     if active(chunk) {
-                        let original: [f32; FRAME] = chunk.try_into().unwrap();
+                        let original = *chunk;
                         if let Some(chain) = receive.chain.as_mut()
-                            && let Err(error) = chain.process(chunk.try_into().unwrap(), None)
+                            && let Err(error) = chain.process(chunk, None)
                         {
                             receive.chain = None;
                             receive.error = error;
@@ -654,7 +654,7 @@ impl Speaker {
         if self.pcm.len() < FRAME && (!self.ended || self.pcm.is_empty()) {
             return Ok((false, audible, self.ended));
         }
-        for frame in out.chunks_exact_mut(2) {
+        for frame in out.as_chunks_mut::<2>().0 {
             let sample = self.pcm.pop_front().unwrap_or(0.0) * gain;
             frame[0] += sample;
             frame[1] += sample;

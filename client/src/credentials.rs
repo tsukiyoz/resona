@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use zeroize::Zeroizing;
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 const SERVICE: &str = "io.github.tsukiyoz.resona.server-password";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
