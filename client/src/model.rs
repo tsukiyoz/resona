@@ -203,7 +203,7 @@ impl<'de> Deserialize<'de> for ProcessingConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct VoiceState {
     pub operation: u64,

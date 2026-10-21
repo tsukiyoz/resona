@@ -21,6 +21,10 @@ pub fn apply(preference: ThemePreference, window: Option<&mut Window>, cx: &mut 
     };
     LIGHT.store(mode == ThemeMode::Light, Ordering::Relaxed);
     crate::app_icon::apply(mode == ThemeMode::Light, window.as_deref());
+    #[cfg(target_os = "windows")]
+    if let Some(window) = window.as_deref() {
+        apply_titlebar(mode, window);
+    }
     Theme::change(mode, window, cx);
     let theme = Theme::global_mut(cx);
     theme.font_size = gpui::px(14.);
@@ -52,6 +56,35 @@ pub fn apply(preference: ThemePreference, window: Option<&mut Window>, cx: &mut 
     theme.muted_foreground = tone(0x929ca7, 0x66727d);
     theme.ring = tone(0x8bada0, 0x43816c);
     theme.popover = tone(0x191c20, 0xffffff);
+}
+
+#[cfg(target_os = "windows")]
+fn apply_titlebar(mode: ThemeMode, window: &Window) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows::{
+        Win32::{
+            Foundation::HWND,
+            Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute},
+        },
+        core::BOOL,
+    };
+
+    let Ok(handle) = window.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        return;
+    };
+    let dark: BOOL = (mode == ThemeMode::Dark).into();
+    // The live HWND belongs to this UI thread; older Windows may ignore this attribute.
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            HWND(handle.hwnd.get() as *mut _),
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            std::ptr::from_ref(&dark).cast(),
+            std::mem::size_of_val(&dark) as u32,
+        );
+    }
 }
 
 pub fn rgb(dark: u32) -> Rgba {

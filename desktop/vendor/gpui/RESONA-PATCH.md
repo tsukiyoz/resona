@@ -7,15 +7,21 @@ Its published VCS metadata records Zed commit
 the package checksum, not an assumed clean Git checkout, identifies the source.
 The Apache 2.0 license is retained. Cargo's extraction marker is omitted.
 
-The only upstream source change is in `src/platform/mac/window.rs`:
+The macOS change is in `src/platform/mac/window.rs`:
 release `window_state` before invoking `resignKeyWindow`. AppKit can synchronously
 send `windowDidResignKey`, whose delegate callback takes the same mutex.
 Calling AppKit while holding it deadlocked the macOS main thread during an actual
 offline Resona window activation on 2026-10-21. Audio/core workers were parked,
 and no connection or device operation was involved.
 
+In `src/platform/windows/events.rs`, apply the system title-bar appearance before
+notifying appearance observers. Resona restores its explicit light/dark preference
+in that observer; applying the system default afterward would overwrite it.
+The reported window appearance remains the system appearance so follow-system
+mode continues to work.
+
 `desktop/Cargo.toml` patches this exact crate for the entire desktop dependency
 graph. Do not edit Cargo registry caches or apply patches during a build. Remove
 this directory and the Cargo patch after an evaluated upstream release includes
-the fix and passes equivalent desktop tests and macOS activation/quit checks.
-No other dependency version or rendering behavior is changed.
+the fixes and passes equivalent desktop tests, macOS activation/quit checks and
+Windows light/dark/system title-bar checks. No dependency version is changed.

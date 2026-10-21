@@ -45,7 +45,28 @@ const MINT: u32 = 0x79c9ad;
 const AMBER: u32 = 0xd8aa5d;
 const RED: u32 = 0xe28282;
 
+const INCOMING_BATCH: usize = 64;
+
 gpui::actions!(resona, [DismissModal, Quit]);
+
+// Enable per-frame/event stderr tracing with RESONA_FRAME_TRACE.
+fn frame_trace() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("RESONA_FRAME_TRACE").is_some())
+}
+
+fn incoming_kind(incoming: &Incoming) -> &'static str {
+    match incoming {
+        Incoming::Response { .. } => "response",
+        Incoming::Workspace(_) => "workspace",
+        Incoming::ResourceSync(_) => "resource",
+        Incoming::Update(_) => "update",
+        Incoming::Notifications(_) => "notifications",
+        Incoming::Voice(_) => "voice",
+        Incoming::MicrophoneTest(_) => "microphone",
+        Incoming::Exited(_) => "exited",
+    }
+}
 
 #[derive(Clone, Copy)]
 enum VoiceIcon {
@@ -517,8 +538,8 @@ impl ResonaApp {
                     this.set_push_to_talk(false, cx);
                 }
                 this.device_menu = None;
-                cx.notify();
             }
+            cx.notify();
         });
         let quit_subscription = cx.on_app_quit(|this, cx| {
             this.flush_preferences();
@@ -707,10 +728,20 @@ impl ResonaApp {
                 this.store_voice_preferences(None);
                 cx.spawn_in(window, async move |view, cx| {
                     while let Ok(incoming) = rx.recv().await {
+                        // Bound each batch so queued audio updates leave room for input.
+                        let mut batch = vec![incoming];
+                        while batch.len() < INCOMING_BATCH {
+                            match rx.try_recv() {
+                                Ok(next) => batch.push(next),
+                                Err(_) => break,
+                            }
+                        }
                         if cx
                             .update(|window, cx| {
                                 view.update(cx, |this, cx| {
-                                    this.handle_incoming(incoming, window, cx)
+                                    for incoming in batch {
+                                        this.handle_incoming(incoming, window, cx);
+                                    }
                                 })
                             })
                             .is_err()
@@ -817,6 +848,10 @@ impl ResonaApp {
     }
 
     fn handle_incoming(&mut self, incoming: Incoming, window: &mut Window, cx: &mut Context<Self>) {
+        if frame_trace() {
+            eprintln!("RESONA_TRACE event {}", incoming_kind(&incoming));
+        }
+        let mut repaint = true;
         match incoming {
             Incoming::Update(value) => {
                 if self.core.is_some() {
@@ -866,10 +901,14 @@ impl ResonaApp {
             Incoming::Workspace(value) => self.apply_workspace(value, window, cx),
             Incoming::Voice(value) => {
                 if self.core.is_some() {
-                    self.apply_voice(value);
+                    repaint = self.apply_voice(value);
+                } else {
+                    repaint = false;
                 }
             }
-            Incoming::MicrophoneTest(value) => self.apply_microphone_test(value),
+            Incoming::MicrophoneTest(value) => {
+                repaint = self.apply_microphone_test(value, window.is_window_active());
+            }
             Incoming::Exited(error) => {
                 if self.closing {
                     self.finish_exit(cx);
@@ -1062,7 +1101,9 @@ impl ResonaApp {
                         }
                         self.connect_error.clear();
                     }
-                    (Some(Pending::Voice), Ok(value)) => self.apply_voice(value),
+                    (Some(Pending::Voice), Ok(value)) => {
+                        self.apply_voice(value);
+                    }
                     (Some(Pending::SettingsApply(session, revision)), result)
                         if self.settings_apply.as_ref().is_some_and(|(_, current, _)| {
                             *current == session
@@ -1162,8 +1203,12 @@ impl ResonaApp {
                             }
                         }
                     }
-                    (Some(Pending::PushToTalk), Ok(value)) => self.apply_voice(value),
-                    (Some(Pending::MicrophoneTest), Ok(value)) => self.apply_microphone_test(value),
+                    (Some(Pending::PushToTalk), Ok(value)) => {
+                        self.apply_voice(value);
+                    }
+                    (Some(Pending::MicrophoneTest), Ok(value)) => {
+                        self.apply_microphone_test(value, window.is_window_active());
+                    }
                     (Some(Pending::Icon { session, reference }), Ok(value)) => {
                         let mut accepted = false;
                         if session == self.workspace.session.id
@@ -1300,7 +1345,9 @@ impl ResonaApp {
         self.finish_settings_apply(cx);
         self.flush_queued_voice(cx);
         self.sync_hotkey(cx);
-        cx.notify();
+        if repaint {
+            cx.notify();
+        }
     }
 
     fn sync_resource_interest(&mut self, active: bool) {
@@ -1519,32 +1566,42 @@ impl ResonaApp {
         }
     }
 
-    fn apply_voice(&mut self, value: Value) {
+    fn apply_voice(&mut self, value: Value) -> bool {
         match serde_json::from_value::<VoiceState>(value) {
-            Ok(voice) => {
-                if !voice_state_current(&voice, &self.voice) {
-                    return;
-                }
+            Ok(voice) if voice_state_current(&voice, &self.voice) => {
+                let mut repaint = replace_voice_state(&mut self.voice, voice, false);
+                let voice = &self.voice;
                 if !voice.enabled || voice.muted || voice.deafened || voice.activation_mode != "ptt"
                 {
+                    repaint |= self.ptt_pressed;
                     self.ptt_pressed = false;
                 }
                 if !voice.enabled {
+                    repaint |= self.device_menu.is_some();
                     self.device_menu = None;
                 }
-                self.voice = voice;
+                repaint
             }
-            Err(error) => self.error = format!("核心语音状态格式无效：{error}"),
+            Ok(_) => false,
+            Err(error) => {
+                self.error = format!("核心语音状态格式无效：{error}");
+                true
+            }
         }
     }
 
-    fn apply_microphone_test(&mut self, value: Value) {
+    fn apply_microphone_test(&mut self, value: Value, active: bool) -> bool {
         match serde_json::from_value::<VoiceState>(value) {
-            Ok(value) if voice_state_current(&value, &self.microphone_test) => {
-                self.microphone_test = value
+            Ok(value) if voice_state_current(&value, &self.microphone_test) => replace_voice_state(
+                &mut self.microphone_test,
+                value,
+                microphone_level_visible(self.modal.as_ref(), active),
+            ),
+            Ok(_) => false,
+            Err(error) => {
+                self.error = format!("无法读取麦克风测试状态：{error}");
+                true
             }
-            Ok(_) => {}
-            Err(error) => self.error = format!("无法读取麦克风测试状态：{error}"),
         }
     }
 
@@ -7497,6 +7554,9 @@ impl ResonaApp {
 
 impl Render for ResonaApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if frame_trace() {
+            eprintln!("RESONA_TRACE frame");
+        }
         if self
             .channel_drag
             .as_ref()
@@ -7887,6 +7947,17 @@ fn voice_params(voice: &VoiceState) -> Value {
 
 fn voice_state_current(next: &VoiceState, current: &VoiceState) -> bool {
     (next.generation, next.operation) >= (current.generation, current.operation)
+}
+
+fn microphone_level_visible(modal: Option<&Modal>, active: bool) -> bool {
+    active && matches!(modal, Some(Modal::Devices))
+}
+
+fn replace_voice_state(current: &mut VoiceState, next: VoiceState, level_visible: bool) -> bool {
+    let mut previous = std::mem::replace(current, next);
+    let level_changed = previous.input_level_db != current.input_level_db;
+    previous.input_level_db = current.input_level_db;
+    previous != *current || (level_visible && level_changed)
 }
 
 fn navigation_blocked(modal: Option<&Modal>, closing: bool) -> bool {
@@ -8348,6 +8419,69 @@ fn ordered_channels(channels: &[crate::model::Channel]) -> Vec<(crate::model::Ch
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hidden_meter_updates_are_stored_without_repainting() {
+        use super::Modal;
+
+        let mut current = VoiceState::default();
+        let next = VoiceState {
+            input_level_db: -12,
+            ..current.clone()
+        };
+        assert!(!super::replace_voice_state(&mut current, next, false));
+        assert_eq!(current.input_level_db, -12);
+        assert!(!super::microphone_level_visible(None, true));
+        assert!(!super::microphone_level_visible(Some(&Modal::Audio), true));
+        assert!(!super::microphone_level_visible(
+            Some(&Modal::Devices),
+            false
+        ));
+        assert!(super::microphone_level_visible(Some(&Modal::Devices), true));
+    }
+
+    #[test]
+    fn visible_meter_repaints_the_final_sample_without_waiting_for_another_event() {
+        let mut current = VoiceState::default();
+        for level in [-12, -30, -60] {
+            let next = VoiceState {
+                input_level_db: level,
+                ..current.clone()
+            };
+            assert!(super::replace_voice_state(&mut current, next, true));
+            assert_eq!(current.input_level_db, level);
+        }
+        let unchanged = current.clone();
+        assert!(!super::replace_voice_state(&mut current, unchanged, true));
+    }
+
+    #[test]
+    fn repaint_comparison_uses_accepted_model_fields() {
+        use serde_json::json;
+        let mut current = VoiceState::default();
+        for (payload, changed) in [
+            (json!({"muted": false}), true),
+            (json!({"muted": false, "counters": {"sent": 2}}), false),
+            (json!({"muted": false, "busy": true}), true),
+            (
+                json!({"muted": false, "busy": true, "error": "device failed"}),
+                true,
+            ),
+            (json!({"muted": false, "speakingClientIDs": ["1"]}), true),
+            (
+                json!({"muted": false, "generation": 1, "operation": 2}),
+                true,
+            ),
+        ] {
+            let next: VoiceState = serde_json::from_value(payload).unwrap();
+            assert_eq!(
+                super::replace_voice_state(&mut current, next, false),
+                changed
+            );
+            let repeated = current.clone();
+            assert!(!super::replace_voice_state(&mut current, repeated, false));
+        }
+    }
+
     #[test]
     fn late_chat_failure_cannot_replace_reentered_channel_or_ready_state() {
         let mut workspace = Workspace::default();
