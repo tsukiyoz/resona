@@ -218,7 +218,7 @@ impl Runner {
             Mode::Connecting
         };
         self.state.attempt = 0;
-        self.state.waiting = recover;
+        self.state.waiting = false;
         self.state.slow = false;
         self.state.error = if recover {
             "连接中断，正在重连；恢复后麦克风保持静音".into()
@@ -338,13 +338,16 @@ impl Plan {
     async fn run(self) -> session::Result<Established> {
         for attempt in 1.. {
             if self.recover || attempt > 1 {
+                let wake = self.retry.notified();
+                tokio::pin!(wake);
+                wake.as_mut().enable();
                 self.progress(attempt, true).await?;
                 let delay = if self.recover {
                     backoff(attempt)
                 } else {
                     Duration::from_millis(300 * (attempt as u64 - 1))
                 };
-                tokio::select! {biased;_=self.cancel.cancelled()=>return Err(session::Error::Cancelled),_=self.retry.notified()=>{},_=sleep(delay)=>{}}
+                tokio::select! {biased;_=self.cancel.cancelled()=>return Err(session::Error::Cancelled),_=&mut wake=>{},_=sleep(delay)=>{}}
             }
             self.progress(attempt, false).await?;
             let deadline = Instant::now() + Duration::from_secs(8);
