@@ -1,23 +1,20 @@
-use anyhow::{Context, Result, anyhow};
-use async_channel::{Receiver, Sender, TrySendError};
+use anyhow::{Result, anyhow};
+use async_channel::{Receiver, Sender};
+use resona_client::{
+    core::{Core, Options, View},
+    noise::CancellationToken,
+};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
-    env,
-    io::{BufRead, BufReader, Write},
-    path::PathBuf,
-    process::{Child, ChildStdin, Command, Stdio},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
-
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
 
 #[derive(Debug)]
 pub enum Incoming {
@@ -31,334 +28,342 @@ pub enum Incoming {
     Notifications(Value),
     Voice(Value),
     MicrophoneTest(Value),
-    ProtocolError(String),
     Exited(String),
 }
-
-struct Process {
-    child: Mutex<Option<Child>>,
-    requests: Mutex<Option<Sender<Vec<u8>>>>,
+struct Request {
+    id: u64,
+    method: String,
+    params: Value,
+    intent: Option<u64>,
 }
-
-impl Drop for Process {
-    fn drop(&mut self) {
-        self.requests
-            .lock()
-            .ok()
-            .and_then(|mut requests| requests.take());
-        if let Ok(mut child) = self.child.lock()
-            && let Some(mut child) = child.take()
-        {
-            // EOF lets the core disconnect cleanly before the desktop process exits.
-            let deadline = Instant::now() + Duration::from_millis(750);
-            loop {
-                match child.try_wait() {
-                    Ok(Some(_)) => return,
-                    Ok(None) if Instant::now() < deadline => {
-                        thread::sleep(Duration::from_millis(15))
-                    }
-                    _ => break,
-                }
-            }
-            let _ = child.kill();
-            let _ = child.wait();
+#[derive(Default)]
+struct Intents {
+    connection: AtomicU64,
+    ptt: AtomicU64,
+}
+impl Intents {
+    fn counter(&self, method: &str) -> Option<&AtomicU64> {
+        match method {
+            "ConnectSavedServer"
+            | "ConnectServerWithPassword"
+            | "RetryConnection"
+            | "DisconnectServer" => Some(&self.connection),
+            "SetPushToTalk" => Some(&self.ptt),
+            _ => None,
         }
     }
+    fn register(&self, method: &str) -> Option<u64> {
+        if matches!(method, "PrepareShutdown" | "Shutdown") {
+            self.connection.fetch_add(1, Ordering::AcqRel);
+            self.ptt.fetch_add(1, Ordering::AcqRel);
+        }
+        self.counter(method)
+            .map(|counter| counter.fetch_add(1, Ordering::AcqRel) + 1)
+    }
+    fn current(&self, request: &Request) -> bool {
+        self.counter(&request.method)
+            .is_none_or(|counter| request.intent == Some(counter.load(Ordering::Acquire)))
+    }
 }
-
+struct Runtime {
+    requests: Sender<Request>,
+    urgent: Sender<Request>,
+    cancel: CancellationToken,
+    intents: Arc<Intents>,
+    submission: Mutex<()>,
+}
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+type Waiters = Arc<Mutex<HashMap<u64, Sender<Result<Value, String>>>>>;
 #[derive(Clone)]
 pub struct CoreClient {
-    process: Arc<Process>,
+    runtime: Arc<Runtime>,
     next_id: Arc<AtomicU64>,
-    waiters: Arc<Mutex<HashMap<u64, Sender<Result<Value, String>>>>>,
+    waiters: Waiters,
     shutting_down: Arc<AtomicBool>,
 }
-
 impl CoreClient {
     pub fn spawn() -> Result<(Self, Receiver<Incoming>)> {
-        let executable = core_executable()?;
-        let mut command = Command::new(&executable);
-        command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        #[cfg(windows)]
-        command.creation_flags(0x0800_0000);
-
-        let mut child = command
-            .spawn()
-            .with_context(|| format!("无法启动核心进程 {}", executable.display()))?;
-        let stdin = child.stdin.take().context("核心进程没有标准输入")?;
-        let stdout = child.stdout.take().context("核心进程没有标准输出")?;
-        let stderr = child.stderr.take().context("核心进程没有错误输出")?;
-        let (tx, rx) = async_channel::bounded(16);
-        let (request_tx, request_rx) = async_channel::bounded(32);
-
-        spawn_stdin_writer(stdin, request_rx, tx.clone());
-        let waiters = Arc::new(Mutex::new(HashMap::new()));
+        let (requests, rx) = async_channel::bounded::<Request>(32);
+        let (urgent, priority) = async_channel::bounded::<Request>(4);
+        let (tx, incoming) = async_channel::bounded(64);
+        let cancel = CancellationToken::new();
+        let token = cancel.clone();
+        let waiters: Waiters = Arc::new(Mutex::new(HashMap::new()));
+        let replies = waiters.clone();
         let shutting_down = Arc::new(AtomicBool::new(false));
-        spawn_stdout_reader(stdout, tx.clone(), waiters.clone(), shutting_down.clone());
-        thread::Builder::new()
-            .name("resona-core-stderr".into())
-            .spawn(move || {
-                for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                    eprintln!("resona-core: {line}");
-                }
-            })
-            .context("无法启动核心错误日志线程")?;
-
+        let closing = shutting_down.clone();
+        let intents = Arc::new(Intents::default());
+        let latest = intents.clone();
+        thread::Builder::new().name("resona-client".into()).spawn(move||{
+            let runtime=match tokio::runtime::Builder::new_current_thread().enable_all().build(){Ok(runtime)=>runtime,Err(_)=>{let _=tx.try_send(Incoming::Exited("无法启动客户端运行时".into()));return;}};
+            runtime.block_on(async move{
+                let result=async {
+                    let core=Core::start(Options::local()?).await?;
+                    let handle=core.handle.clone();let events=tx.clone();let stop=token.clone();let state=handle.view.clone();
+                    let publisher=tokio::spawn(publish(state,events,stop));
+                    let mut jobs=tokio::task::JoinSet::new();
+                    loop {
+                        let request=tokio::select! {biased;
+                            _=token.cancelled()=>break,
+                            request=priority.recv(),if jobs.len()<12=>request.ok(),
+                            request=rx.recv(),if jobs.len()<8=>request.ok(),
+                            Some(_)=jobs.join_next(),if !jobs.is_empty()=>continue,
+                        };
+                        let Some(request)=request else{break;};
+                        let handle=handle.clone();let output=tx.clone();let waiters=replies.clone();let closing=closing.clone();let stop=token.clone();let latest=latest.clone();
+                        jobs.spawn(async move{
+                            let result=if latest.current(&request){handle.request(&request.method,request.params).await}else{Err("操作已被后续操作取消".into())};
+                            let waiter=waiters.lock().ok().and_then(|mut w|w.remove(&request.id));
+                            if let Some(waiter)=waiter{let _=waiter.try_send(result);}
+                            else if !closing.load(Ordering::Acquire){tokio::select!{biased;_=stop.cancelled()=>{},_=output.send(Incoming::Response{id:request.id,result})=>{}}}
+                        });
+                    }
+                    token.cancel();jobs.abort_all();while jobs.join_next().await.is_some(){}
+                    let _=publisher.await;core.close().await;
+                    Ok::<(),String>(())
+                }.await;
+                if let Ok(mut pending)=replies.lock(){pending.clear();}
+                let message=result.err().unwrap_or_else(||"客户端已关闭".into());
+                let _=tx.send(Incoming::Exited(message)).await;
+            });
+            // A system authorization dialog may outlive cancellation. Its worker
+            // retains its data without holding application exit indefinitely.
+            runtime.shutdown_timeout(Duration::from_millis(250));
+        })?;
         Ok((
             Self {
-                process: Arc::new(Process {
-                    child: Mutex::new(Some(child)),
-                    requests: Mutex::new(Some(request_tx)),
+                runtime: Arc::new(Runtime {
+                    requests,
+                    urgent,
+                    cancel,
+                    intents,
+                    submission: Mutex::new(()),
                 }),
                 next_id: Arc::new(AtomicU64::new(1)),
                 waiters,
                 shutting_down,
             },
-            rx,
+            incoming,
         ))
     }
-
     pub fn request<T: Serialize>(&self, method: &str, params: T) -> Result<u64> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let mut payload = serde_json::to_vec(&json!({
-            "id": id,
-            "method": method,
-            "params": params,
-        }))?;
-        payload.push(b'\n');
-        let guard = self
-            .process
-            .requests
+        let params = serde_json::to_value(params)?;
+        let priority = matches!(
+            method,
+            "PrepareShutdown" | "Shutdown" | "DisconnectServer" | "StopNotifications"
+        ) || (method == "SetPushToTalk" && params["pressed"] == false);
+        let queue = if priority {
+            &self.runtime.urgent
+        } else {
+            &self.runtime.requests
+        };
+        let _submission = self
+            .runtime
+            .submission
             .lock()
-            .map_err(|_| anyhow!("核心命令队列锁已损坏"))?;
-        let requests = guard.as_ref().context("核心进程已关闭")?;
-        match requests.try_send(payload) {
-            Ok(()) => {}
-            Err(TrySendError::Full(_)) => return Err(anyhow!("核心命令队列已满，请稍后重试")),
-            Err(TrySendError::Closed(_)) => return Err(anyhow!("核心进程已关闭")),
+            .map_err(|_| anyhow!("客户端命令队列不可用"))?;
+        if queue.is_full() || queue.is_closed() {
+            return Err(anyhow!("客户端命令队列不可用，请稍后重试"));
         }
+        let request = Request {
+            id,
+            method: method.into(),
+            params,
+            intent: self.runtime.intents.register(method),
+        };
+        queue
+            .try_send(request)
+            .map_err(|_| anyhow!("客户端命令队列不可用，请稍后重试"))?;
         Ok(id)
     }
-
     pub fn finish_shutdown(&self) {
-        if let Ok(mut requests) = self.process.requests.lock() {
-            requests.take();
-        }
-        let child = self
-            .process
-            .child
-            .lock()
-            .ok()
-            .and_then(|mut child| child.take());
-        if let Some(mut child) = child {
-            // Reap before application exit; a detached reaper dies with the GUI.
-            let deadline = Instant::now() + Duration::from_millis(750);
-            loop {
-                match child.try_wait() {
-                    Ok(Some(_)) => return,
-                    Ok(None) if Instant::now() < deadline => {
-                        thread::sleep(Duration::from_millis(15))
-                    }
-                    _ => break,
-                }
-            }
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+        self.runtime.cancel.cancel();
     }
-
     pub async fn prepare_shutdown(&self, enabled: bool, volume: u8) -> Result<Value> {
         self.shutting_down.store(true, Ordering::Release);
         let (tx, rx) = async_channel::bounded(1);
-        // Hold the waiter lock through enqueue so an immediate reply cannot race registration.
         {
-            let mut waiters = self
-                .waiters
-                .lock()
-                .map_err(|_| anyhow!("shutdown waiters unavailable"))?;
+            let mut waiters = self.waiters.lock().map_err(|_| anyhow!("退出状态不可用"))?;
             let id = self.request(
                 "PrepareShutdown",
-                json!({"notificationEnabled": enabled, "notificationVolume": volume}),
+                json!({"notificationEnabled":enabled,"notificationVolume":volume}),
             )?;
             waiters.insert(id, tx);
         }
         rx.recv()
             .await
-            .map_err(|_| anyhow!("core closed before shutdown completed"))?
+            .map_err(|_| anyhow!("客户端在退出确认前关闭"))?
             .map_err(|e| anyhow!(e))
     }
 }
-
-fn spawn_stdin_writer(stdin: ChildStdin, requests: Receiver<Vec<u8>>, tx: Sender<Incoming>) {
-    thread::Builder::new()
-        .name("resona-core-stdin".into())
-        .spawn(move || {
-            let mut stdin = stdin;
-            while let Ok(payload) = requests.recv_blocking() {
-                if let Err(error) = stdin.write_all(&payload).and_then(|_| stdin.flush()) {
-                    let _ =
-                        tx.send_blocking(Incoming::Exited(format!("核心命令写入失败：{error}")));
-                    return;
-                }
-            }
-        })
-        .expect("failed to start core stdin writer");
-}
-
-fn core_executable() -> Result<PathBuf> {
-    if let Some(path) = env::var_os("RESONA_CORE") {
-        return Ok(PathBuf::from(path));
+fn field_equal(previous: &View, next: &View, field: usize) -> bool {
+    match field {
+        0 => Arc::ptr_eq(&previous.workspace, &next.workspace),
+        1 => previous.resources == next.resources,
+        2 => previous.update == next.update,
+        3 => previous.notifications == next.notifications,
+        4 => previous.voice == next.voice,
+        _ => previous.microphone_test == next.microphone_test,
     }
-    let mut path = env::current_exe().context("无法定位 Resona 程序")?;
-    path.pop();
-    path.push(if cfg!(windows) {
-        "resona-core.exe"
-    } else {
-        "resona-core"
-    });
-    Ok(path)
 }
-
-fn spawn_stdout_reader(
-    stdout: impl std::io::Read + Send + 'static,
-    tx: Sender<Incoming>,
-    waiters: Arc<Mutex<HashMap<u64, Sender<Result<Value, String>>>>>,
-    shutting_down: Arc<AtomicBool>,
+fn field_event(next: &View, field: usize) -> Incoming {
+    match field {
+        0 => Incoming::Workspace(json!(*next.workspace)),
+        1 => Incoming::ResourceSync(next.resources.clone()),
+        2 => Incoming::Update(next.update.clone()),
+        3 => Incoming::Notifications(next.notifications.clone()),
+        4 => Incoming::Voice(next.voice.clone()),
+        _ => Incoming::MicrophoneTest(next.microphone_test.clone()),
+    }
+}
+fn delivered(previous: &mut View, next: &View, field: usize) {
+    match field {
+        0 => previous.workspace = next.workspace.clone(),
+        1 => previous.resources = next.resources.clone(),
+        2 => previous.update = next.update.clone(),
+        3 => previous.notifications = next.notifications.clone(),
+        4 => previous.voice = next.voice.clone(),
+        _ => previous.microphone_test = next.microphone_test.clone(),
+    }
+}
+async fn publish(
+    mut view: tokio::sync::watch::Receiver<View>,
+    output: Sender<Incoming>,
+    cancel: CancellationToken,
 ) {
-    thread::Builder::new()
-        .name("resona-core-stdout".into())
-        .spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                let line = match line {
-                    Ok(line) => line,
-                    Err(error) => {
-                        if let Ok(mut pending) = waiters.lock() {
-                            pending.clear();
-                        }
-                        forward_incoming(
-                            &tx,
-                            Incoming::Exited(format!("核心输出读取失败：{error}")),
-                            &shutting_down,
-                        );
-                        return;
-                    }
-                };
-                if line.trim().is_empty() {
-                    continue;
-                }
-                match parse_line(&line) {
-                    Ok(incoming) => {
-                        if let Incoming::Response { id, result } = &incoming {
-                            if let Some(waiter) = waiters.lock().ok().and_then(|mut w| w.remove(id))
-                            {
-                                let _ = waiter.try_send(result.clone());
-                                continue;
-                            }
-                        }
-                        if shutting_down.load(Ordering::Acquire) {
-                            continue;
-                        }
-                        forward_incoming(&tx, incoming, &shutting_down);
-                    }
-                    Err(error) => {
-                        forward_incoming(
-                            &tx,
-                            Incoming::ProtocolError(error.to_string()),
-                            &shutting_down,
-                        );
-                    }
-                }
-            }
-            if let Ok(mut pending) = waiters.lock() {
-                pending.clear();
-            }
-            forward_incoming(
-                &tx,
-                Incoming::Exited("核心进程已退出".into()),
-                &shutting_down,
-            );
-        })
-        .expect("failed to start core stdout reader");
-}
-
-fn forward_incoming(tx: &Sender<Incoming>, mut incoming: Incoming, shutdown: &AtomicBool) {
+    let mut previous = view.borrow().clone();
+    let mut initialized = 0u8;
+    let mut cursor = 0;
     loop {
-        match tx.try_send(incoming) {
-            Ok(()) | Err(TrySendError::Closed(_)) => return,
-            Err(TrySendError::Full(value)) => incoming = value,
+        let next = view.borrow_and_update().clone();
+        let field = (0..6).map(|offset| (cursor + offset) % 6).find(|&field| {
+            initialized & (1 << field) == 0 || !field_equal(&previous, &next, field)
+        });
+        if let Some(field) = field {
+            tokio::select! {biased;
+                _=cancel.cancelled()=>return,
+                result=output.send(field_event(&next,field))=>{
+                    if result.is_err(){return;}
+                    delivered(&mut previous,&next,field);
+                    initialized |= 1 << field;
+                    cursor=(field+1)%6;
+                },
+                result=view.changed()=>if result.is_err(){return;},
+            }
+        } else {
+            tokio::select! {biased;_=cancel.cancelled()=>return,result=view.changed()=>if result.is_err(){return;}}
         }
-        if shutdown.load(Ordering::Acquire) {
-            return;
-        }
-        // Only wait under backpressure; exit must still reach its direct reply waiter.
-        thread::sleep(Duration::from_millis(5));
-    }
-}
-
-fn parse_line(line: &str) -> Result<Incoming> {
-    let value: Value = serde_json::from_str(line).context("核心返回了无效 JSON")?;
-    if let Some(event) = value.get("event").and_then(Value::as_str) {
-        let result = value.get("result").cloned().unwrap_or(Value::Null);
-        return match event {
-            "workspace" => Ok(Incoming::Workspace(result)),
-            "resourceSync" => Ok(Incoming::ResourceSync(result)),
-            "update" => Ok(Incoming::Update(result)),
-            "notifications" => Ok(Incoming::Notifications(result)),
-            "voice" => Ok(Incoming::Voice(result)),
-            "microphoneTest" => Ok(Incoming::MicrophoneTest(result)),
-            _ => Err(anyhow!("核心返回了未知事件：{event}")),
-        };
-    }
-    let id = value
-        .get("id")
-        .and_then(Value::as_u64)
-        .context("核心响应缺少 id")?;
-    if let Some(error) = value.get("error").and_then(Value::as_str) {
-        Ok(Incoming::Response {
-            id,
-            result: Err(error.to_owned()),
-        })
-    } else {
-        Ok(Incoming::Response {
-            id,
-            result: Ok(value.get("result").cloned().unwrap_or(Value::Null)),
-        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn full_ui_queue_does_not_block_shutdown_reply_reader() {
-        let (tx, _rx) = async_channel::bounded(1);
-        tx.try_send(Incoming::Voice(Value::Null)).unwrap();
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let flag = shutdown.clone();
-        let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let reader = thread::spawn(move || {
-            forward_incoming(&tx, Incoming::Voice(Value::Null), &flag);
-            done_tx.send(()).unwrap();
-        });
-        shutdown.store(true, Ordering::Release);
-        done_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        reader.join().unwrap();
+    fn rejected_submission_preserves_accepted_disconnect() {
+        let (requests, _normal) = async_channel::bounded(1);
+        let (urgent, _priority) = async_channel::bounded(4);
+        let core = CoreClient {
+            runtime: Arc::new(Runtime {
+                requests,
+                urgent,
+                cancel: CancellationToken::new(),
+                intents: Arc::new(Intents::default()),
+                submission: Mutex::new(()),
+            }),
+            next_id: Arc::new(AtomicU64::new(1)),
+            waiters: Arc::new(Mutex::new(HashMap::new())),
+            shutting_down: Arc::new(AtomicBool::new(false)),
+        };
+        core.request("GetWorkspace", json!({})).unwrap();
+        core.request("DisconnectServer", json!({})).unwrap();
+        let generation = core.runtime.intents.connection.load(Ordering::Acquire);
+        assert!(
+            core.request("ConnectSavedServer", json!({"id":"late"}))
+                .is_err()
+        );
+        assert_eq!(
+            core.runtime.intents.connection.load(Ordering::Acquire),
+            generation
+        );
     }
-
     #[test]
-    fn parses_response_and_events() {
-        assert!(matches!(
-            parse_line(r#"{"id":7,"result":{"saved":true}}"#).unwrap(),
-            Incoming::Response { id: 7, .. }
-        ));
-        assert!(matches!(
-            parse_line(r#"{"event":"voice","result":{"enabled":false}}"#).unwrap(),
-            Incoming::Voice(_)
-        ));
-        assert!(parse_line(r#"{"event":"unknown","result":{}}"#).is_err());
+    fn urgent_actions_invalidate_older_queued_intents() {
+        let intents = Intents::default();
+        for (first, last) in [
+            ("SetPushToTalk", "SetPushToTalk"),
+            ("ConnectSavedServer", "DisconnectServer"),
+            ("ConnectServerWithPassword", "PrepareShutdown"),
+        ] {
+            let queued = Request {
+                id: 1,
+                method: first.into(),
+                params: Value::Null,
+                intent: intents.register(first),
+            };
+            assert!(intents.current(&queued));
+            intents.register(last);
+            assert!(!intents.current(&queued));
+        }
+    }
+    #[tokio::test]
+    async fn presentation_backpressure_delivers_each_field_without_workspace_flooding() {
+        let initial = View {
+            workspace: Arc::new(Default::default()),
+            voice: json!(0),
+            microphone_test: Value::Null,
+            resources: Value::Null,
+            update: Value::Null,
+            notifications: Value::Null,
+        };
+        let (state, rx) = tokio::sync::watch::channel(initial);
+        let (tx, out) = async_channel::bounded(1);
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn(publish(rx, tx, cancel.clone()));
+        let mut workspace = 0;
+        let mut voice = false;
+        for step in 1..=8 {
+            let event = tokio::time::timeout(Duration::from_secs(1), out.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            workspace += usize::from(matches!(event, Incoming::Workspace(_)));
+            voice |= matches!(event, Incoming::Voice(_));
+            state.send_modify(|view| view.voice = json!(step));
+            if voice {
+                break;
+            }
+        }
+        assert!(voice);
+        assert_eq!(workspace, 1);
+        cancel.cancel();
+        task.await.unwrap();
+    }
+    #[tokio::test]
+    async fn blocked_presentation_queue_remains_cancellable() {
+        let (tx, _rx) = async_channel::bounded(1);
+        tx.send(Incoming::Voice(Value::Null)).await.unwrap();
+        let view = View {
+            workspace: Arc::new(Default::default()),
+            voice: Value::Null,
+            microphone_test: Value::Null,
+            resources: Value::Null,
+            update: Value::Null,
+            notifications: Value::Null,
+        };
+        let (_state, rx) = tokio::sync::watch::channel(view);
+        let cancel = CancellationToken::new();
+        let token = cancel.clone();
+        let task = tokio::spawn(publish(rx, tx, token));
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap();
     }
 }
