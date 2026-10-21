@@ -69,7 +69,7 @@ fn apply_titlebar(mode: ThemeMode, window: &Window) {
         core::BOOL,
     };
 
-    let Ok(handle) = window.window_handle() else {
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
         return;
     };
     let RawWindowHandle::Win32(handle) = handle.as_raw() else {

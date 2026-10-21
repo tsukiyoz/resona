@@ -609,3 +609,15 @@ macOS Rust target，未验证 Windows 编译和实际标题栏效果，不能用
 
 macOS cargo build --locked --release 通过；沿用上述三类既有风格告警的允许项后，
 其余严格 Clippy 检查通过。未重新打包或操作运行窗口，Windows 专属代码仍待 CI。
+
+### Windows 标题栏编译回归
+
+Actions 39644671446 在 acba870 的 Windows 桌面测试编译阶段失败，E0308 指向
+theme.rs 的 window.window_handle()。该写法优先调用 GPUI 的固有方法，返回
+AnyWindowHandle，而非 raw-window-handle trait 的 Result。改为与现有应用图标
+代码一致的 HasWindowHandle::window_handle(window)，显式选择原生句柄接口。
+仅修正方法解析，不改变主题或窗口生命周期。原提交的 Rust core 与性能工具
+Actions 已成功；Windows 修正仍须重跑原生构建确认。
+
+修正后 55 项本地桌面测试、Rust 格式及差异检查通过；此结果不覆盖 Windows
+专属代码，最终编译/打包以新提交的 Windows Actions 为准。
