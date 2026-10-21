@@ -122,6 +122,10 @@ impl Drop for Client {
     }
 }
 impl Client {
+    pub fn take_voice_rx(&mut self) -> mpsc::Receiver<VoicePacket> {
+        let (_, empty) = mpsc::channel(1);
+        std::mem::replace(&mut self.voice_rx, empty)
+    }
     pub fn start(identity: Arc<Identity>) -> Self {
         let cancel = CancellationToken::new();
         let token = cancel.clone();

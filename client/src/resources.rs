@@ -54,6 +54,9 @@ impl Drop for Observer {
     }
 }
 impl Observer {
+    pub fn interest_handle(&self) -> watch::Sender<Interest> {
+        self.interest.clone()
+    }
     pub fn start(life: watch::Receiver<lifecycle::State>) -> Self {
         let (interest, interest_rx) = watch::channel(Interest::default());
         let (status_tx, status) = watch::channel(Status {

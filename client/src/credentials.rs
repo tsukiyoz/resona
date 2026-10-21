@@ -19,6 +19,20 @@ pub trait Backend {
     fn set(&self, key: &str, value: &[u8]) -> Result<()>;
     fn delete(&self, key: &str) -> Result<()>;
 }
+impl<B: Backend + ?Sized> Backend for Box<B> {
+    fn has(&self, key: &str) -> Result<bool> {
+        (**self).has(key)
+    }
+    fn get(&self, key: &str) -> Result<Vec<u8>> {
+        (**self).get(key)
+    }
+    fn set(&self, key: &str, value: &[u8]) -> Result<()> {
+        (**self).set(key, value)
+    }
+    fn delete(&self, key: &str) -> Result<()> {
+        (**self).delete(key)
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 struct Payload {

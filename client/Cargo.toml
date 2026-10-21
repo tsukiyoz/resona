@@ -17,7 +17,10 @@ prost = "=0.14.4"
 ed25519-dalek = "=2.2.0"
 sha2 = "0.10"
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde_json = { version = "1.0", features=["raw_value"] }
+base64 = "0.22"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+chrono = { version = "0.4", default-features = false, features = ["std","clock"] }
 tempfile = "=3.27.0"
 dirs = "6.0"
 getrandom = "=0.3.4"

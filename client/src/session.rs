@@ -81,11 +81,20 @@ impl Error {
 }
 
 #[derive(Clone, Debug)]
+pub struct MemberEvent {
+    pub serial: u64,
+    pub kind: &'static str,
+    pub channel: u32,
+    pub epoch: u32,
+    pub timestamp: String,
+}
+#[derive(Clone, Debug)]
 pub struct Snapshot {
     pub state: Arc<pb::State>,
     pub messages: Arc<VecDeque<pb::Message>>,
     pub chat_status: pb::ChatStatus,
     pub closed: Option<Error>,
+    pub events: Arc<VecDeque<MemberEvent>>,
 }
 impl Snapshot {
     pub fn channel(&self) -> u32 {
@@ -440,6 +449,7 @@ impl Session {
             }
         };
         let snapshot = Snapshot {
+            events: Arc::new(VecDeque::new()),
             state: Arc::new(state),
             messages: Arc::new(VecDeque::new()),
             chat_status: pb::ChatStatus::default(),
@@ -588,6 +598,35 @@ impl Driver {
                 if s.epoch != old.epoch {
                     self.snapshot.messages = Arc::new(VecDeque::new());
                     self.snapshot.chat_status = pb::ChatStatus::default();
+                } else if s.all_members == old.all_members && s.all_channels == old.all_channels {
+                    let channel = self.snapshot.channel();
+                    let events = Arc::make_mut(&mut self.snapshot.events);
+                    for (before, after, kind) in [
+                        (&old.members, &s.members, "member_left"),
+                        (&s.members, &old.members, "member_joined"),
+                    ] {
+                        for member in before
+                            .iter()
+                            .filter(|m| m.channel == channel && m.id != s.self_)
+                        {
+                            if !after
+                                .iter()
+                                .any(|m| m.instance == member.instance && m.channel == channel)
+                            {
+                                let serial = events.back().map_or(1, |e| e.serial + 1);
+                                if events.len() == 64 {
+                                    events.pop_front();
+                                }
+                                events.push_back(MemberEvent {
+                                    serial,
+                                    kind,
+                                    channel,
+                                    epoch: s.epoch,
+                                    timestamp: crate::workspace::now(),
+                                });
+                            }
+                        }
+                    }
                 }
                 self.snapshot.state = Arc::new(s);
                 self.publish();

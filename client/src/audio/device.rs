@@ -44,6 +44,7 @@ unsafe extern "C" {
     ) -> *mut c_void;
     fn ra_device_close(device: *mut c_void);
     fn ra_device_failed(device: *mut c_void) -> c_int;
+    fn ra_device_pending(device: *mut c_void) -> u32;
     fn ra_device_epoch(device: *mut c_void, epoch: u32);
     fn ra_device_capture(device: *mut c_void, out: *mut Captured) -> c_int;
     fn ra_device_reference(device: *mut c_void, out: *mut f32) -> u32;
@@ -121,6 +122,9 @@ impl Device {
     }
     pub fn failed(&self) -> bool {
         unsafe { ra_device_failed(self.handle.as_ptr()) != 0 }
+    }
+    pub fn pending(&self) -> usize {
+        unsafe { ra_device_pending(self.handle.as_ptr()) as usize }
     }
     pub fn epoch(&mut self, epoch: u32) {
         unsafe { ra_device_epoch(self.handle.as_ptr(), epoch) };

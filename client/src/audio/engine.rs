@@ -29,6 +29,7 @@ pub struct State {
     pub busy: bool,
     pub error: String,
     pub local_speaking: bool,
+    #[serde(rename = "speakingClientIDs")]
     pub speaking_client_ids: Vec<String>,
     pub push_to_talk_pressed: bool,
     #[serde(rename = "inputLevelDB")]
@@ -198,6 +199,26 @@ pub struct Engine {
     done: Option<oneshot::Receiver<()>>,
 }
 impl Engine {
+    #[cfg(test)]
+    pub(crate) fn start_silent(factory: Factory) -> Result<Self> {
+        struct Silent;
+        impl Stream for Silent {
+            fn failed(&self) -> bool {
+                false
+            }
+            fn epoch(&mut self, _: u32) {}
+            fn capture(&mut self, _: &mut Captured) -> bool {
+                false
+            }
+            fn reference(&mut self, out: &mut [f32; FRAME * 2]) {
+                out.fill(0.0);
+            }
+            fn write(&mut self, _: &[f32; FRAME * 2], _: bool) -> Result<()> {
+                Ok(())
+            }
+        }
+        Self::start_with(factory, Box::new(|_, _| Ok(Box::new(Silent))))
+    }
     pub fn start(factory: Factory) -> Result<Self> {
         Self::start_with(
             factory,
@@ -461,6 +482,11 @@ impl Worker {
                 self.state.generation = route.generation;
                 changed = pipeline.route(route)?;
                 if changed {
+                    if self.monitor {
+                        self.monitor = false;
+                        pipeline.config.muted = true;
+                        self.state.config.muted = true;
+                    }
                     // Closing the old SPSC rings prevents buffered old-channel PCM
                     // from reaching a new route. Only this worker touches them.
                     self.device = None;

@@ -105,6 +105,7 @@ static void id_string(const ma_device_id *id, char *out) {
     for(size_t i=0;i<n;i++){out[2*i]=digits[bytes[i]>>4];out[2*i+1]=digits[bytes[i]&15];}out[2*n]=0;
 }
 typedef void (*ra_list_callback)(void*,const char*,const char*,int,int);
+ma_uint32 ra_device_pending(ra_device *d) { return d->playback_ok ? ma_pcm_rb_available_read(&d->playback) : 0; }
 int ra_device_list(ra_list_callback callback,void *user) {
     ma_context context;ma_context_config config=ma_context_config_init();
     config.threadPriority=ma_thread_priority_normal;

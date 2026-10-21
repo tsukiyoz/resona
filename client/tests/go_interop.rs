@@ -100,6 +100,129 @@ async fn app_session(
     .unwrap()
 }
 
+#[cfg(feature = "audio")]
+struct EmptyCredentials(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+#[cfg(feature = "audio")]
+impl resona_client::credentials::Backend for EmptyCredentials {
+    fn has(&self, _: &str) -> resona_client::credentials::Result<bool> {
+        Ok(false)
+    }
+    fn get(&self, _: &str) -> resona_client::credentials::Result<Vec<u8>> {
+        Err(resona_client::credentials::Error::NotFound)
+    }
+    fn set(&self, _: &str, _: &[u8]) -> resona_client::credentials::Result<()> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+    fn delete(&self, _: &str) -> resona_client::credentials::Result<()> {
+        Ok(())
+    }
+}
+#[cfg(feature = "audio")]
+#[tokio::test]
+async fn product_core_connects_synchronizes_chats_and_exits_without_devices() {
+    use resona_client::{
+        audio::Config,
+        core::{Core, Options},
+    };
+    use serde_json::json;
+    let (_peer, address, key) = start_peer(&["-server"]);
+    let directory = tempfile::tempdir().unwrap();
+    let mut options = Options::local().unwrap();
+    options.directory = directory.path().into();
+    let saved = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    options.credentials = Some(Box::new(EmptyCredentials(saved.clone())));
+    let core = Core::start(options).await.unwrap();
+    let mut handle = core.handle.clone();
+    let config = Config {
+        deafened: true,
+        activation_mode: "continuous".into(),
+        vad_threshold_db: -40,
+        ..Default::default()
+    };
+    handle
+        .request("SetVoicePreferences", json!(config))
+        .await
+        .unwrap();
+    let profile = resona_client::config::ServerProfile {
+        protocol: "resona-noise".into(),
+        id: "product".into(),
+        name: "test".into(),
+        nickname: "product".into(),
+        address: address.to_string(),
+        server_public_key: key.iter().map(|b| format!("{b:02x}")).collect(),
+        ..Default::default()
+    };
+    handle
+        .request("SaveServer", json!({"profile":profile}))
+        .await
+        .unwrap();
+    handle
+        .request(
+            "ConnectServerWithPassword",
+            json!({"id":"product","password":"local-test-only","remember":true}),
+        )
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(5), async {
+        loop {
+            let view = handle.view.borrow_and_update().clone();
+            if view.workspace.connected()
+                && view.workspace.session.chat_state == "ready"
+                && view.voice["active"] == true
+            {
+                break;
+            }
+            handle.view.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    timeout(Duration::from_secs(2), async {
+        while saved.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(saved.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let workspace = handle.view.borrow().workspace.clone();
+    let session = workspace.session.id.clone();
+    let channel = workspace.session.channel_id.clone();
+    let details = handle
+        .request(
+            "GetChannelDetails",
+            json!({"sessionID":session,"channelID":channel}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(details["id"], channel);
+    let sent = handle
+        .request(
+            "SendChannelMessage",
+            json!({"sessionID":session,"channelID":channel,"text":"product integration"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(sent["messages"][0]["status"], "sent");
+    assert!(handle.request("SetUserPlayback",json!({"sessionID":session,"userID":workspace.session.self_id,"instance":workspace.users.iter().find(|u|u.is_self).unwrap().instance,"volume":200,"muted":false})).await.is_err());
+    handle.request("DisconnectServer", json!({})).await.unwrap();
+    timeout(Duration::from_secs(2), async {
+        loop {
+            if handle.view.borrow().workspace.session.mode == "offline" {
+                break;
+            }
+            handle.view.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    assert!(handle.view.borrow().workspace.messages.is_empty());
+    assert!(handle.view.borrow().workspace.channels.is_empty());
+    timeout(Duration::from_secs(4), core.close()).await.unwrap();
+    assert!(!directory.path().join("diagnostics").exists());
+}
+
 async fn wait_state(
     handle: &mut resona_client::session::Handle,
     ready: impl Fn(&resona_client::session::Snapshot) -> bool,

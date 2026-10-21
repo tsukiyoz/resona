@@ -7,12 +7,14 @@ mod device;
 #[allow(unsafe_code)]
 mod dsp;
 mod engine;
+mod notifications;
 mod pipeline;
 
 pub use codec::{Decoder, Encoder};
 pub use device::{Captured, Device, DeviceInfo};
-pub use dsp::{Chain, Factory, OptionInfo, Params, Processing, Spec};
+pub use dsp::{Chain, Factory, OptionInfo, Params, Processing, Spec, library_path};
 pub use engine::{Engine, Handle, State};
+pub use notifications::{SoundHandle, Sounds};
 pub use pipeline::{Config, Counters, Peer, Pipeline, Route};
 pub const FRAME: usize = 960;
 pub const RATE: i32 = 48_000;
