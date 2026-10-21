@@ -45,7 +45,122 @@ const MINT: u32 = 0x79c9ad;
 const AMBER: u32 = 0xd8aa5d;
 const RED: u32 = 0xe28282;
 
+/// Minimum spacing between repaints that are driven only by the input level
+/// meter. The meter is refreshed tens of times per second, and every repaint
+/// rebuilds the scene and redraws the whole window, so repainting per sample
+/// buys nothing visible for a large GPU cost.
+const VOICE_LEVEL_REPAINT: Duration = Duration::from_millis(100);
+
+/// Upper bound on how many queued core events are folded into one UI update,
+/// so a sustained burst cannot starve input handling.
+const INCOMING_BATCH: usize = 64;
+
 gpui::actions!(resona, [DismissModal, Quit]);
+
+/// Opt-in frame/event tracing, used to attribute repaints to a cause without a
+/// profiler: launch with `RESONA_FRAME_TRACE=1` and stderr receives one line per
+/// painted frame and one per core event. Off unless the variable is set.
+fn frame_trace() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("RESONA_FRAME_TRACE").is_some())
+}
+
+fn incoming_kind(incoming: &Incoming) -> &'static str {
+    match incoming {
+        Incoming::Response { .. } => "response",
+        Incoming::Workspace(_) => "workspace",
+        Incoming::ResourceSync(_) => "resource",
+        Incoming::Update(_) => "update",
+        Incoming::Notifications(_) => "notifications",
+        Incoming::Voice(_) => "voice",
+        Incoming::MicrophoneTest(_) => "microphone",
+        Incoming::Exited(_) => "exited",
+    }
+}
+
+/// How an incoming state snapshot affects what the window draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RepaintKind {
+    /// Nothing the window draws changed, e.g. only transport telemetry moved.
+    Unchanged,
+    /// Only the input level meter moved: worth one repaint per interval at most.
+    MeterOnly,
+    /// A real state change: repaint immediately.
+    Discrete,
+}
+
+/// The field names the desktop model actually deserialises. Anything else in the
+/// payload, such as the transport `counters` the core updates per packet, cannot
+/// change the rendered window and so must not trigger a repaint.
+fn known_state_fields() -> &'static std::collections::HashSet<String> {
+    static FIELDS: std::sync::OnceLock<std::collections::HashSet<String>> = std::sync::OnceLock::new();
+    FIELDS.get_or_init(|| match serde_json::to_value(VoiceState::default()) {
+        Ok(Value::Object(map)) => map.keys().cloned().collect(),
+        _ => std::collections::HashSet::new(),
+    })
+}
+
+/// Classifies a state snapshot against the previous one, keeping only the fields
+/// the model owns. `inputLevelDB` is the one field expected to move at audio rate.
+fn repaint_kind_snapshot(
+    cached: &mut Option<serde_json::Map<String, Value>>,
+    value: &Value,
+) -> RepaintKind {
+    let Some(object) = value.as_object() else {
+        return RepaintKind::Discrete;
+    };
+    let known = known_state_fields();
+    let snapshot: serde_json::Map<String, Value> = if known.is_empty() {
+        object.clone()
+    } else {
+        object
+            .iter()
+            .filter(|(key, _)| known.contains(key.as_str()))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect()
+    };
+
+    let kind = match cached.as_ref() {
+        // Nothing to compare against: assume the window needs to paint.
+        None => RepaintKind::Discrete,
+        Some(previous) => {
+            let mut changed: Vec<&str> = snapshot
+                .iter()
+                .filter(|(key, value)| previous.get(*key) != Some(value))
+                .map(|(key, _)| key.as_str())
+                .collect();
+            changed.extend(
+                previous
+                    .keys()
+                    .filter(|key| !snapshot.contains_key(*key))
+                    .map(String::as_str),
+            );
+            if changed.is_empty() {
+                RepaintKind::Unchanged
+            } else if changed.len() == 1 && changed[0] == "inputLevelDB" {
+                RepaintKind::MeterOnly
+            } else {
+                if frame_trace() {
+                    // Which fields actually moved: enough to attribute a repaint storm.
+                    changed.sort_unstable();
+                    eprintln!("RESONA_TRACE state_changed {}", changed.join(","));
+                }
+                RepaintKind::Discrete
+            }
+        }
+    };
+    *cached = Some(snapshot);
+    kind
+}
+
+/// Whether a repaint is due, given what the incoming snapshot changed. Pure, so
+/// the throttle can be exercised without a window.
+fn level_repaint_due(last: Option<Instant>, level_only: bool, now: Instant) -> bool {
+    if !level_only {
+        return true;
+    }
+    last.is_none_or(|drawn| now.saturating_duration_since(drawn) >= VOICE_LEVEL_REPAINT)
+}
 
 #[derive(Clone, Copy)]
 enum VoiceIcon {
@@ -305,6 +420,13 @@ pub struct ResonaApp {
     audio_settings_pending: bool,
     queued_voice: Option<VoiceState>,
     voice_target: Option<VoiceState>,
+    /// Discrete part of the last voice snapshot, with `inputLevelDB` removed:
+    /// used to tell "only the level meter moved" from a real state change.
+    voice_discrete: Option<serde_json::Map<String, Value>>,
+    /// The same, for the microphone test meter.
+    microphone_discrete: Option<serde_json::Map<String, Value>>,
+    /// When the level meter last caused a repaint (throttled to `VOICE_LEVEL_REPAINT`).
+    voice_level_drawn: Option<Instant>,
     _audio_update: Option<gpui::Task<()>>,
     seen_notifications: HashSet<String>,
     notification_order: VecDeque<String>,
@@ -595,6 +717,9 @@ impl ResonaApp {
             audio_settings_pending: false,
             queued_voice: None,
             voice_target: None,
+            voice_discrete: None,
+            microphone_discrete: None,
+            voice_level_drawn: None,
             _audio_update: None,
             seen_notifications: HashSet::new(),
             notification_order: VecDeque::new(),
@@ -707,10 +832,22 @@ impl ResonaApp {
                 this.store_voice_preferences(None);
                 cx.spawn_in(window, async move |view, cx| {
                     while let Ok(incoming) = rx.recv().await {
+                        // Fold everything already queued into one UI update: a
+                        // burst of voice snapshots then costs one window borrow
+                        // instead of one per event.
+                        let mut batch = vec![incoming];
+                        while batch.len() < INCOMING_BATCH {
+                            match rx.try_recv() {
+                                Ok(next) => batch.push(next),
+                                Err(_) => break,
+                            }
+                        }
                         if cx
                             .update(|window, cx| {
                                 view.update(cx, |this, cx| {
-                                    this.handle_incoming(incoming, window, cx)
+                                    for incoming in batch {
+                                        this.handle_incoming(incoming, window, cx);
+                                    }
                                 })
                             })
                             .is_err()
@@ -817,6 +954,11 @@ impl ResonaApp {
     }
 
     fn handle_incoming(&mut self, incoming: Incoming, window: &mut Window, cx: &mut Context<Self>) {
+        if frame_trace() {
+            eprintln!("RESONA_TRACE event {}", incoming_kind(&incoming));
+        }
+        let mut level_only = false;
+        let mut unchanged = false;
         match incoming {
             Incoming::Update(value) => {
                 if self.core.is_some() {
@@ -866,10 +1008,22 @@ impl ResonaApp {
             Incoming::Workspace(value) => self.apply_workspace(value, window, cx),
             Incoming::Voice(value) => {
                 if self.core.is_some() {
+                    match repaint_kind_snapshot(&mut self.voice_discrete, &value) {
+                        RepaintKind::Unchanged => unchanged = true,
+                        RepaintKind::MeterOnly => level_only = true,
+                        RepaintKind::Discrete => {}
+                    }
                     self.apply_voice(value);
                 }
             }
-            Incoming::MicrophoneTest(value) => self.apply_microphone_test(value),
+            Incoming::MicrophoneTest(value) => {
+                match repaint_kind_snapshot(&mut self.microphone_discrete, &value) {
+                    RepaintKind::Unchanged => unchanged = true,
+                    RepaintKind::MeterOnly => level_only = true,
+                    RepaintKind::Discrete => {}
+                }
+                self.apply_microphone_test(value);
+            }
             Incoming::Exited(error) => {
                 if self.closing {
                     self.finish_exit(cx);
@@ -1300,6 +1454,22 @@ impl ResonaApp {
         self.finish_settings_apply(cx);
         self.flush_queued_voice(cx);
         self.sync_hotkey(cx);
+        // A snapshot whose modelled fields did not change (typically only the
+        // core's transport counters moved) has nothing new to draw.
+        if unchanged {
+            return;
+        }
+        // A snapshot that only moved the input level meter is throttled; every
+        // other change (who is speaking, mute, connection, chat, errors) still
+        // repaints immediately so the speaking indicator stays responsive.
+        if level_only && frame_trace() {
+            eprintln!("RESONA_TRACE level_only");
+        }
+        let now = Instant::now();
+        if !level_repaint_due(self.voice_level_drawn, level_only, now) {
+            return;
+        }
+        self.voice_level_drawn = Some(now);
         cx.notify();
     }
 
@@ -7497,6 +7667,9 @@ impl ResonaApp {
 
 impl Render for ResonaApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if frame_trace() {
+            eprintln!("RESONA_TRACE frame");
+        }
         if self
             .channel_drag
             .as_ref()
@@ -8348,6 +8521,108 @@ fn ordered_channels(channels: &[crate::model::Channel]) -> Vec<(crate::model::Ch
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn level_only_snapshots_are_throttled_but_real_changes_are_not() {
+        use std::time::{Duration, Instant};
+        let now = Instant::now();
+        // Nothing drawn yet: the first meter sample paints straight away.
+        assert!(super::level_repaint_due(None, true, now));
+        // Further meter samples inside the window are dropped.
+        assert!(!super::level_repaint_due(
+            Some(now - Duration::from_millis(40)),
+            true,
+            now
+        ));
+        // Once the window has elapsed the meter paints again.
+        assert!(super::level_repaint_due(
+            Some(now - Duration::from_millis(120)),
+            true,
+            now
+        ));
+        // Any snapshot that changed something other than the meter paints
+        // immediately, even right after a meter repaint.
+        assert!(super::level_repaint_due(Some(now), false, now));
+    }
+
+    #[test]
+    fn only_the_meter_field_is_ignored_when_classifying_a_voice_snapshot() {
+        use super::RepaintKind;
+        use serde_json::json;
+        let mut cached = None;
+        let base = json!({"inputLevelDB": -40, "muted": false, "speakingClientIDs": ["1"]});
+        // The first snapshot has nothing to compare with: paint it.
+        assert_eq!(
+            super::repaint_kind_snapshot(&mut cached, &base),
+            RepaintKind::Discrete
+        );
+        assert_eq!(
+            super::repaint_kind_snapshot(
+                &mut cached,
+                &json!({"inputLevelDB": -12, "muted": false, "speakingClientIDs": ["1"]})
+            ),
+            RepaintKind::MeterOnly
+        );
+        // A different speaker set is a discrete change and must repaint.
+        assert_eq!(
+            super::repaint_kind_snapshot(
+                &mut cached,
+                &json!({"inputLevelDB": -12, "muted": false, "speakingClientIDs": ["1", "2"]})
+            ),
+            RepaintKind::Discrete
+        );
+        // Muting is discrete too.
+        assert_eq!(
+            super::repaint_kind_snapshot(
+                &mut cached,
+                &json!({"inputLevelDB": -12, "muted": true, "speakingClientIDs": ["1", "2"]})
+            ),
+            RepaintKind::Discrete
+        );
+        // A payload that is not an object is always a repaint.
+        assert_eq!(
+            super::repaint_kind_snapshot(&mut cached, &json!(null)),
+            RepaintKind::Discrete
+        );
+    }
+
+    #[test]
+    fn transport_counters_do_not_trigger_a_repaint() {
+        use super::RepaintKind;
+        use serde_json::json;
+        // `counters` is not part of the desktop model: the core updates it per
+        // packet, and redrawing the window for it is pure waste.
+        let mut cached = None;
+        assert_eq!(
+            super::repaint_kind_snapshot(
+                &mut cached,
+                &json!({"muted": false, "speakingClientIDs": [], "counters": {"sent": 1}})
+            ),
+            RepaintKind::Discrete
+        );
+        assert_eq!(
+            super::repaint_kind_snapshot(
+                &mut cached,
+                &json!({"muted": false, "speakingClientIDs": [], "counters": {"sent": 2}})
+            ),
+            RepaintKind::Unchanged
+        );
+        assert_eq!(
+            super::repaint_kind_snapshot(
+                &mut cached,
+                &json!({"muted": false, "speakingClientIDs": [], "counters": {"sent": 3}})
+            ),
+            RepaintKind::Unchanged
+        );
+        // A modelled field still repaints through the telemetry noise.
+        assert_eq!(
+            super::repaint_kind_snapshot(
+                &mut cached,
+                &json!({"muted": true, "speakingClientIDs": [], "counters": {"sent": 4}})
+            ),
+            RepaintKind::Discrete
+        );
+    }
+
     #[test]
     fn late_chat_failure_cannot_replace_reentered_channel_or_ready_state() {
         let mut workspace = Workspace::default();
