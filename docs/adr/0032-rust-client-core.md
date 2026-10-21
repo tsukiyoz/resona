@@ -15,6 +15,13 @@
 Rust 核心可继续调用成熟的 Opus、SpeexDSP、WebRTC、RNNoise 原生实现；
 不因迁移重新实现算法、不改变已保存处理链、不接入客户端 NATS。
 
+Rust 音频入口使用已在 Opus benchmark 评估的官方 libopus 1.6.1（提交
+22244de5a79bd1d6d623c32e72bf1954b56235be），替代只可从 Go 调用的 gopus。
+保留 48 kHz/单声道/20ms、VoIP、complexity 5 和服务端码率；对新旧编码包分别
+做双向解码帧长和波形误差回归。编解码互通不替代真实人声、丢包和平台听感验收。
+Speex 复用现有 vendored 1.2.1，WebRTC/RNNoise 沿用版本化 C ABI 2 动态库；
+设备复用现有 miniaudio 0.11.25，来源及回调约束见 native/client-audio/README.md。
+
 ## 分步替换
 
 1. client/ 建立独立 Rust crate，实现 RN06 传输和共享 Protobuf/身份证明，

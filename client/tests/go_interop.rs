@@ -8,6 +8,68 @@ use std::{
 };
 use tokio::time::{Instant, timeout};
 
+#[cfg(feature = "audio")]
+#[test]
+fn opus_decodes_existing_go_packets_and_go_decodes_rust_packets() {
+    use resona_client::audio::{Decoder, Encoder, FRAME, RATE};
+    use std::io::Write;
+    fn reference(packets: &[Vec<u8>]) -> serde_json::Value {
+        let mut child = Command::new(fixture())
+            .arg("-codec")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        serde_json::to_writer(
+            child.stdin.as_mut().unwrap(),
+            &serde_json::json!({"packets":packets}),
+        )
+        .unwrap();
+        child.stdin.take().unwrap().flush().unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success());
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+    fn compare(data: &serde_json::Value) {
+        let packets: Vec<Vec<u8>> = serde_json::from_value(data["packets"].clone()).unwrap();
+        let expected: Vec<f32> = serde_json::from_value(data["decoded"].clone()).unwrap();
+        let mut decoder = Decoder::new().unwrap();
+        let mut pcm = [0.0; FRAME * 6];
+        let mut actual = Vec::new();
+        for p in packets {
+            let n = decoder.decode(Some(&p), &mut pcm).unwrap();
+            assert_eq!(n, FRAME);
+            actual.extend_from_slice(&pcm[..n]);
+        }
+        assert_eq!(expected.len(), actual.len());
+        let signal = expected.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>();
+        let error = expected
+            .iter()
+            .zip(actual)
+            .map(|(a, b)| f64::from(a - b).powi(2))
+            .sum::<f64>();
+        assert!(signal > 1.0);
+        assert!(
+            (error / signal).sqrt() < 0.05,
+            "cross-codec waveform NRMSE {}",
+            (error / signal).sqrt()
+        );
+    }
+    compare(&reference(&[]));
+    let mut encoder = Encoder::new(48_000).unwrap();
+    let mut out = [0; 1024];
+    let mut packets = Vec::new();
+    for frame in 0..10 {
+        let pcm = std::array::from_fn(|i| {
+            (2.0 * std::f32::consts::PI * 440.0 * (i + frame * FRAME) as f32 / RATE as f32).sin()
+                * 0.25
+        });
+        let n = encoder.encode(&pcm, &mut out).unwrap();
+        packets.push(out[..n].to_vec());
+    }
+    compare(&reference(&packets));
+}
+
 async fn app_session(
     address: std::net::SocketAddr,
     key: [u8; 32],

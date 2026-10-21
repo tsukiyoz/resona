@@ -1,6 +1,9 @@
 //! UI-independent Rust client foundation. Not yet the shipping desktop core.
 #![deny(unsafe_code)]
 
+#[cfg(feature = "audio")]
+pub mod audio;
+
 pub mod config;
 pub mod credentials;
 pub mod lifecycle;

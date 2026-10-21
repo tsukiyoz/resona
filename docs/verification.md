@@ -1,5 +1,18 @@
 # 当前验证记录
 
+## 2026-10-21 Rust 音频基础
+
+- 官方 libopus 1.6.1 与 gopus 分别编码的十帧合成音，由两种解码器解码；
+  帧长和有限值通过，两方向波形 NRMSE 均低于 5%。此项不是人声质量评估。
+- Rust 发送 Speex AEC/ANS、接收 Speex AGC 和实际产品 ABI 2 库的 AEC3、NS、
+  AGC2、RNNoise 均通过固定帧调用测试；配置顺序/参数拒绝及逐阶段有限值检查通过。
+- 无设备的 miniaudio 回调测试在 ASan/UBSan 下通过：有界溢出、100 次环回、
+  PTT epoch 隔离、部分帧重置、输出欠载静音及本地监听不进入 AEC 参考。
+- 完整 Rust 音频 feature 下 19 项单元和 19 项 Go 回环测试通过；没有打开或
+  枚举系统音频设备。新增三平台 CI 编译此 feature，但尚未推送运行。
+- 设备/Opus/DSP 已建立 Rust 所有权；完整实时 worker、混音与 GPUI 尚未切换。
+  Windows 原生链接、驱动取消、真实收听和游戏资源消耗仍待验收。
+
 ## 2026-10-21 Rust 会话、配置与凭据迁移
 
 - 持久 identity seed、schema 1 书签、旧格式备份及未知/损坏文件写入保护已迁移。

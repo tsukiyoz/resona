@@ -26,7 +26,15 @@ func main() {
 	application := flag.Bool("server", false, "run the real application server")
 	slow := flag.Bool("slow-command-acks", false, "drop the first two post-login control ACKs")
 	vectors := flag.Bool("vectors", false, "print fixed-key Go rekey reference vectors")
+	codec := flag.Bool("codec", false, "local Opus cross-language reference")
 	flag.Parse()
+	if *codec {
+		if err := codecReference(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if *vectors {
 		printVectors()
 		return

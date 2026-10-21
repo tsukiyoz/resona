@@ -32,14 +32,21 @@ Protobuf compilation uses a pinned vendored protoc build dependency; no global
 protoc installation is needed. Cargo.lock covers all dependencies. CI tests
 Linux, Windows and macOS separately.
 
+`--features audio` additionally builds the miniaudio device adapter, vendored
+SpeexDSP and official libopus (1.6.1+, found through pkg-config; `OPUS_STATIC=1`
+selects static linking). It does not open devices in the default tests. Set
+`RESONA_TEST_NATIVE_AUDIO=1` and `RESONA_WEBRTC_PLUGIN_DIR` to require tests of
+the existing product AEC3/NS/AGC2/RNNoise library. CI builds evaluated libopus
+commit 22244de5a79bd1d6d623c32e72bf1954b56235be for each platform.
+
 `Connection` owns its transport worker; keep it alive while using cloned
 senders. Await `close()` for joined cleanup; owner drop requests cancellation.
 An established connection outlives the dial token. A submitted control write
 that is cancelled or dropped closes the transport; a cancelled read retains
 partial bytes. Voice send confirms bounded queue admission, not wire delivery.
-The caller owns the Tokio runtime; this crate creates no runtime or OS thread.
-Native audio callbacks must eventually use a bounded handoff, never run async
-network operations directly.
+The caller owns the Tokio runtime. Native audio callbacks use bounded SPSC
+rings and never run codecs, DSP or network operations. Devices must be opened
+on their owning audio worker because the callback wakes that thread.
 
 Not migrated yet: product projections, updates/diagnostics, device/codec/3A/mixer
 ownership, GPUI integration and packaging. Do not infer lower memory or game
