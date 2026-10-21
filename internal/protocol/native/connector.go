@@ -1,4 +1,3 @@
-// Package native adapts the Resona Noise protocol to the client/audio contracts.
 package native
 
 import (

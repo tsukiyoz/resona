@@ -1,4 +1,3 @@
-// Package client owns UI-independent workspace and local preview behavior.
 package client
 
 import (

@@ -1,6 +1,5 @@
 //go:build cgo
 
-// Package speexdsp binds the vendored SpeexDSP 1.2.1 speech processor.
 package speexdsp
 
 /*

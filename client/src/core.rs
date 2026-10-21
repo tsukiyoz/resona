@@ -512,6 +512,7 @@ impl App {
     }
     async fn command(&self, id: &str, command: session::Command) -> Result<()> {
         let handle = self.life.session(id).map_err(|e| e.message())?;
+        let ordering = matches!(command, session::Command::ReorderChannel { .. });
         handle
             .command(
                 command,
@@ -519,7 +520,20 @@ impl App {
                 &self.cancel,
             )
             .await
-            .map_err(|e| e.message().into())
+            .map_err(|e| {
+                if ordering
+                    && !matches!(
+                        e,
+                        session::Error::Rejected(_)
+                            | session::Error::InvalidInput
+                            | session::Error::Busy
+                    )
+                {
+                    format!("排序结果尚未确认：{}", e.message())
+                } else {
+                    e.message().into()
+                }
+            })
     }
     async fn stop_monitor_after_move(&self, generation: u64) {
         let _operation = self.voice_operation.lock().await;
@@ -697,7 +711,7 @@ impl App {
                 self.refresh(true);
                 Ok(self.workspace())
             }
-            "CreateChannel" | "UpdateChannel" | "DeleteChannel" => {
+            "CreateChannel" | "UpdateChannel" | "DeleteChannel" | "ReorderChannel" => {
                 let command = match method {
                     "CreateChannel" => session::Command::CreateChannel {
                         name: string("name"),
@@ -717,6 +731,14 @@ impl App {
                             .unwrap_or(48000)
                             .try_into()
                             .map_err(|_| "码率无效")?,
+                    },
+                    "ReorderChannel" => session::Command::ReorderChannel {
+                        id: channel(&string("channelID"))?,
+                        before: if string("beforeID").is_empty() {
+                            0
+                        } else {
+                            channel(&string("beforeID"))?
+                        },
                     },
                     _ => session::Command::DeleteChannel(channel(&string("channelID"))?),
                 };

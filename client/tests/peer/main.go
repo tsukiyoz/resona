@@ -55,7 +55,21 @@ func run(loss, blackhole, application, slow bool) error {
 	}
 	pub, _ := noiseudp.PublicKey(key)
 	if application {
-		s, err := server.Listen("127.0.0.1:0", server.Config{NoiseKey: key, Name: "Rust interop", Password: "local-test-only", Channels: []w.Channel{{ID: 1, Name: "Lobby"}, {ID: 2, Name: "Gaming"}}, MaxClients: 4})
+		dir, err := os.MkdirTemp("", "resona-interop-")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(dir)
+		store, err := server.OpenStore(server.ChatConfig{Directory: dir}, "", []w.Channel{{ID: 1, Name: "Lobby"}, {ID: 2, Name: "Gaming"}})
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+		claim, err := store.ProvisionOwnerClaim(false)
+		if err != nil {
+			return err
+		}
+		s, err := server.Listen("127.0.0.1:0", server.Config{Store: store, NoiseKey: key, Name: "Rust interop", Password: "local-test-only", MaxClients: 4})
 		if err != nil {
 			return err
 		}
@@ -68,7 +82,7 @@ func run(loss, blackhole, application, slow bool) error {
 			defer proxy.Close()
 			address = proxy.LocalAddr().String()
 		}
-		if err := json.NewEncoder(os.Stdout).Encode(map[string]string{"address": address, "backend": s.Addr().String(), "public_key": hex.EncodeToString(pub)}); err != nil {
+		if err := json.NewEncoder(os.Stdout).Encode(map[string]string{"address": address, "backend": s.Addr().String(), "public_key": hex.EncodeToString(pub), "claim": claim}); err != nil {
 			cancel()
 		}
 		return s.Serve(ctx)

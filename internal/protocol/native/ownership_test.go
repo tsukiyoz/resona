@@ -18,11 +18,8 @@ import (
 func TestOwnerClaimAndPersistentIdentityAcrossServerRestart(t *testing.T) {
 	t.Run("noise", func(t *testing.T) {
 		dir := t.TempDir()
-		token, err := server.InitOwnerClaim(dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		owner, err := server.OpenOwnership(dir)
+		owner := openTestResources(t, dir)
+		token, err := owner.ProvisionOwnerClaim(false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -66,16 +63,23 @@ func TestOwnerClaimAndPersistentIdentityAcrossServerRestart(t *testing.T) {
 		if err := <-done; err != nil {
 			t.Fatal(err)
 		}
-		owner, err = server.OpenOwnership(dir)
-		if err != nil {
-			t.Fatal(err)
-		}
+		owner = openTestResources(t, dir)
 		p, _, _ = startServerOwned(t, owner)
 		_, again := connect(p)
 		if again.snapshot().IdentityUID != uid || again.snapshot().ServerRole != "owner" || again.snapshot().CanClaimOwner {
 			t.Fatal("restart lost ownership")
 		}
 	})
+}
+
+func openTestResources(t *testing.T, dir string) *server.Store {
+	t.Helper()
+	s, err := server.OpenStore(server.ChatConfig{Directory: filepath.Join(dir, "chat")}, dir, []w.Channel{{ID: 1, Name: "Lobby"}, {ID: 2, Name: "Gaming"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	return s
 }
 
 func TestNativeIdentityRejectsMissingForgedAndCrossConnectionProof(t *testing.T) {

@@ -1,4 +1,3 @@
-// Package diagnostics records bounded, best-effort client events in memory.
 package diagnostics
 
 import (

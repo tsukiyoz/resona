@@ -33,6 +33,7 @@ type chatStore struct {
 	js        jetstream.JetStream
 	stream    jetstream.Stream
 	temporary string
+	closed    chan struct{}
 }
 
 func openChat(cfg ChatConfig) (_ *chatStore, err error) {
@@ -48,7 +49,7 @@ func openChat(cfg ChatConfig) (_ *chatStore, err error) {
 	if cfg.MaxMessagesPerChannel < 1 || cfg.MaxMessagesPerChannel > 10000 || cfg.MaxBytes < 16<<10 || cfg.MaxAge < time.Second {
 		return nil, errors.New("invalid chat retention limits")
 	}
-	c := &chatStore{}
+	c := &chatStore{closed: make(chan struct{})}
 	if cfg.Directory == "" {
 		cfg.Directory, err = os.MkdirTemp("", "resona-chat-")
 		if err != nil {
@@ -69,7 +70,7 @@ func openChat(cfg ChatConfig) (_ *chatStore, err error) {
 		JetStream: true, StoreDir: cfg.Directory, JetStreamMaxMemory: 8 << 20,
 		// Stream MaxBytes owns retention. A broker quota equal to a newly reduced
 		// limit would reject recovery before the stream could evict old messages.
-		MaxPayload: 16 << 10, MaxPending: 1 << 20,
+		MaxPayload: 256 << 10, MaxPending: 1 << 20,
 		SyncAlways: true,
 	})
 	if err != nil {
@@ -80,6 +81,7 @@ func openChat(cfg ChatConfig) (_ *chatStore, err error) {
 		return nil, errors.New("chat broker did not start")
 	}
 	c.conn, err = nats.Connect("", nats.InProcessServer(c.server), nats.NoReconnect(),
+		nats.ClosedHandler(func(*nats.Conn) { close(c.closed) }),
 		nats.Timeout(2*time.Second), nats.FlusherTimeout(2*time.Second),
 		nats.ErrorHandler(func(*nats.Conn, *nats.Subscription, error) { slog.Warn("chat broker subscription failed") }))
 	if err != nil {

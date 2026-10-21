@@ -1,4 +1,3 @@
-// Package nativeidentity owns native client identity keys and atomic private files.
 package nativeidentity
 
 import (

@@ -1,4 +1,3 @@
-// Package credentials keeps remembered server passwords in native secure storage.
 package credentials
 
 import "errors"

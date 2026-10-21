@@ -29,6 +29,7 @@ pub struct Session {
     pub server_role: String,
     pub can_claim_owner: bool,
     pub can_manage_channels: bool,
+    pub can_reorder_channels: bool,
     pub can_configure_channel_audio: bool,
     #[serde(rename = "selfID")]
     pub self_id: String,

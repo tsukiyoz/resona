@@ -74,13 +74,13 @@ enum Pending {
     ChatRetry(String, String, u32),
     Update(&'static str),
     ExportDiagnostics,
-    Probe(Instant),
     CoreInfo,
     ResourceInterest(u64),
     ChannelMutation {
         session: String,
         revision: u64,
     },
+    ChannelOrder(String),
     ClaimOwner {
         session: String,
         revision: u64,
@@ -115,6 +115,43 @@ enum Pending {
 enum DetailSelection {
     Channel(String),
     User(String),
+}
+
+#[derive(Clone)]
+struct ChannelDrag {
+    session: String,
+    server: String,
+    channel: String,
+    name: String,
+}
+
+struct ChannelDragPreview {
+    name: String,
+    offset: gpui::Point<gpui::Pixels>,
+}
+
+impl Render for ChannelDragPreview {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .pl(self.offset.x + px(12.))
+            .pt(self.offset.y + px(12.))
+            .child(
+                div()
+                    .w(px(200.))
+                    .h(px(34.))
+                    .px_3()
+                    .flex()
+                    .items_center()
+                    .rounded(px(5.))
+                    .bg(rgb(PANEL_2))
+                    .border_1()
+                    .border_color(rgb(LINE))
+                    .text_sm()
+                    .text_color(rgb(TEXT))
+                    .overflow_hidden()
+                    .child(div().truncate().child(self.name.clone())),
+            )
+    }
 }
 
 #[derive(Clone, PartialEq)]
@@ -258,8 +295,9 @@ pub struct ResonaApp {
     _settings_watch: Option<gpui::Task<()>>,
     settings_notice: String,
     settings_discard: bool,
-    probe_result: String,
     core_info: Option<Value>,
+    diagnostic_error: String,
+    build_info_error: String,
     update_status: Value,
     update_notice: String,
     preference_revision: u64,
@@ -279,6 +317,7 @@ pub struct ResonaApp {
     ownership_revision: u64,
     channel_revision: u64,
     channel_error: String,
+    channel_drag: Option<ChannelDrag>,
     channel_name_input: Entity<InputState>,
     channel_description_input: Entity<InputState>,
     channel_bitrate_input: Entity<InputState>,
@@ -546,8 +585,9 @@ impl ResonaApp {
             _settings_watch: None,
             settings_notice: String::new(),
             settings_discard: false,
-            probe_result: String::new(),
             core_info: None,
+            diagnostic_error: String::new(),
+            build_info_error: String::new(),
             update_status: json!({"state":"idle"}),
             update_notice: String::new(),
             preference_revision: 0,
@@ -567,6 +607,7 @@ impl ResonaApp {
             ownership_revision: 0,
             channel_revision: 0,
             channel_error: String::new(),
+            channel_drag: None,
             channel_name_input,
             channel_description_input,
             channel_bitrate_input,
@@ -692,7 +733,7 @@ impl ResonaApp {
         let result = self
             .core
             .as_ref()
-            .ok_or_else(|| "客户端核心不可用".to_owned())
+            .ok_or_else(|| "应用尚未就绪，请重启应用".to_owned())
             .and_then(|core| {
                 core.request(method, params)
                     .map_err(|error| error.to_string())
@@ -714,6 +755,11 @@ impl ResonaApp {
                 }
             }
             Pending::Update(_) => self.update_notice = error,
+            Pending::ExportDiagnostics => self.diagnostic_error = format!("导出诊断失败：{error}"),
+            Pending::CoreInfo => self.build_info_error = format!("无法读取应用构建信息：{error}"),
+            Pending::Capabilities => {
+                self.diagnostic_error = format!("无法读取音频能力：{error}，请重启应用")
+            }
             Pending::ResourceInterest(generation) => {
                 if generation == self.resource_generation {
                     self.resource_state = ResourceState::Failed;
@@ -737,6 +783,11 @@ impl ResonaApp {
                     self.channel_error = error;
                 } else if !self.closing && self.workspace.session.id == session {
                     self.error = format!("频道操作：{error}");
+                }
+            }
+            Pending::ChannelOrder(session) => {
+                if !self.closing && self.workspace.session.id == session {
+                    self.error = format!("频道排序：{error}");
                 }
             }
             Pending::ClaimOwner { session, revision } => {
@@ -895,6 +946,13 @@ impl ResonaApp {
                         } else if !self.closing && self.workspace.session.id == session {
                             if let Err(error) = result {
                                 self.error = format!("频道操作：{error}");
+                            }
+                        }
+                    }
+                    (Some(Pending::ChannelOrder(session)), result) => {
+                        if !self.closing && self.workspace.session.id == session {
+                            if let Err(error) = result {
+                                self.error = format!("频道排序：{error}");
                             }
                         }
                     }
@@ -1160,22 +1218,9 @@ impl ResonaApp {
                             if let Some(path) = value.as_str() {
                                 cx.reveal_path(std::path::Path::new(path));
                             } else {
-                                self.error = "诊断导出结果无效".into();
+                                self.diagnostic_error = "诊断导出结果无效，请重试".into();
                             }
                         }
-                    }
-                    (Some(Pending::Probe(started)), Ok(value)) => {
-                        self.probe_result = match self.update_capabilities(value) {
-                            Ok(()) => format!(
-                                "核心响应正常 · {} ms · {}",
-                                started.elapsed().as_millis(),
-                                self.capabilities.platform
-                            ),
-                            Err(error) => format!("核心探测失败：{error}"),
-                        };
-                    }
-                    (Some(Pending::Probe(_)), Err(error)) => {
-                        self.probe_result = format!("核心探测失败：{error}");
                     }
                     (Some(Pending::Update(method)), Ok(value)) => {
                         if method == "GetUpdateStatus" {
@@ -1189,10 +1234,13 @@ impl ResonaApp {
                         }
                     }
                     (Some(Pending::Update(_)), Err(error)) => self.update_notice = error,
-                    (Some(Pending::CoreInfo), Ok(value)) => self.core_info = Some(value),
+                    (Some(Pending::CoreInfo), Ok(value)) => {
+                        self.core_info = Some(value);
+                        self.build_info_error.clear();
+                    }
                     (Some(Pending::CoreInfo), Err(error)) => {
                         self.core_info = None;
-                        self.error = format!("无法读取核心版本：{error}");
+                        self.build_info_error = format!("无法读取应用构建信息：{error}");
                     }
                     (Some(Pending::Devices), Ok(value)) => match serde_json::from_value(value) {
                         Ok(devices) => self.devices = devices,
@@ -1200,8 +1248,14 @@ impl ResonaApp {
                     },
                     (Some(Pending::Capabilities), Ok(value)) => {
                         if let Err(error) = self.update_capabilities(value) {
-                            self.error = error;
+                            self.diagnostic_error = error;
                         }
+                    }
+                    (Some(Pending::Capabilities), Err(error)) => {
+                        self.request_failed(Pending::Capabilities, error)
+                    }
+                    (Some(Pending::ExportDiagnostics), Err(error)) => {
+                        self.request_failed(Pending::ExportDiagnostics, error)
                     }
                     (Some(Pending::Notification), Ok(_)) => {}
                     (Some(Pending::Send(submitted)), Ok(value)) => {
@@ -1753,6 +1807,7 @@ impl ResonaApp {
                     | Pending::ResourceInterest(_)
                     | Pending::Icon { .. }
                     | Pending::PushToTalk
+                    | Pending::ChannelOrder(_)
             )
         })
     }
@@ -1983,7 +2038,90 @@ impl ResonaApp {
     }
 
     fn channel_pending(&self) -> bool {
-        self.pending.values().any(|p| matches!(p, Pending::ChannelMutation { session, .. } if *session == self.workspace.session.id))
+        self.pending.values().any(|p| matches!(p, Pending::ChannelMutation { session, .. } | Pending::ChannelOrder(session) if *session == self.workspace.session.id))
+    }
+
+    fn channel_order_allowed(&self) -> bool {
+        self.workspace.connected()
+            && self.selected_server == self.workspace.session.server_id
+            && self.workspace.session.can_reorder_channels
+            && self.resource_state == ResourceState::Ready
+            && self.resource_interest == Some((true, true))
+            && !navigation_blocked(self.modal.as_ref(), self.closing)
+            && !self.channel_pending()
+            && !self.speaking_transition_pending()
+    }
+
+    fn channel_drag_current(&self, drag: &ChannelDrag) -> bool {
+        self.channel_order_allowed()
+            && channel_drag_matches(&self.workspace, &self.selected_server, drag)
+    }
+
+    fn reorder_channel(
+        &mut self,
+        drag: &ChannelDrag,
+        target: &str,
+        after: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.channel_drag_current(drag) {
+            return;
+        }
+        let Some(before) =
+            channel_drop_before(&self.workspace.channels, &drag.channel, target, after)
+        else {
+            return;
+        };
+        self.error.clear();
+        self.request(
+            "ReorderChannel",
+            json!({"sessionID": drag.session, "channelID": drag.channel, "beforeID": before}),
+            Pending::ChannelOrder(drag.session.clone()),
+        );
+        cx.notify();
+    }
+
+    fn channel_drop_zone(&self, target: &str, after: bool, view: &Entity<Self>) -> AnyElement {
+        let check = view.clone();
+        let check_target = target.to_owned();
+        let entity = view.clone();
+        let target = target.to_owned();
+        div()
+            .id(SharedString::from(format!("channel-drop-{target}-{after}")))
+            .absolute()
+            .left_0()
+            .right_0()
+            .h(px(17.))
+            .cursor_move()
+            .map(|zone| {
+                if after {
+                    zone.bottom_0().border_b_2()
+                } else {
+                    zone.top_0().border_t_2()
+                }
+            })
+            .border_color(rgba(0x00000000))
+            .can_drop(move |value, _, cx| {
+                let Some(drag) = value.downcast_ref::<ChannelDrag>() else {
+                    return false;
+                };
+                let this = check.read(cx);
+                this.channel_drag_current(drag)
+                    && channel_drop_before(
+                        &this.workspace.channels,
+                        &drag.channel,
+                        &check_target,
+                        after,
+                    )
+                    .is_some()
+            })
+            .drag_over::<ChannelDrag>(|style, _, _, _| style.border_color(rgb(ICE)))
+            .on_drop(move |drag: &ChannelDrag, _, cx| {
+                entity.update(cx, |this, cx| {
+                    this.reorder_channel(drag, &target, after, cx)
+                });
+            })
+            .into_any_element()
     }
 
     fn open_channel_form(
@@ -1996,6 +2134,7 @@ impl ResonaApp {
     ) {
         if self.closing
             || self.resources_blocked()
+            || self.channel_pending()
             || !self.workspace.connected()
             || !self.workspace.session.can_manage_channels
             || session != self.workspace.session.id
@@ -2245,7 +2384,10 @@ impl ResonaApp {
     }
 
     fn dismiss_modal(&mut self, _: &DismissModal, window: &mut Window, cx: &mut Context<Self>) {
-        if self.modal.is_some() {
+        if cx.stop_active_drag(window) {
+            self.channel_drag = None;
+            cx.notify();
+        } else if self.modal.is_some() {
             self.close_modal(window, cx);
         } else if self.device_menu.take().is_some() {
             self.focus.focus(window);
@@ -2569,11 +2711,11 @@ impl ResonaApp {
     }
 
     fn update_capabilities(&mut self, value: Value) -> Result<(), String> {
-        let capabilities: Capabilities =
-            serde_json::from_value(value).map_err(|error| format!("无法读取核心能力：{error}"))?;
+        let capabilities: Capabilities = serde_json::from_value(value)
+            .map_err(|error| format!("无法读取音频能力：{error}，请重启应用"))?;
         if capabilities.protocol_version != 1 {
             return Err(format!(
-                "不支持的核心协议版本：{}",
+                "不支持的应用接口版本：{}，请重启或重新安装应用",
                 capabilities.protocol_version
             ));
         }
@@ -3213,7 +3355,7 @@ impl ResonaApp {
             .into_any_element()
     }
 
-    fn render_sidebar(&self, view: &Entity<Self>) -> AnyElement {
+    fn render_sidebar(&self, view: &Entity<Self>, dragging: bool) -> AnyElement {
         let preview_selected = self.selected_server == "__preview__";
         let profile = self.selected_profile().cloned();
         let showing_session = if self.workspace.session.mode == "preview" {
@@ -3248,6 +3390,7 @@ impl ResonaApp {
                         Button::new("create-channel")
                             .icon(IconName::Plus)
                             .ghost()
+                            .disabled(self.channel_pending() || self.resources_blocked())
                             .tooltip("新建频道")
                             .on_click(move |_, window, cx| {
                                 view.update(cx, |this, cx| {
@@ -3284,7 +3427,11 @@ impl ResonaApp {
                             .text_color(rgb(MUTED))
                             .truncate()
                             .child(if showing_session {
-                                self.session_label()
+                                if self.pending.values().any(|p| matches!(p, Pending::ChannelOrder(session) if *session == self.workspace.session.id)) {
+                                    "正在保存频道顺序…".into()
+                                } else {
+                                    self.session_label()
+                                }
                             } else {
                                 "未连接".into()
                             }),
@@ -3320,7 +3467,7 @@ impl ResonaApp {
             .flex_col()
             .child(header);
         if can_show_session_channels(&self.workspace, &self.selected_server) {
-            sidebar = sidebar.child(self.render_channels(view));
+            sidebar = sidebar.child(self.render_channels(view, dragging));
         } else {
             let mut empty = div()
                 .flex_1()
@@ -3374,7 +3521,7 @@ impl ResonaApp {
         sidebar.into_any_element()
     }
 
-    fn render_channels(&self, view: &Entity<Self>) -> AnyElement {
+    fn render_channels(&self, view: &Entity<Self>, dragging: bool) -> AnyElement {
         let native_session = self.workspace.connected();
         let current = self.workspace.session.channel_id.clone();
         let switching = self.workspace.session.switching_channel_id.clone();
@@ -3448,6 +3595,14 @@ impl ResonaApp {
                 let menu_session = self.workspace.session.id.clone();
                 let menu_id = channel.id.clone();
                 let entity = view.clone();
+                let drag = ChannelDrag {
+                    session: self.workspace.session.id.clone(),
+                    server: self.workspace.session.server_id.clone(),
+                    channel: channel.id.clone(),
+                    name: channel.name.clone(),
+                };
+                let drag_entity = view.clone();
+                let drop_id = channel.id.clone();
                 let member_rows = users
                     .iter()
                     .filter(|u| u.channel_id == id)
@@ -3631,6 +3786,7 @@ impl ResonaApp {
                     .child(
                         div()
                             .id(SharedString::from(format!("channel-{id}")))
+                            .relative()
                             .tab_index(0)
                             .h(px(34.))
                             .pl(px(12. + depth as f32 * 14.))
@@ -3644,6 +3800,17 @@ impl ResonaApp {
                             .flex()
                             .items_center()
                             .gap_2()
+                            .when(self.channel_order_allowed(), |row| {
+                                row.on_drag(drag, move |drag, offset, _, cx| {
+                                    drag_entity.update(cx, |this, _| {
+                                        this.channel_drag = Some(drag.clone())
+                                    });
+                                    cx.new(|_| ChannelDragPreview {
+                                        name: drag.name.clone(),
+                                        offset,
+                                    })
+                                })
+                            })
                             .on_click(move |event, _, cx| {
                                 entity.update(cx, |this, cx| {
                                     if navigation_blocked(this.modal.as_ref(), this.closing) {
@@ -3685,6 +3852,10 @@ impl ResonaApp {
                                         channel.members.to_string()
                                     }),
                             )
+                            .when(dragging && self.channel_order_allowed(), |row| {
+                                row.child(self.channel_drop_zone(&drop_id, false, view))
+                                    .child(self.channel_drop_zone(&drop_id, true, view))
+                            })
                             .map(|row| {
                                 if !native_session {
                                     return row.into_any_element();
@@ -3722,51 +3893,100 @@ impl ResonaApp {
                                     } else if current.channel_pending() {
                                         menu = menu.label("频道操作正在进行");
                                     }
-                                    menu.item(
-                                        PopupMenuItem::new("新建频道").disabled(!enabled).on_click(
-                                            move |_, window, cx| {
-                                                create.update(cx, |this, cx| {
-                                                    this.open_channel_form(
-                                                        create_session.clone(),
-                                                        String::new(),
-                                                        false,
-                                                        window,
-                                                        cx,
+                                    let index = current
+                                        .workspace
+                                        .channels
+                                        .iter()
+                                        .position(|ch| ch.id == menu_id);
+                                    let mut order_menu = menu;
+                                    if current.workspace.session.can_reorder_channels {
+                                        for (label, after) in
+                                            [("上移频道", false), ("下移频道", true)]
+                                        {
+                                            let target = index
+                                                .and_then(|i| {
+                                                    if after {
+                                                        current.workspace.channels.get(i + 1)
+                                                    } else {
+                                                        i.checked_sub(1).and_then(|i| {
+                                                            current.workspace.channels.get(i)
+                                                        })
+                                                    }
+                                                })
+                                                .map(|ch| ch.id.clone());
+                                            let entity = menu_entity.clone();
+                                            let drag = ChannelDrag {
+                                                session: menu_session.clone(),
+                                                server: current.selected_server.clone(),
+                                                channel: menu_id.clone(),
+                                                name: String::new(),
+                                            };
+                                            order_menu = order_menu.item(
+                                                PopupMenuItem::new(label)
+                                                    .disabled(
+                                                        !enabled
+                                                            || !current.channel_order_allowed()
+                                                            || target.is_none(),
                                                     )
-                                                });
-                                            },
-                                        ),
-                                    )
-                                    .item(
-                                        PopupMenuItem::new("编辑频道")
-                                            .disabled(!enabled || channel.is_none())
-                                            .on_click(move |_, window, cx| {
-                                                edit.update(cx, |this, cx| {
-                                                    this.open_channel_form(
-                                                        edit_session.clone(),
-                                                        edit_id.clone(),
-                                                        false,
-                                                        window,
-                                                        cx,
-                                                    )
-                                                });
-                                            }),
-                                    )
-                                    .item(
-                                        PopupMenuItem::new(delete_label)
-                                            .disabled(!enabled || !deletable)
-                                            .on_click(move |_, window, cx| {
-                                                delete.update(cx, |this, cx| {
-                                                    this.open_channel_form(
-                                                        delete_session.clone(),
-                                                        delete_id.clone(),
-                                                        true,
-                                                        window,
-                                                        cx,
-                                                    )
-                                                });
-                                            }),
-                                    )
+                                                    .on_click(move |_, _, cx| {
+                                                        if let Some(target) = &target {
+                                                            entity.update(cx, |this, cx| {
+                                                                this.reorder_channel(
+                                                                    &drag, target, after, cx,
+                                                                )
+                                                            });
+                                                        }
+                                                    }),
+                                            );
+                                        }
+                                        order_menu = order_menu.separator();
+                                    }
+                                    order_menu
+                                        .item(
+                                            PopupMenuItem::new("新建频道")
+                                                .disabled(!enabled)
+                                                .on_click(move |_, window, cx| {
+                                                    create.update(cx, |this, cx| {
+                                                        this.open_channel_form(
+                                                            create_session.clone(),
+                                                            String::new(),
+                                                            false,
+                                                            window,
+                                                            cx,
+                                                        )
+                                                    });
+                                                }),
+                                        )
+                                        .item(
+                                            PopupMenuItem::new("编辑频道")
+                                                .disabled(!enabled || channel.is_none())
+                                                .on_click(move |_, window, cx| {
+                                                    edit.update(cx, |this, cx| {
+                                                        this.open_channel_form(
+                                                            edit_session.clone(),
+                                                            edit_id.clone(),
+                                                            false,
+                                                            window,
+                                                            cx,
+                                                        )
+                                                    });
+                                                }),
+                                        )
+                                        .item(
+                                            PopupMenuItem::new(delete_label)
+                                                .disabled(!enabled || !deletable)
+                                                .on_click(move |_, window, cx| {
+                                                    delete.update(cx, |this, cx| {
+                                                        this.open_channel_form(
+                                                            delete_session.clone(),
+                                                            delete_id.clone(),
+                                                            true,
+                                                            window,
+                                                            cx,
+                                                        )
+                                                    });
+                                                }),
+                                        )
                                 })
                                 .into_any_element()
                             }),
@@ -5549,7 +5769,7 @@ impl ResonaApp {
             .collect::<Vec<_>>()
             .join("\n");
         if description.is_empty() {
-            description = "尚未取得可用处理器信息，可在诊断页重新探测 Core。".into();
+            description = "音频处理器信息尚未就绪；若持续不可用，请重启应用。".into();
         }
         let selected_label = options
             .iter()
@@ -5566,7 +5786,7 @@ impl ResonaApp {
             .iter()
             .find(|option| option.id == selected.backend)
             .map(|option| option.description.clone())
-            .unwrap_or_else(|| "此处理器当前不可用，请在诊断页重新探测 Core。".into());
+            .unwrap_or_else(|| "此处理器当前不可用，请检查安装是否完整并重启应用。".into());
         let selected_backend = selected.backend.clone();
         let entity = view.clone();
         div()
@@ -6540,10 +6760,6 @@ impl ResonaApp {
                     )
             }
             Modal::Diagnostics => {
-                let probing = self
-                    .pending
-                    .values()
-                    .any(|p| matches!(p, Pending::Probe(_)));
                 let exporting = self
                     .pending
                     .values()
@@ -6587,51 +6803,6 @@ impl ResonaApp {
                             }),
                     )
                     .child(div().w_full().h(px(1.)).bg(rgb(LINE)))
-                    .child(div().text_sm().text_color(rgb(MUTED)).child("核心状态"))
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(rgb(TEXT))
-                            .child(if self.core.is_some() {
-                                "客户端核心已就绪"
-                            } else {
-                                "客户端核心不可用"
-                            }),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .child(
-                                Button::new("probe-core")
-                                    .label(if probing { "探测中" } else { "探测 Core" })
-                                    .icon(IconName::CircleCheck)
-                                    .outline()
-                                    .disabled(self.core.is_none() || probing)
-                                    .on_click({
-                                        let entity = entity.clone();
-                                        move |_, _, cx| {
-                                            entity.update(cx, |this, cx| {
-                                                this.probe_result = "正在等待核心响应".into();
-                                                this.request(
-                                                    "GetCapabilities",
-                                                    json!({}),
-                                                    Pending::Probe(Instant::now()),
-                                                );
-                                                cx.notify();
-                                            });
-                                        }
-                                    }),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(MUTED))
-                                    .child(self.probe_result.clone()),
-                            ),
-                    )
-                    .child(div().w_full().h(px(1.)).bg(rgb(LINE)))
                     .child(div().text_sm().text_color(rgb(MUTED)).child("本机诊断"))
                     .child(
                         Button::new("export-diagnostics")
@@ -6647,6 +6818,7 @@ impl ResonaApp {
                                 let entity = entity.clone();
                                 move |_, _, cx| {
                                     entity.update(cx, |this, cx| {
+                                        this.diagnostic_error.clear();
                                         this.request(
                                             "ExportDiagnostics",
                                             json!({}),
@@ -6657,6 +6829,7 @@ impl ResonaApp {
                                 }
                             }),
                     )
+                    .child(div().text_xs().text_color(rgb(0xe57878)).child(self.diagnostic_error.clone()))
                     )
                     )
             }
@@ -6695,11 +6868,13 @@ impl ResonaApp {
                                     .flex_col()
                                     .gap_4()
                                     .child(field(
-                                        "桌面版本",
-                                        div().text_sm().child(env!("CARGO_PKG_VERSION")),
+                                        "应用版本",
+                                        div().text_sm().child(
+                                            resona_client::build_info::BuildInfo::default().version,
+                                        ),
                                     ))
                                     .child(field(
-                                        "桌面平台",
+                                        "运行平台",
                                         div().text_sm().child(format!(
                                             "{}/{}",
                                             std::env::consts::OS,
@@ -6715,10 +6890,6 @@ impl ResonaApp {
                                     .flex_col()
                                     .gap_4()
                                     .child(field(
-                                        "Core 版本",
-                                        div().text_sm().child(value("version")),
-                                    ))
-                                    .child(field(
                                         "提交版本",
                                         div().text_sm().child(
                                             value("commit").chars().take(12).collect::<String>(),
@@ -6731,12 +6902,14 @@ impl ResonaApp {
                                     .child(field(
                                         "Rust 运行时",
                                         div().text_sm().child(value("rustVersion")),
-                                    ))
-                                    .child(field(
-                                        "Core 平台",
-                                        div().text_sm().child(value("platform")),
                                     )),
                             ),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0xe57878))
+                            .child(self.build_info_error.clone()),
                     )
                     .child(self.render_updates(&entity))
             }
@@ -7324,6 +7497,16 @@ impl ResonaApp {
 
 impl Render for ResonaApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self
+            .channel_drag
+            .as_ref()
+            .is_some_and(|drag| !self.channel_drag_current(drag))
+        {
+            cx.stop_active_drag(window);
+            self.channel_drag = None;
+        } else if !cx.has_active_drag() {
+            self.channel_drag = None;
+        }
         if matches!(
             self.modal,
             Some(
@@ -7496,7 +7679,7 @@ impl Render for ResonaApp {
                                     .min_h_0()
                                     .w_full()
                                     .flex()
-                                    .child(self.render_sidebar(&view))
+                                    .child(self.render_sidebar(&view, self.channel_drag.is_some()))
                                     .when(self.detail_selection.is_some(), |body| {
                                         body.child(self.render_details(&view))
                                     }),
@@ -8075,6 +8258,40 @@ fn message_status_color(status: &str) -> u32 {
     }
 }
 
+fn channel_drag_matches(workspace: &Workspace, selected: &str, drag: &ChannelDrag) -> bool {
+    workspace.connected()
+        && workspace.session.can_reorder_channels
+        && workspace.session.id == drag.session
+        && workspace.session.server_id == drag.server
+        && selected == drag.server
+        && workspace.channels.iter().any(|c| c.id == drag.channel)
+}
+
+// Resolve against the latest authoritative order, using IDs rather than stale
+// indices. None means an invalid target or an already-satisfied position.
+fn channel_drop_before(
+    channels: &[crate::model::Channel],
+    source: &str,
+    target: &str,
+    after: bool,
+) -> Option<String> {
+    let from = channels.iter().position(|c| c.id == source)?;
+    let target_index = channels.iter().position(|c| c.id == target)?;
+    if from == target_index {
+        return None;
+    }
+    let mut order = channels.iter().map(|c| c.id.as_str()).collect::<Vec<_>>();
+    order.remove(from);
+    let position = order.iter().position(|id| *id == target)? + usize::from(after);
+    let before = order.get(position).copied().unwrap_or("").to_owned();
+    order.insert(position, source);
+    (order
+        .iter()
+        .copied()
+        .ne(channels.iter().map(|c| c.id.as_str())))
+    .then_some(before)
+}
+
 fn ordered_channels(channels: &[crate::model::Channel]) -> Vec<(crate::model::Channel, usize)> {
     let ids = channels
         .iter()
@@ -8285,6 +8502,79 @@ mod tests {
         let user = DetailSelection::User("2".into());
         assert_eq!(super::detail_fields(&user).len(), 3);
     }
+    #[test]
+    fn channel_drag_cannot_cross_server_session_permission_or_source_lifetimes() {
+        let mut workspace = Workspace::default();
+        workspace.session.mode = "connected".into();
+        workspace.session.id = "a".into();
+        workspace.session.server_id = "server".into();
+        workspace.session.can_reorder_channels = true;
+        workspace.channels.push(crate::model::Channel {
+            id: "1".into(),
+            ..Default::default()
+        });
+        let drag = super::ChannelDrag {
+            session: "a".into(),
+            server: "server".into(),
+            channel: "1".into(),
+            name: String::new(),
+        };
+        let valid = |w: &Workspace, server| super::channel_drag_matches(w, server, &drag);
+        assert!(valid(&workspace, "server"));
+        assert!(!valid(&workspace, "other"));
+        workspace.session.id = "reconnected".into();
+        assert!(!valid(&workspace, "server"));
+        workspace.session.id = "a".into();
+        workspace.session.server_id = "other".into();
+        assert!(!valid(&workspace, "server"));
+        workspace.session.server_id = "server".into();
+        workspace.session.mode = "reconnecting".into();
+        assert!(!valid(&workspace, "server"));
+        workspace.session.mode = "connected".into();
+        workspace.session.can_reorder_channels = false;
+        assert!(!valid(&workspace, "server"));
+        workspace.session.can_reorder_channels = true;
+        workspace.channels.clear();
+        assert!(!valid(&workspace, "server"));
+    }
+
+    #[test]
+    fn channel_drop_uses_latest_id_order_and_skips_unchanged_positions() {
+        let channels = ["1", "2", "3", "4"].map(|id| crate::model::Channel {
+            id: id.into(),
+            ..Default::default()
+        });
+        let before =
+            |source, target, after| super::channel_drop_before(&channels, source, target, after);
+        assert_eq!(before("1", "3", true), Some("4".into()));
+        assert_eq!(before("4", "1", false), Some("1".into()));
+        assert_eq!(before("1", "4", true), Some(String::new()));
+        assert_eq!(before("2", "1", false), Some("1".into()));
+        assert_eq!(before("2", "3", true), Some("4".into()));
+        for (source, target, after) in [
+            ("2", "2", false),
+            ("2", "3", false),
+            ("2", "1", true),
+            ("missing", "1", true),
+            ("1", "missing", false),
+        ] {
+            assert_eq!(before(source, target, after), None);
+        }
+        let mut reordered = channels.to_vec();
+        reordered.swap(1, 3);
+        assert_eq!(
+            super::channel_drop_before(&reordered, "1", "4", true),
+            Some("3".into())
+        );
+        assert_eq!(
+            super::ordered_channels(&reordered)
+                .iter()
+                .map(|(c, _)| c.id.as_str())
+                .collect::<Vec<_>>(),
+            ["1", "4", "3", "2"]
+        );
+    }
+
     #[test]
     fn channel_audio_presets_and_custom_bounds() {
         for value in [20000, 32000, 48000] {

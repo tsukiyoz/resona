@@ -7,27 +7,18 @@ import (
 	"time"
 
 	"github.com/tsukiyoz/resona/internal/client"
-	w "github.com/tsukiyoz/resona/internal/nativewire"
 	"github.com/tsukiyoz/resona/internal/server"
 )
 
 func TestChannelManagementSyncPermissionsAndRestart(t *testing.T) {
 	t.Run("noise", func(t *testing.T) {
 		dir := t.TempDir()
-		token, err := server.InitOwnerClaim(dir)
+		store := openTestResources(t, dir)
+		token, err := store.ProvisionOwnerClaim(false)
 		if err != nil {
 			t.Fatal(err)
 		}
-		owner, err := server.OpenOwnership(dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		path := filepath.Join(dir, "channels.json")
-		store, err := server.OpenChannelStore(path, []w.Channel{{ID: 1, Name: "Lobby"}, {ID: 2, Name: "Gaming"}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		cfg := server.Config{Name: "test", Password: "test-password", Ownership: owner, ChannelStore: store}
+		cfg := server.Config{Name: "test", Password: "test-password", Store: store}
 		p, stop, done := startServerConfigured(t, cfg)
 		connector := Connector{IdentityPath: filepath.Join(t.TempDir(), "identity.key")}
 		connect := func(p client.ServerProfile) (*connection, *observer) {
@@ -113,15 +104,7 @@ func TestChannelManagementSyncPermissionsAndRestart(t *testing.T) {
 		if err = <-done; err != nil {
 			t.Fatal(err)
 		}
-		store, err = server.OpenChannelStore(path, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		owner, err = server.OpenOwnership(dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cfg.ChannelStore, cfg.Ownership = store, owner
+		cfg.Store = openTestResources(t, dir)
 		p, _, _ = startServerConfigured(t, cfg)
 		a, oa = connect(p)
 		if !oa.snapshot().CanManageChannels || len(oa.snapshot().Channels) != 2 {

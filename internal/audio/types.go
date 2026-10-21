@@ -1,4 +1,3 @@
-// Package audio owns Resona's real-time voice pipeline independently of the GUI.
 package audio
 
 import (

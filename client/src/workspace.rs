@@ -195,6 +195,7 @@ impl Projection {
             current.identity_uid.clear();
             current.can_claim_owner = false;
             current.can_manage_channels = false;
+            current.can_reorder_channels = false;
             current.can_configure_channel_audio = false;
             current.chat_state.clear();
             current.chat_epoch = 0;
@@ -209,6 +210,7 @@ impl Projection {
         current.server_role = state.server_role.clone();
         current.can_claim_owner = state.can_claim_owner;
         current.can_manage_channels = state.can_manage_channels;
+        current.can_reorder_channels = state.can_reorder_channels;
         current.can_configure_channel_audio = state.can_configure_channel_audio;
         current.member_sync_state = "ready".into();
         current.member_sync_error.clear();
