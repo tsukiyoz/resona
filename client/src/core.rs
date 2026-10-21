@@ -347,7 +347,12 @@ impl App {
         let monitor = if local.monitor_restore.is_some() {
             voice.clone()
         } else {
-            json!(model::VoiceState::default())
+            json!(model::VoiceState {
+                generation: state.generation,
+                operation: state.operation,
+                applied_operation: state.applied_operation,
+                ..Default::default()
+            })
         };
         if local.monitor_restore.is_some() {
             voice["muted"] = json!(true);
@@ -828,9 +833,9 @@ impl App {
                                 self.lock().monitor_restore = None;
                                 self.refresh(true);
                             }
-                            result
+                            result.map(|_| self.publish.borrow().microphone_test.clone())
                         }
-                        None => Ok(json!(model::VoiceState::default())),
+                        None => Ok(self.publish.borrow().microphone_test.clone()),
                     }
                 }
             }
@@ -1273,6 +1278,37 @@ mod tests {
         options.processor_library = PathBuf::from("/no-optional-library");
         let core = Core::start(options).await.unwrap();
         (directory, core)
+    }
+    #[tokio::test]
+    async fn stopped_monitor_reply_is_independent_of_restored_voice() {
+        let (_directory, core) = test_core().await;
+        let handle = core.handle.clone();
+        handle
+            .request(
+                "ConfigureMicrophoneTest",
+                json!(audio::Config {
+                    enabled: true,
+                    muted: false,
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        let started = handle.view.borrow().microphone_test.clone();
+        handle.app.lock().monitor_restore = Some(audio::Config {
+            enabled: true,
+            deafened: true,
+            ..Default::default()
+        });
+        let stopped = handle
+            .request("ConfigureMicrophoneTest", json!({"enabled":false}))
+            .await
+            .unwrap();
+        assert_eq!(stopped["enabled"], false);
+        assert_eq!(handle.view.borrow().microphone_test, stopped);
+        assert!(stopped["operation"].as_u64() > started["operation"].as_u64());
+        assert!(handle.app.audio.state.borrow().config.enabled);
+        core.close().await;
     }
     #[tokio::test]
     async fn gain_only_updates_cannot_undo_a_queued_mute() {
