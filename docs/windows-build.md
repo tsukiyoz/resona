@@ -14,7 +14,7 @@
 .\build-windows.cmd
 ```
 
-脚本自动初始化 VS 环境、选择 MSVC 与 MINGW64 Rust、设置 CGO/GCC、执行 Go/Rust 测试、构建桌面/Core/可选 WebRTC 音频库并生成 `desktop/dist/Resona-win-x64.zip`。不必手动打开 Developer PowerShell、设置 CC 或切换工具链。MSYS2 自定义路径可用 `build-windows.cmd -Msys2Root D:\msys64`；本地快速构建可加 `-SkipTests`，CI 默认执行测试。缺少工具时会报告具体项目；脚本不会擅自安装 Visual Studio 或修改系统环境。
+脚本自动初始化 VS 环境、执行 Go 参考/Rust 产品测试、构建固定版本的静态 Opus、进程内 Rust 桌面和 WebRTC/RNNoise 动态库，生成 `desktop/dist/Resona-win-x64.zip`。不必手动切换工具链。MSYS2 自定义路径可用 `build-windows.cmd -Msys2Root D:\msys64`；本地快速构建可加 `-SkipTests`，CI 默认执行测试。缺少工具时会报告具体项目；脚本不会擅自安装 Visual Studio 或修改系统环境。
 
 WebRTC 的 Abseil 对象文件名较长，MinGW 归档工具需要短构建目录。CI 使用 `RUNNER_TEMP/3a`，本地默认 `build/3a`；完整路径必须不含空格且不超过 30 字符，否则请传入例如 `build-windows.cmd -NativeTargetDirectory C:\resona-3a` 的可写短路径。该目录保留 Cargo 构建缓存，位于仓库外时不由 `make clean` 清理。
 
@@ -39,7 +39,7 @@ pacman -Syu
 pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-x86_64-gcc mingw-w64-x86_64-clang mingw-w64-x86_64-meson mingw-w64-x86_64-ninja mingw-w64-x86_64-pkgconf mingw-w64-x86_64-python
 ```
 
-GCC 包与 UCRT64 用法见 [MinGW-w64 官方说明](https://www.mingw-w64.org/getting-started/msys2/)。桌面为 MSVC Rust，Go Core 使用 UCRT64 CGO，可选 WebRTC 音频库使用 MINGW64 Rust 并只通过 C ABI 与 Core 交互。
+GCC 包与 UCRT64 用法见 [MinGW-w64 官方说明](https://www.mingw-w64.org/getting-started/msys2/)。产品桌面与客户端库为 MSVC Rust；UCRT64 CGO 仅供旧音频参考测试，WebRTC/RNNoise 使用 MINGW64 Rust 并通过 C ABI 在进程内调用。不要把 GCC 的 CC/CXX 覆盖带入 MSVC 构建。
 
 ## 拉取与构建
 
@@ -54,13 +54,13 @@ git pull --ff-only origin main
 
 仅对上述本次脚本进程使用 ExecutionPolicy Bypass，不修改系统执行策略。若企业策略禁止执行脚本，按组织允许的方式运行，不修改企业策略。
 
-输出目录：`desktop/dist/Resona-win-x64/`。保留 `resona-desktop.exe`、`resona-core.exe` 和 `resona_webrtc_apm.dll` 在同一目录；GUI 自动启动核心。首次 Rust 构建需要下载和编译较多依赖。
+输出目录：`desktop/dist/Resona-win-x64/`。保留 `resona-desktop.exe` 和 `resona_webrtc_apm.dll` 在同一目录；没有 core 子进程。首次构建需要下载和编译较多依赖。CI 在清空 MSYS2 的 PATH 后运行 Rust 原生处理器测试，防止漏打包 DLL 依赖。
 
 ## 运行与问题定位
 
 - Windows 使用 ACL，Go 的 `0600/0700` 模式位不代表 Windows 的访问隔离；当前文件继承所在用户目录的 ACL。权限位断言仅在 Unix 平台执行，Windows 仍运行持久化、并发身份加载及缓存行为测试。身份文件在发布前同步内容，Windows 跳过不支持的目录同步，因此不承诺断电时目录元数据的持久化。
-- 一键脚本还会收集本机 GCC 运行库与许可文件；旧 package-windows.ps1 只打包两个 exe。目标机可能仍需 Microsoft Visual C++ 2015-2022 x64 Redistributable。尚未完成干净 Windows 机器的免安装验收；如报告缺少运行库，应检查 exe 的 DLL 依赖，不从不明网站下载 DLL。
+- Opus/SpeexDSP/miniaudio 静态链接，3A DLL 的 GCC/C++ 运行库静态链接；许可文件随包附带。目标机可能仍需 Microsoft Visual C++ 2015-2022 x64 Redistributable。尚未完成干净 Windows 机器验收；如报告缺少运行库，应检查 exe/DLL 依赖，不从不明网站下载 DLL。
 - `gcc not found`：核对 UCRT64 安装路径与 CC。`link.exe`/Windows SDK 错误：确认使用 VS Developer PowerShell 和 MSVC Rust，且已经清除 CC/CXX 的 GCC 覆盖。不要将 MSYS2 的 `usr/bin` 放到 MSVC 链接器前面。
 - 更新显卡驱动；当前 GPUI Windows 后端使用 Direct3D 11。首次先测试离线界面和本地麦克风回放，按系统提示授权麦克风。
-- 连接后自动收听、麦克风默认静音。真实服务器验证只在 Resona 专用测试频道进行；不能把默认登录频道当作测试频道。
+- 连接后自动收听，首次开麦按偏好，自动重连保持静音。真实服务器验证只在 Resona 专用测试频道进行；不能把默认登录频道当作测试频道。
 - 问题报告请保留 `go version`、`rustc -V`、完整构建错误与触发步骤，避免附带服务器密码或身份密钥。

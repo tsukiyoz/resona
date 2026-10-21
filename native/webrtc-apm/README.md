@@ -16,7 +16,7 @@ sequential subframes. Input and output buffers are owned by Go; the Rust
 library copies a frame and does not retain Go memory across the C ABI call.
 
 `make build-core` builds a release library with bundled static Abseil and
-places it next to `build/bin/resona-core`. The macOS package puts the library
+places it in `build/bin/` for development. The macOS package puts the library
 in `Resona.app/Contents/Frameworks` and signs it before the app. Windows uses
 MINGW64 for this DLL, UCRT64 for Go CGO, and MSVC for GPUI; the C ABI owns
 every allocation on the same side that frees it. See `docs/windows-build.md`.

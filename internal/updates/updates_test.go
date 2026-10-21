@@ -336,7 +336,7 @@ func TestWindowsReleaseZipRequiresPortableIdentity(t *testing.T) {
 		for _, duplicate := range []bool{false, true} {
 			var buffer bytes.Buffer
 			writer := zip.NewWriter(&buffer)
-			for _, name := range []string{"resona-desktop.exe", "resona-core.exe", "resona_webrtc_apm.dll", ".resona-package", "resona-package.json"} {
+			for _, name := range []string{"resona-desktop.exe", "resona_webrtc_apm.dll", ".resona-package", "resona-package.json"} {
 				file, _ := writer.Create(name)
 				content := "product"
 				if name == "resona-package.json" {
@@ -345,7 +345,7 @@ func TestWindowsReleaseZipRequiresPortableIdentity(t *testing.T) {
 				_, _ = file.Write([]byte(content))
 			}
 			if duplicate {
-				file, _ := writer.Create(strings.ToUpper("resona-core.exe"))
+				file, _ := writer.Create(strings.ToUpper("resona-desktop.exe"))
 				_, _ = file.Write([]byte("duplicate"))
 			}
 			if err := writer.Close(); err != nil {
@@ -367,7 +367,7 @@ func TestMacReleaseZipRequiresMatchingArchitectureAndDistribution(t *testing.T) 
 	for _, distribution := range []string{"portable", "installer"} {
 		var buffer bytes.Buffer
 		writer := zip.NewWriter(&buffer)
-		for _, name := range []string{"MacOS/resona-core", "MacOS/resona-desktop", "Resources/.resona-bundle", "Resources/resona-package.json"} {
+		for _, name := range []string{"MacOS/resona-desktop", "Frameworks/libresona_webrtc_apm.dylib", "Resources/.resona-bundle", "Resources/resona-package.json"} {
 			file, err := writer.Create("Resona.app/Contents/" + name)
 			if err != nil {
 				t.Fatal(err)

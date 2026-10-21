@@ -692,7 +692,7 @@ impl ResonaApp {
         let result = self
             .core
             .as_ref()
-            .ok_or_else(|| "核心进程不可用".to_owned())
+            .ok_or_else(|| "客户端核心不可用".to_owned())
             .and_then(|core| {
                 core.request(method, params)
                     .map_err(|error| error.to_string())
@@ -775,7 +775,9 @@ impl ResonaApp {
             }
             Incoming::Notifications(value) => {
                 if let Ok(workspace) = serde_json::from_value::<Workspace>(value) {
-                    if workspace.session.id == self.workspace.session.id {
+                    if workspace.session.id == self.workspace.session.id
+                        && workspace.session.chat_epoch == self.workspace.session.chat_epoch
+                    {
                         self.process_notifications(&workspace);
                     }
                 }
@@ -817,7 +819,6 @@ impl ResonaApp {
                 }
             }
             Incoming::MicrophoneTest(value) => self.apply_microphone_test(value),
-            Incoming::ProtocolError(error) => self.error = error,
             Incoming::Exited(error) => {
                 if self.closing {
                     self.finish_exit(cx);
@@ -1311,6 +1312,9 @@ impl ResonaApp {
     fn apply_workspace(&mut self, value: Value, window: &mut Window, cx: &mut Context<Self>) {
         match serde_json::from_value::<Workspace>(value) {
             Ok(workspace) => {
+                if workspace.revision < self.workspace.revision {
+                    return;
+                }
                 let changed_channel = workspace.session.id != self.workspace.session.id
                     || workspace.session.channel_id != self.workspace.session.channel_id
                     || (workspace.session.mode == "offline"
@@ -1481,8 +1485,11 @@ impl ResonaApp {
     }
 
     fn apply_microphone_test(&mut self, value: Value) {
-        match serde_json::from_value(value) {
-            Ok(value) => self.microphone_test = value,
+        match serde_json::from_value::<VoiceState>(value) {
+            Ok(value) if voice_state_current(&value, &self.microphone_test) => {
+                self.microphone_test = value
+            }
+            Ok(_) => {}
             Err(error) => self.error = format!("无法读取麦克风测试状态：{error}"),
         }
     }
@@ -2274,6 +2281,7 @@ impl ResonaApp {
             .find(|server| server.id == editing_id)
             .is_some_and(|server| server.skip_password_storage);
         let profile = ServerProfile {
+            certificate_fingerprint: None,
             protocol: "resona-noise".into(),
             server_public_key: self.public_key_input.read(cx).value().to_string(),
             id: editing_id,
@@ -6585,9 +6593,9 @@ impl ResonaApp {
                             .text_sm()
                             .text_color(rgb(TEXT))
                             .child(if self.core.is_some() {
-                                "核心进程运行中"
+                                "客户端核心已就绪"
                             } else {
-                                "核心进程不可用"
+                                "客户端核心不可用"
                             }),
                     )
                     .child(
@@ -6721,8 +6729,8 @@ impl ResonaApp {
                                         div().text_sm().child(value("buildTime")),
                                     ))
                                     .child(field(
-                                        "Go 运行时",
-                                        div().text_sm().child(value("goVersion")),
+                                        "Rust 运行时",
+                                        div().text_sm().child(value("rustVersion")),
                                     ))
                                     .child(field(
                                         "Core 平台",

@@ -30,6 +30,10 @@ needed; never force-push shared main.
   The first default run may download the tool.
 - Desktop: `cargo test --locked --manifest-path desktop/Cargo.toml`, native build
   and relevant GUI flows. Windows Actions validate Windows-specific code.
+- Rust client migration: `make test-client` runs unit tests and real Go/Rust
+  loopback interoperability (including application login/chat). Go is required
+  for fixtures; CGO/audio hardware and external NATS are not. Run
+  `cargo clippy --locked --manifest-path client/Cargo.toml --all-targets -- -D warnings`.
 - Protocol: regenerate protobuf via `go generate ./internal/nativewire/pb`, test
   the Noise transport and document compatibility/migration.
 - Keep credentials, identities, local test data and build artifacts out of Git.
@@ -46,9 +50,9 @@ protocol changes and patch versions for compatible fixes. Adopt 1.0 only after
 the supported workflows and protocol compatibility commitments are established.
 
 The root `VERSION` file is the base version source, without the `v` prefix
-(for example `0.1.1`). Before tagging, update it, synchronize desktop
+(for example `0.1.1`). Before tagging, update it, synchronize both client and desktop
 Cargo.toml/Cargo.lock and write `docs/releases/vX.Y.Z.md`. Cargo requires a literal
-manifest version; desktop builds reject a mismatch with VERSION. macOS bundle
+manifest version; both builds reject a mismatch with VERSION. macOS bundle
 versions are read automatically. Make, deployment packaging, Windows local builds
 and Docker builds default to `v` plus VERSION; explicit build overrides do not
 edit the file or create a release. Raw `go build` without build flags still reports

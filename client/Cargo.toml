@@ -1,0 +1,46 @@
+[package]
+name = "resona-client"
+version = "0.1.5"
+edition = "2024"
+publish = false
+description = "UI-independent in-process Resona client core"
+
+[features]
+audio = ["dep:libloading"]
+
+[dependencies]
+snow = { version = "=0.10.0", default-features = false, features = ["std", "use-curve25519", "use-chacha20poly1305", "use-sha2", "use-getrandom", "risky-raw-split"] }
+tokio = { version = "1.53", features = ["net", "sync", "time", "rt", "macros", "io-util"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+zeroize = "1.8"
+prost = "=0.14.4"
+ed25519-dalek = "=2.2.0"
+sha2 = "0.10"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features=["raw_value"] }
+base64 = "0.22"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+chrono = { version = "0.4", default-features = false, features = ["std","clock"] }
+tempfile = "=3.27.0"
+dirs = "6.0"
+getrandom = "=0.3.4"
+libloading = { version = "=0.8.9", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "=3.7.0"
+security-framework-sys = "=2.17.0"
+core-foundation = "=0.10.0"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security_Credentials"] }
+
+[build-dependencies]
+prost-build = "=0.14.4"
+protoc-bin-vendored = "=3.2.0"
+cc = "1"
+pkg-config = "0.3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

@@ -8,6 +8,8 @@ description = "Native GPUI desktop client for Resona"
 embed-resource = "=3.0.11"
 
 [dependencies]
+resona-client = { path = "../client", features = ["audio"] }
+tokio = { version = "1.53", features = ["rt", "net", "sync", "time", "macros"] }
 anyhow = "1.0"
 async-channel = "2.5"
 base64 = "0.22"
@@ -33,3 +35,6 @@ windows = { version = "=0.61.3", features = ["Win32_Foundation", "Win32_System_L
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+
+[patch.crates-io]
+gpui = { path = "vendor/gpui" }

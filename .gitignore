@@ -7,6 +7,7 @@ AGENTS.md
 /build/deploy-*/
 /build/deploy/
 /desktop/target/
+/client/target/
 /native/webrtc-apm/target/
 /desktop/dist/
 /docs/ui-prototype/node_modules/

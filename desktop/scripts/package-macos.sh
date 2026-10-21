@@ -8,7 +8,6 @@ bundle_version=$(cat "$repo_dir/VERSION")
 if ! printf '%s\n' "$bundle_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
   echo 'Invalid root VERSION' >&2; exit 1
 fi
-core_binary=${RESONA_CORE_BINARY:-"$repo_dir/build/bin/resona-core"}
 bundle_dir=${RESONA_BUNDLE_DIR:-"$desktop_dir/dist/Resona.app"}
 profile=${RESONA_CARGO_PROFILE:-release}
 sign_identity=$(sh "$script_dir/macos-signing-identity.sh")
@@ -23,17 +22,11 @@ case "$bundle_dir" in
   *) echo "bundle output must be an .app below $desktop_dir/dist" >&2; exit 1 ;;
 esac
 
-if [ -z "${RESONA_CORE_BINARY:-}" ]; then
-  echo "Building resona-core from the current checkout"
-  make -C "$repo_dir" build-core
-else
-  echo "Using explicit core override: $core_binary"
-fi
-
-if [ ! -x "$core_binary" ]; then
-  echo "resona-core is missing or not executable: $core_binary" >&2
-  exit 1
-fi
+make -C "$repo_dir" build-opus build-apm
+export PKG_CONFIG_PATH="$repo_dir/build/native/opus-install/lib/pkgconfig"
+export OPUS_STATIC=1
+export RESONA_VERSION=${RESONA_VERSION:-v$bundle_version}
+export RESONA_BUILD_TIME=${RESONA_BUILD_TIME:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
 
 if [ "$profile" = release ]; then
   cargo build --locked --manifest-path "$desktop_dir/Cargo.toml" --release
@@ -61,7 +54,6 @@ rm -rf "$bundle_dir"
 mkdir -p "$bundle_dir/Contents/MacOS" "$bundle_dir/Contents/Resources"
 touch "$bundle_dir/Contents/Resources/.resona-bundle"
 cp "$desktop_dir/target/$profile/resona-desktop" "$bundle_dir/Contents/MacOS/resona-desktop"
-cp "$core_binary" "$bundle_dir/Contents/MacOS/resona-core"
 apm_binary="$repo_dir/build/bin/libresona_webrtc_apm.dylib"
 if [ ! -f "$apm_binary" ]; then
   echo "WebRTC audio library is missing: $apm_binary" >&2
@@ -77,7 +69,16 @@ cp "$icon_tmp/Resona.icns" "$bundle_dir/Contents/Resources/Resona.icns"
 cp "$repo_dir/docs/noise-license.txt" "$bundle_dir/Contents/Resources/noise-license.txt"
 python3 "$repo_dir/native/webrtc-apm/licenses.py" "$repo_dir/native/webrtc-apm/Cargo.toml" \
   "$bundle_dir/Contents/Resources/licenses" "$repo_dir/native/webrtc-apm/target"
-chmod 755 "$bundle_dir/Contents/MacOS/resona-desktop" "$bundle_dir/Contents/MacOS/resona-core"
+cp "$repo_dir/build/native/opus-source/COPYING" "$bundle_dir/Contents/Resources/licenses/Opus.txt"
+cp "$repo_dir/internal/audio/speexdsp/COPYING" "$bundle_dir/Contents/Resources/licenses/SpeexDSP.txt"
+cp "$repo_dir/desktop/vendor/gpui/LICENSE-APACHE" "$bundle_dir/Contents/Resources/licenses/GPUI.txt"
+cp "$repo_dir/native/client-audio/miniaudio.h" "$icon_tmp/miniaudio.h"
+sed -n '/ALTERNATIVE 1 - Public Domain/,$p' "$icon_tmp/miniaudio.h" > "$bundle_dir/Contents/Resources/licenses/miniaudio.txt"
+chmod 755 "$bundle_dir/Contents/MacOS/resona-desktop"
+if otool -L "$bundle_dir/Contents/MacOS/resona-desktop" | tail -n +2 | grep -E '/opt/homebrew|/usr/local|/Users/'; then
+  echo 'Desktop has non-system dependencies; build with the pinned static Opus library' >&2
+  exit 1
+fi
 
 cat > "$bundle_dir/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -103,40 +104,32 @@ plutil -replace CFBundleVersion -string "$bundle_version" "$bundle_dir/Contents/
 plutil -lint "$bundle_dir/Contents/Info.plist"
 test -s "$bundle_dir/Contents/Resources/Resona.icns"
 
-python3 - "$bundle_dir" "$core_binary" "$bundle_version" <<'PY'
+python3 - "$bundle_dir" "$bundle_version" <<'PY'
 import json
 import pathlib
 import platform
-import re
 import subprocess
 import sys
 
 bundle = pathlib.Path(sys.argv[1])
-version_output = subprocess.check_output([sys.argv[2], "--version"], text=True)
-match = re.match(r"resona-core (v[0-9]+\.[0-9]+\.[0-9]+(?:-dev)?) \(", version_output)
-if not match:
-    raise SystemExit("Core package version is invalid")
-if match.group(1) not in ("v" + sys.argv[3], "v" + sys.argv[3] + "-dev"):
-    raise SystemExit("Core and desktop package versions disagree")
+info = json.loads(subprocess.check_output([str(bundle / 'Contents/MacOS/resona-desktop'), '--version-json'], text=True))
+if info['version'] not in ('v' + sys.argv[2], 'v' + sys.argv[2] + '-dev'):
+    raise SystemExit('Desktop and package versions disagree')
 arch = {"arm64": "arm64", "x86_64": "amd64"}[platform.machine()]
 metadata = dict(schema=1, product="resona", platform="darwin/" + arch,
-                version=match.group(1), distribution="portable")
+                version=info['version'], distribution="portable")
 (bundle / "Contents/Resources/resona-package.json").write_text(json.dumps(metadata), encoding="utf-8")
 PY
 
 if [ -n "$sign_identity" ]; then
   # Sign nested code first; let codesign derive certificate-bound requirements.
   codesign --force --sign "$sign_identity" "$bundle_dir/Contents/Frameworks/libresona_webrtc_apm.dylib"
-  codesign --force --sign "$sign_identity" --identifier dev.resona.core \
-    "$bundle_dir/Contents/MacOS/resona-core"
   codesign --force --sign "$sign_identity" "$bundle_dir"
-  codesign --verify --strict --verbose=2 "$bundle_dir/Contents/MacOS/resona-core"
   codesign --verify --deep --strict --verbose=2 "$bundle_dir"
 else
   # Seal the completed bundle even for local/CI builds. Ad-hoc identity still
   # changes with the code hash and does not solve persistent Keychain access.
   codesign --force --sign - "$bundle_dir/Contents/Frameworks/libresona_webrtc_apm.dylib"
-  codesign --force --sign - --identifier dev.resona.core "$bundle_dir/Contents/MacOS/resona-core"
   codesign --force --sign - "$bundle_dir"
   codesign --verify --deep --strict --verbose=2 "$bundle_dir"
   echo 'No signing identity: development build; Keychain may prompt again after rebuilds.' >&2

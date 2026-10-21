@@ -53,6 +53,24 @@ impl AssetSource for Assets {
 }
 
 fn main() -> Result<()> {
+    match std::env::args().nth(1).as_deref() {
+        Some("--version-json") => {
+            println!(
+                "{}",
+                serde_json::to_string(&resona_client::build_info::BuildInfo::default())?
+            );
+            return Ok(());
+        }
+        Some("--version" | "-V") => {
+            let info = resona_client::build_info::BuildInfo::default();
+            println!(
+                "resona-desktop {} ({}; {}; {})",
+                info.version, info.commit, info.platform, info.rust_version
+            );
+            return Ok(());
+        }
+        _ => {}
+    }
     Application::new().with_assets(Assets).run(|cx| {
         gpui_component::init(cx);
         cx.bind_keys([
