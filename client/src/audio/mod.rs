@@ -6,10 +6,14 @@ mod codec;
 mod device;
 #[allow(unsafe_code)]
 mod dsp;
+mod engine;
+mod pipeline;
 
 pub use codec::{Decoder, Encoder};
 pub use device::{Captured, Device, DeviceInfo};
 pub use dsp::{Chain, Factory, OptionInfo, Params, Processing, Spec};
+pub use engine::{Engine, Handle, State};
+pub use pipeline::{Config, Counters, Peer, Pipeline, Route};
 pub const FRAME: usize = 960;
 pub const RATE: i32 = 48_000;
 pub type Result<T> = std::result::Result<T, String>;

@@ -194,6 +194,38 @@ async fn application_session_watches_moves_chats_and_routes_voice() {
             .await
             .is_err()
     );
+    let old_epoch = b.handle.state.borrow().state.epoch;
+    b.handle
+        .command(
+            AppCommand::Move(2),
+            Instant::now() + Duration::from_secs(3),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    wait_state(&mut b.handle, |s| s.channel() == 2).await;
+    assert!(
+        b.voice_tx
+            .send_scoped(old_epoch, b"old-channel-frame")
+            .is_err()
+    );
+    assert!(
+        timeout(Duration::from_millis(100), a.voice_rx.recv())
+            .await
+            .is_err()
+    );
+    let new_epoch = b.handle.state.borrow().state.epoch;
+    b.voice_tx
+        .send_scoped(new_epoch, b"new-channel-frame")
+        .unwrap();
+    assert_eq!(
+        timeout(Duration::from_secs(1), a.voice_rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .data,
+        b"new-channel-frame"
+    );
     let late = a.handle.clone();
     a.close().await;
     assert!(

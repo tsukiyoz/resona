@@ -321,11 +321,18 @@ pub struct VoiceSender {
 }
 impl VoiceSender {
     pub fn send(&self, opus: &[u8]) -> noise::Result<()> {
+        self.send_inner(None, opus)
+    }
+    /// A frame must retain the route for which it was captured and encoded.
+    pub fn send_scoped(&self, epoch: u32, opus: &[u8]) -> noise::Result<()> {
+        self.send_inner(Some(epoch), opus)
+    }
+    fn send_inner(&self, expected: Option<u32>, opus: &[u8]) -> noise::Result<()> {
         if opus.len() > 1024 {
             return Err(noise::Error::TooLarge);
         }
         let state = self.state.borrow();
-        if state.closed.is_some() {
+        if state.closed.is_some() || expected.is_some_and(|epoch| epoch != state.state.epoch) {
             return Err(noise::Error::Closed);
         }
         let mut data = [0; 1031];

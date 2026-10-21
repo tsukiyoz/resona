@@ -311,6 +311,12 @@ pub struct Chain {
     processors: Vec<Stage>,
 }
 impl Chain {
+    #[cfg(test)]
+    pub(crate) fn failing() -> Self {
+        Self {
+            processors: vec![Stage::Failure],
+        }
+    }
     pub fn process(
         &mut self,
         samples: &mut [f32; FRAME],
@@ -323,6 +329,11 @@ impl Chain {
         }
         for p in &mut self.processors {
             match p {
+                #[cfg(test)]
+                Stage::Failure => {
+                    samples[0] = f32::NAN;
+                    return Err("test processor failure".into());
+                }
                 Stage::Speex(p) => p.process(samples, reference),
                 Stage::External { handle, library } => {
                     let code = unsafe {
@@ -345,6 +356,8 @@ impl Chain {
     }
 }
 enum Stage {
+    #[cfg(test)]
+    Failure,
     Speex(Box<Speex>),
     External {
         handle: NonNull<c_void>,
