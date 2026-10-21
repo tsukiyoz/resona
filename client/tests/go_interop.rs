@@ -8,7 +8,425 @@ use std::{
 };
 use tokio::time::{Instant, timeout};
 
-struct Peer(Child);
+async fn app_session(
+    address: std::net::SocketAddr,
+    key: [u8; 32],
+    name: &str,
+) -> resona_client::session::Session {
+    use resona_client::{
+        config::{Identity, ServerProfile},
+        session::Session,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::load_or_create(&dir.path().join("identity")).unwrap();
+    let profile = ServerProfile {
+        protocol: "resona-noise".into(),
+        id: "fixture".into(),
+        name: "fixture".into(),
+        nickname: name.into(),
+        address: address.to_string(),
+        server_public_key: key.iter().map(|b| format!("{b:02x}")).collect(),
+        ..Default::default()
+    };
+    Session::connect(
+        &profile,
+        &identity,
+        "local-test-only",
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap()
+}
+
+async fn wait_state(
+    handle: &mut resona_client::session::Handle,
+    ready: impl Fn(&resona_client::session::Snapshot) -> bool,
+) {
+    timeout(Duration::from_secs(3), async {
+        loop {
+            if ready(&handle.state.borrow()) {
+                return;
+            }
+            handle.state.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("application state did not converge");
+}
+
+#[tokio::test]
+async fn application_session_watches_moves_chats_and_routes_voice() {
+    use resona_client::session::Command as AppCommand;
+    let (_peer, address, key) = start_peer(&["-server"]);
+    let mut a = app_session(address, key, "alpha").await;
+    let mut b = app_session(address, key, "beta").await;
+    let cancel = CancellationToken::new();
+    wait_state(&mut a.handle, |s| {
+        s.state.members.len() == 2 && s.chat_status.status == 1 && s.chat_status.epoch != 0
+    })
+    .await;
+    a.handle
+        .command(
+            AppCommand::Watch {
+                channels: true,
+                members: true,
+            },
+            Instant::now() + Duration::from_secs(3),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert_eq!(a.handle.state.borrow().state.channels.len(), 2);
+    b.handle
+        .command(
+            AppCommand::VoiceState {
+                muted: false,
+                deafened: false,
+            },
+            Instant::now() + Duration::from_secs(3),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    b.voice_tx.send(b"opaque-opus").unwrap();
+    let voice = timeout(Duration::from_secs(2), a.voice_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(voice.data, b"opaque-opus");
+    assert!(!voice.instance.is_empty());
+    a.handle
+        .command(
+            AppCommand::Chat {
+                channel: 1,
+                text: "test message".into(),
+                id: "session-chat-1".into(),
+            },
+            Instant::now() + Duration::from_secs(3),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    wait_state(&mut a.handle, |s| {
+        s.messages.iter().any(|m| m.client_id == "session-chat-1")
+    })
+    .await;
+    wait_state(&mut b.handle, |s| {
+        s.messages.iter().any(|m| m.client_id == "session-chat-1")
+    })
+    .await;
+    a.handle
+        .command(
+            AppCommand::Move(2),
+            Instant::now() + Duration::from_secs(3),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    wait_state(&mut a.handle, |s| s.channel() == 2).await;
+    assert!(a.handle.state.borrow().messages.is_empty());
+    while a.voice_rx.try_recv().is_ok() {}
+    b.voice_tx.send(b"other-channel").unwrap();
+    assert!(
+        timeout(Duration::from_millis(150), a.voice_rx.recv())
+            .await
+            .is_err()
+    );
+    let late = a.handle.clone();
+    a.close().await;
+    assert!(
+        late.command(
+            AppCommand::Watch {
+                channels: true,
+                members: true
+            },
+            Instant::now() + Duration::from_secs(1),
+            &cancel
+        )
+        .await
+        .is_err()
+    );
+    b.close().await;
+}
+
+#[tokio::test]
+async fn application_session_owner_drop_stops_cloned_handles() {
+    use resona_client::session::Command as AppCommand;
+    let (_peer, address, key) = start_peer(&["-server"]);
+    let session = app_session(address, key, "drop-owner").await;
+    let mut handle = session.handle.clone();
+    drop(session);
+    wait_state(&mut handle, |s| s.closed.is_some()).await;
+    assert!(
+        handle
+            .command(
+                AppCommand::Move(2),
+                Instant::now() + Duration::from_secs(1),
+                &CancellationToken::new()
+            )
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn lost_command_acks_do_not_pause_incoming_voice() {
+    use resona_client::session::Command as AppCommand;
+    let (peer, address, key) = start_peer(&["-server", "-slow-command-acks"]);
+    let mut listener = app_session(address, key, "listener").await;
+    let source = app_session(peer.1.unwrap(), key, "speaker").await;
+    source
+        .handle
+        .command(
+            AppCommand::VoiceState {
+                muted: false,
+                deafened: false,
+            },
+            Instant::now() + Duration::from_secs(3),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    wait_state(&mut listener.handle, |s| s.state.members.len() == 2).await;
+    let handle = listener.handle.clone();
+    let command = tokio::spawn(async move {
+        handle
+            .command(
+                AppCommand::Watch {
+                    channels: true,
+                    members: true,
+                },
+                Instant::now() + Duration::from_secs(3),
+                &CancellationToken::new(),
+            )
+            .await
+    });
+    let voice = source.voice_tx.clone();
+    let sending = tokio::spawn(async move {
+        for _ in 0..40 {
+            voice.send(b"test-opus").unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    });
+    let mut received = 0;
+    while let Ok(Some(_)) = timeout(Duration::from_millis(150), listener.voice_rx.recv()).await {
+        received += 1;
+        if received == 40 {
+            break;
+        }
+    }
+    sending.await.unwrap();
+    command.await.unwrap().unwrap();
+    assert!(
+        received >= 32,
+        "control ACK retransmit starved voice: received {received}/40"
+    );
+    listener.close().await;
+    source.close().await;
+}
+
+async fn wait_lifecycle(
+    handle: &mut resona_client::lifecycle::Handle,
+    mode: resona_client::lifecycle::Mode,
+) {
+    timeout(Duration::from_secs(4), async {
+        loop {
+            if handle.state.borrow().mode == mode {
+                return;
+            }
+            handle.state.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("lifecycle state did not converge");
+}
+
+#[tokio::test]
+async fn resource_observer_changes_scope_and_clears_on_disconnect() {
+    use resona_client::{
+        config::{Identity, ServerProfile},
+        lifecycle::{Client, Mode},
+        resources::{Interest, Observer},
+    };
+    let (_peer, address, key) = start_peer(&["-server"]);
+    let dir = tempfile::tempdir().unwrap();
+    let client = Client::start(std::sync::Arc::new(
+        Identity::load_or_create(&dir.path().join("identity")).unwrap(),
+    ));
+    let mut life = client.handle.clone();
+    let observer = Observer::start(life.state.clone());
+    let mut status = observer.status.clone();
+    let profile = ServerProfile {
+        protocol: "resona-noise".into(),
+        id: "resources".into(),
+        name: "fixture".into(),
+        nickname: "resources".into(),
+        address: address.to_string(),
+        server_public_key: key.iter().map(|b| format!("{b:02x}")).collect(),
+        ..Default::default()
+    };
+    life.connect(profile, zeroize::Zeroizing::new("local-test-only".into()))
+        .await
+        .unwrap();
+    wait_lifecycle(&mut life, Mode::Connected).await;
+    for generation in 1..=3 {
+        observer
+            .set(Interest {
+                active: generation != 2,
+                generation,
+                ..Default::default()
+            })
+            .unwrap();
+        timeout(Duration::from_secs(4), async {
+            loop {
+                let s = status.borrow().clone();
+                if s.generation == generation && s.state == "ready" {
+                    break;
+                }
+                status.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(status.borrow().session_id, life.state.borrow().session_id);
+    }
+    life.disconnect().await.unwrap();
+    timeout(Duration::from_secs(2), async {
+        loop {
+            if status.borrow().state == "idle" {
+                break;
+            }
+            status.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    assert!(status.borrow().session_id.is_empty());
+    observer.close().await;
+    client.close().await;
+}
+
+#[tokio::test]
+async fn lifecycle_preserves_identity_rejects_stale_session_and_stops_recovery() {
+    use resona_client::{
+        config::{Identity, ServerProfile},
+        lifecycle::{Client, Mode},
+    };
+    let (peer, address, key) = start_peer(&["-server"]);
+    let dir = tempfile::tempdir().unwrap();
+    let identity =
+        std::sync::Arc::new(Identity::load_or_create(&dir.path().join("identity")).unwrap());
+    let uid = identity.uid();
+    let client = Client::start(identity);
+    let mut handle = client.handle.clone();
+    let profile = ServerProfile {
+        protocol: "resona-noise".into(),
+        id: "bookmark".into(),
+        name: "fixture".into(),
+        nickname: "recover".into(),
+        address: address.to_string(),
+        server_public_key: key.iter().map(|b| format!("{b:02x}")).collect(),
+        ..Default::default()
+    };
+    handle
+        .connect(
+            profile.clone(),
+            zeroize::Zeroizing::new("local-test-only".into()),
+        )
+        .await
+        .unwrap();
+    wait_lifecycle(&mut handle, Mode::Connected).await;
+    let first = handle.state.borrow().session_id.clone();
+    assert_eq!(
+        handle
+            .session(&first)
+            .unwrap()
+            .state
+            .borrow()
+            .state
+            .identity_uid,
+        uid
+    );
+    handle.disconnect().await.unwrap();
+    wait_lifecycle(&mut handle, Mode::Offline).await;
+    handle
+        .connect(
+            profile.clone(),
+            zeroize::Zeroizing::new("incorrect-test-only".into()),
+        )
+        .await
+        .unwrap();
+    wait_lifecycle(&mut handle, Mode::Failed).await;
+    assert_eq!(
+        handle.state.borrow().attempt,
+        1,
+        "authentication failure must not retry"
+    );
+    handle
+        .connect(profile, zeroize::Zeroizing::new("local-test-only".into()))
+        .await
+        .unwrap();
+    wait_lifecycle(&mut handle, Mode::Connected).await;
+    let second = handle.state.borrow().session_id.clone();
+    assert_ne!(first, second);
+    assert!(handle.session(&first).is_err());
+    assert_eq!(
+        handle
+            .session(&second)
+            .unwrap()
+            .state
+            .borrow()
+            .state
+            .identity_uid,
+        uid
+    );
+    drop(peer);
+    wait_lifecycle(&mut handle, Mode::Reconnecting).await;
+    handle.disconnect().await.unwrap();
+    wait_lifecycle(&mut handle, Mode::Offline).await;
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    assert_eq!(handle.state.borrow().mode, Mode::Offline);
+    client.close().await;
+}
+
+#[tokio::test]
+async fn lifecycle_disconnect_cancels_pending_handshake() {
+    use resona_client::{
+        config::{Identity, ServerProfile},
+        lifecycle::{Client, Mode},
+    };
+    let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let identity =
+        std::sync::Arc::new(Identity::load_or_create(&dir.path().join("identity")).unwrap());
+    let client = Client::start(identity);
+    let mut handle = client.handle.clone();
+    handle
+        .connect(
+            ServerProfile {
+                protocol: "resona-noise".into(),
+                id: "dead".into(),
+                name: "offline".into(),
+                nickname: "test".into(),
+                address: socket.local_addr().unwrap().to_string(),
+                server_public_key: "07".repeat(32),
+                ..Default::default()
+            },
+            zeroize::Zeroizing::new(String::new()),
+        )
+        .await
+        .unwrap();
+    wait_lifecycle(&mut handle, Mode::Connecting).await;
+    let start = Instant::now();
+    handle.disconnect().await.unwrap();
+    wait_lifecycle(&mut handle, Mode::Offline).await;
+    timeout(Duration::from_secs(1), client.close())
+        .await
+        .unwrap();
+    assert!(start.elapsed() < Duration::from_secs(1));
+}
+
+struct Peer(Child, Option<std::net::SocketAddr>);
 impl Drop for Peer {
     fn drop(&mut self) {
         self.0.stdin.take();
@@ -57,7 +475,7 @@ fn start_peer(args: &[&str]) -> (Peer, std::net::SocketAddr, [u8; 32]) {
         .stderr(Stdio::inherit())
         .spawn()
         .unwrap();
-    let mut peer = Peer(child);
+    let mut peer = Peer(child, None);
     let stdout = peer.0.stdout.take().unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     let reader = std::thread::spawn(move || {
@@ -71,6 +489,7 @@ fn start_peer(args: &[&str]) -> (Peer, std::net::SocketAddr, [u8; 32]) {
     reader.join().unwrap();
     let info: serde_json::Value = serde_json::from_str(&line).unwrap();
     let address = info["address"].as_str().unwrap().parse().unwrap();
+    peer.1 = info["backend"].as_str().map(|s| s.parse().unwrap());
     let key = info["public_key"].as_str().unwrap();
     let mut public = [0; 32];
     for (i, byte) in public.iter_mut().enumerate() {

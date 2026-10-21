@@ -24,19 +24,20 @@ func main() {
 	loss := flag.Bool("loss", false, "drop first handshake response and control ACK in both directions")
 	blackhole := flag.Bool("blackhole-acks", false, "drop all server control ACKs")
 	application := flag.Bool("server", false, "run the real application server")
+	slow := flag.Bool("slow-command-acks", false, "drop the first two post-login control ACKs")
 	vectors := flag.Bool("vectors", false, "print fixed-key Go rekey reference vectors")
 	flag.Parse()
 	if *vectors {
 		printVectors()
 		return
 	}
-	if err := run(*loss, *blackhole, *application); err != nil {
+	if err := run(*loss, *blackhole, *application, *slow); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func run(loss, blackhole, application bool) error {
+func run(loss, blackhole, application, slow bool) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 	go func() { _, _ = io.Copy(io.Discard, os.Stdin); cancel() }()
@@ -50,7 +51,16 @@ func run(loss, blackhole, application bool) error {
 		if err != nil {
 			return err
 		}
-		if err := announce(s.Addr().String(), pub); err != nil {
+		address := s.Addr().String()
+		if slow {
+			proxy, err := startProxy(s.Addr().(*net.UDPAddr), false, false, true)
+			if err != nil {
+				return err
+			}
+			defer proxy.Close()
+			address = proxy.LocalAddr().String()
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(map[string]string{"address": address, "backend": s.Addr().String(), "public_key": hex.EncodeToString(pub)}); err != nil {
 			cancel()
 		}
 		return s.Serve(ctx)
@@ -62,7 +72,7 @@ func run(loss, blackhole, application bool) error {
 	defer l.Close()
 	address := l.Addr().String()
 	if loss || blackhole {
-		proxy, err := startProxy(l.Addr().(*net.UDPAddr), loss, blackhole)
+		proxy, err := startProxy(l.Addr().(*net.UDPAddr), loss, blackhole, false)
 		if err != nil {
 			return err
 		}
@@ -106,7 +116,7 @@ func announce(address string, public []byte) error {
 	return json.NewEncoder(os.Stdout).Encode(map[string]string{"address": address, "public_key": hex.EncodeToString(public)})
 }
 
-func startProxy(target *net.UDPAddr, loss, blackhole bool) (*net.UDPConn, error) {
+func startProxy(target *net.UDPAddr, loss, blackhole, slow bool) (*net.UDPConn, error) {
 	p, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
 		return nil, err
@@ -115,6 +125,7 @@ func startProxy(target *net.UDPAddr, loss, blackhole bool) (*net.UDPConn, error)
 		buffer := make([]byte, 2048)
 		var client *net.UDPAddr
 		dropped := map[string]bool{}
+		acks := 0
 		for {
 			n, from, err := p.ReadFromUDP(buffer)
 			if err != nil {
@@ -136,6 +147,12 @@ func startProxy(target *net.UDPAddr, loss, blackhole bool) (*net.UDPConn, error)
 				kind = buffer[0] & 0x7f
 			}
 			id := fmt.Sprintf("%s-%d", direction, kind)
+			if slow && direction == "down" && kind == 6 {
+				acks++
+				if acks == 2 || acks == 3 {
+					continue
+				}
+			}
 			if blackhole && direction == "down" && kind == 6 {
 				continue
 			}

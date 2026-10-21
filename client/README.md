@@ -14,6 +14,11 @@ Implemented foundation:
   frame size/range checks and the existing Ed25519 Hello identity proof.
 - Real loopback Go peers, including the actual application server and embedded
   JetStream. The fixture uses temporary test keys and no real user server.
+- Authenticated sessions, bounded commands/chat, scoped resource observation,
+  serialized connect/disconnect and cancellable recovery with muted restoration.
+- Compatible identity seeds/bookmarks and strict migration/write protection;
+  macOS Keychain and Windows Credential Manager preserve existing account keys.
+  Blocking credential operations belong on a non-UI worker.
 
 Run `make test-client`, or:
 
@@ -36,7 +41,6 @@ The caller owns the Tokio runtime; this crate creates no runtime or OS thread.
 Native audio callbacks must eventually use a bounded handoff, never run async
 network operations directly.
 
-Not migrated yet: product session coordination/reconnect, persistent identity,
-bookmarks/credentials/configuration, updates/diagnostics, device/codec/3A/mixer
+Not migrated yet: product projections, updates/diagnostics, device/codec/3A/mixer
 ownership, GPUI integration and packaging. Do not infer lower memory or game
 interference until equivalent release workloads have been measured.
