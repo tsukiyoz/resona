@@ -99,6 +99,8 @@ foreach ($set in $sets) {
     $memSamples += $mem
 }
 
+$target.Refresh()
+if ($target.HasExited) { throw "process $ProcessId exited during sampling; discard this capture" }
 $cpuAfter = $target.TotalProcessorTime
 $wall = ((Get-Date) - $started).TotalSeconds
 $cores = [Environment]::ProcessorCount

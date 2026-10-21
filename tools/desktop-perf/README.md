@@ -52,10 +52,12 @@ CPU 和 I/O 的 P95 是按持续时间加权的**采样间隔平均速率**，�
 `gpu-sample.ps1` 补上报告缺少的 GPU 维度：按进程 id 汇总 `\GPU Engine(*)\Utilization Percentage`（整机归一化、1 秒窗口），同时读取 `\GPU Process Memory(*)\Dedicated Usage`、CPU 与窗口状态。
 
 ```powershell
-.\tools\desktop-perf\gpu-sample.ps1 -ProcessName resona-desktop -Seconds 20 -Label idle -Json idle.json
+.\gpu-sample.ps1 -ProcessName resona-desktop -Seconds 20 -Label idle -Json idle.json
 ```
 
-该百分比与任务管理器“GPU”列口径不同（后者取各引擎的最大值），只适合在同一台机器上做改前/改后对比，不能换算成帧时间。输出包含窗口状态；最小化、可见、前台必须分别采样，否则数据不可比。脚本只读取计数器，不启动或结束被测进程。
+下载包已包含此脚本；从源码运行时，脚本位于 `tools/desktop-perf/`。
+
+该百分比与任务管理器“GPU”列口径不同（后者取各引擎的最大值），只适合在同一台机器上做改前/改后对比，不能换算成帧时间。输出包含开始采样时的窗口状态；最小化、可见、前台必须分别采样，采样期间保持状态不变，否则数据不可比。CPU 百分比按整机逻辑核数归一化，与主分析器的单核口径不同。脚本只读取计数器，不启动或结束被测进程；进程中途退出时本次采集失败。
 
 ## 分析既有 macOS CSV
 

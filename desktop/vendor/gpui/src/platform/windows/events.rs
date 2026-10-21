@@ -1155,9 +1155,10 @@ impl WindowsWindowInner {
                     lock.appearance = new_appearance;
                     let mut callback = lock.callbacks.appearance_changed.take()?;
                     drop(lock);
+                    // Apply the system default before observers restore any application override.
+                    configure_dwm_dark_mode(handle, new_appearance);
                     callback();
                     self.state.borrow_mut().callbacks.appearance_changed = Some(callback);
-                    configure_dwm_dark_mode(handle, new_appearance);
                 }
             }
         }
