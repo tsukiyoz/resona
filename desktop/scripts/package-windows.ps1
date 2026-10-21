@@ -1,6 +1,5 @@
 param(
     [string]$Version,
-    [string]$CoreBinary = "$PSScriptRoot\..\..\build\bin\resona-core.exe",
     [string]$OutputDirectory = "$PSScriptRoot\..\dist\Resona-win-x64"
 )
 
@@ -11,12 +10,6 @@ $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 if (-not $OutputDirectory.StartsWith($DistDirectory + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
     throw "OutputDirectory must be below $DistDirectory"
 }
-if (-not (Test-Path $CoreBinary -PathType Leaf)) {
-    throw "resona-core.exe is missing: $CoreBinary"
-}
-if ($env:CGO_ENABLED -ne "1") {
-    throw "Set CGO_ENABLED=1 and build resona-core with a working C compiler before packaging voice support."
-}
 if (-not $Version) { $Version = "v" + (Get-Content -Raw "$DesktopDirectory\..\VERSION").Trim() }
 $CargoMetadata = cargo metadata --locked --no-deps --format-version 1 --manifest-path "$DesktopDirectory\Cargo.toml" | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { throw "Cannot read desktop package version" }
@@ -24,15 +17,13 @@ $DesktopVersion = ($CargoMetadata.packages | Where-Object { $_.name -eq 'resona-
 if ($Version -ne "v$DesktopVersion" -and $Version -ne "v$DesktopVersion-dev") {
     throw "Package version must match the desktop version (optionally with -dev)"
 }
-$CoreVersion = & $CoreBinary --version
-if ($LASTEXITCODE -ne 0 -or $CoreVersion -notmatch ('^resona-core ' + [Regex]::Escape($Version) + ' \(')) {
-    throw "Core version must match the package version"
-}
-
+$env:RESONA_VERSION = $Version
 cargo build --locked --manifest-path "$DesktopDirectory\Cargo.toml" --release --target x86_64-pc-windows-msvc
 if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE" }
 $DesktopBinary = "$DesktopDirectory\target\x86_64-pc-windows-msvc\release\resona-desktop.exe"
-# The PE subsystem must be GUI; hiding the core alone still opens a console.
+$BuiltInfo = & $DesktopBinary --version-json | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or $BuiltInfo.version -ne $Version) { throw 'Desktop and package versions disagree' }
+# The PE subsystem must be GUI, so launching never creates a console.
 $Reader = [IO.BinaryReader]::new([IO.File]::OpenRead($DesktopBinary))
 try {
     $Reader.BaseStream.Position = 0x3c
@@ -77,7 +68,6 @@ if (Test-Path $OutputDirectory) { Remove-Item $OutputDirectory -Recurse -Force }
 New-Item $OutputDirectory -ItemType Directory | Out-Null
 New-Item "$OutputDirectory\.resona-package" -ItemType File | Out-Null
 Copy-Item "$DesktopDirectory\target\x86_64-pc-windows-msvc\release\resona-desktop.exe" "$OutputDirectory\resona-desktop.exe"
-Copy-Item $CoreBinary "$OutputDirectory\resona-core.exe"
 $Metadata = @{schema=1; product="resona"; platform="windows/amd64"; version=$Version; distribution="portable"} | ConvertTo-Json -Compress
 [IO.File]::WriteAllText("$OutputDirectory\resona-package.json", $Metadata, [Text.UTF8Encoding]::new($false))
 Copy-Item "$DesktopDirectory\..\docs\noise-license.txt" "$OutputDirectory\noise-license.txt"

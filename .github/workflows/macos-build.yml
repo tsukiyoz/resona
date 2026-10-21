@@ -17,7 +17,7 @@ on:
       - 'Makefile'
       - 'build/appicon.png'
       - 'desktop/**'
-      - 'cmd/resona-core/**'
+      - 'client/**'
       - 'internal/**'
       - 'native/**'
       - 'third_party/**'
@@ -31,7 +31,7 @@ on:
       - 'Makefile'
       - 'build/appicon.png'
       - 'desktop/**'
-      - 'cmd/resona-core/**'
+      - 'client/**'
       - 'internal/**'
       - 'native/**'
       - 'third_party/**'
@@ -81,7 +81,9 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
       - name: Set up WebRTC build tools
-        run: brew install meson ninja
+        run: brew install meson ninja cmake pkgconf
+      - name: Prepare pinned client codec
+        run: make build-opus
       - name: Resolve build version
         id: version
         env:
@@ -103,7 +105,9 @@ jobs:
       - name: Test core and desktop
         run: |
           go test ./internal/...
-          cargo test --locked --release --manifest-path desktop/Cargo.toml
+          export PKG_CONFIG_PATH="$PWD/build/native/opus-install/lib/pkgconfig" OPUS_STATIC=1
+          cargo test --locked --manifest-path client/Cargo.toml --features audio
+          cargo test --locked --manifest-path desktop/Cargo.toml
       # PR code must never receive the signing identity or certificate secrets.
       - name: Import signing identity for trusted builds
         id: signing
@@ -140,7 +144,7 @@ jobs:
         run: make build-desktop VERSION="$RESONA_BUILD_VERSION"
       - name: Verify WebRTC processors with packaged library
         run: |
-          RESONA_WEBRTC_PLUGIN_DIR="$PWD/desktop/dist/Resona.app/Contents/Frameworks" go test ./internal/audio ./internal/desktopipc
+          PKG_CONFIG_PATH="$PWD/build/native/opus-install/lib/pkgconfig" OPUS_STATIC=1 RESONA_TEST_NATIVE_AUDIO=1 RESONA_WEBRTC_PLUGIN_DIR="$PWD/desktop/dist/Resona.app/Contents/Frameworks" cargo test --locked --manifest-path client/Cargo.toml --features audio audio::dsp::tests::product_external_library_runs_all_stages_when_requested -- --exact
       - name: Verify and archive app
         env:
           CERTIFICATE_SIGNED: ${{ steps.signing.outputs.signed }}
@@ -149,7 +153,8 @@ jobs:
         run: |
           app=desktop/dist/Resona.app
           plutil -lint "$app/Contents/Info.plist"
-          for binary in resona-core resona-desktop; do
+          test ! -e "$app/Contents/MacOS/resona-core"
+          for binary in resona-desktop; do
             test -x "$app/Contents/MacOS/$binary"
             test "$(lipo -archs "$app/Contents/MacOS/$binary")" = "$EXPECTED_MACHINE"
             codesign --verify --strict "$app/Contents/MacOS/$binary"
@@ -159,7 +164,7 @@ jobs:
           test "$(lipo -archs "$library")" = "$EXPECTED_MACHINE"
           codesign --verify --strict "$library"
           codesign --verify --deep --strict "$app"
-          "$app/Contents/MacOS/resona-core" --version
+          "$app/Contents/MacOS/resona-desktop" --version-json
           ditto -c -k --sequesterRsrc --keepParent "$app" "desktop/dist/Resona-macos-${PACKAGE_ARCH}.zip"
           echo '### macOS test package' >> "$GITHUB_STEP_SUMMARY"
           if [[ "$CERTIFICATE_SIGNED" == true ]]; then

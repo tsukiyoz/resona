@@ -23,12 +23,12 @@ type packageMetadata struct {
 }
 
 func ValidateWindowsArchive(path, version string) error {
-	return validateReleaseArchive(path, "windows/amd64", version, "", []string{"resona-desktop.exe", "resona-core.exe", "resona_webrtc_apm.dll", ".resona-package", "resona-package.json"})
+	return validateReleaseArchive(path, "windows/amd64", version, "", []string{"resona-desktop.exe", "resona_webrtc_apm.dll", ".resona-package", "resona-package.json"})
 }
 
 func ValidateMacArchive(path, platform, version string) error {
 	return validateReleaseArchive(path, platform, version, "resona.app/contents/resources/", []string{
-		"resona.app/contents/macos/resona-core", "resona.app/contents/macos/resona-desktop",
+		"resona.app/contents/macos/resona-desktop", "resona.app/contents/frameworks/libresona_webrtc_apm.dylib",
 		"resona.app/contents/resources/.resona-bundle", "resona.app/contents/resources/resona-package.json",
 	})
 }

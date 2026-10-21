@@ -22,10 +22,10 @@
 
 ## 下一步
 
-- 当前优先推进客户端 Rust 迁移（ADR-0032）：先完成与 Go server 实际互通的
-  Noise/Protobuf/身份基础，再迁移会话/配置/凭据与音频设备链，最后接入 GPUI、
-  删除 Go Core/桌面 IPC 并测量全进程性能。现有产品保持完整可用；server 和
-  内嵌 JetStream 不随客户端重写。各阶段验收记录后再标记完成。
+- 客户端 Rust 迁移实现已按阶段提交（ADR-0032）：会话/配置/凭据、音频链、
+  产品 Core、GPUI 和打包。桌面不再启动 Go Core 或使用 NDJSON IPC；server 与
+  内嵌 JetStream 保留。继续完成 Windows 原生构建/多人长听与新旧 release 等负载
+  全进程性能对照，尚不宣称性能收益。验证范围见 verification.md。
 
 当前按顺序推进：
 

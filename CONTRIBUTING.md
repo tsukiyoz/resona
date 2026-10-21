@@ -50,9 +50,9 @@ protocol changes and patch versions for compatible fixes. Adopt 1.0 only after
 the supported workflows and protocol compatibility commitments are established.
 
 The root `VERSION` file is the base version source, without the `v` prefix
-(for example `0.1.1`). Before tagging, update it, synchronize desktop
+(for example `0.1.1`). Before tagging, update it, synchronize both client and desktop
 Cargo.toml/Cargo.lock and write `docs/releases/vX.Y.Z.md`. Cargo requires a literal
-manifest version; desktop builds reject a mismatch with VERSION. macOS bundle
+manifest version; both builds reject a mismatch with VERSION. macOS bundle
 versions are read automatically. Make, deployment packaging, Windows local builds
 and Docker builds default to `v` plus VERSION; explicit build overrides do not
 edit the file or create a release. Raw `go build` without build flags still reports

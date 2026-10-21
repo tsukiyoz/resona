@@ -8,6 +8,7 @@ on:
       - '.github/workflows/rust-client.yml'
       - 'client/**'
       - 'native/client-audio/**'
+      - 'native/opus/**'
       - 'internal/audio/speexdsp/**'
       - 'internal/noiseudp/**'
       - 'internal/nativewire/**'
@@ -20,6 +21,7 @@ on:
       - '.github/workflows/rust-client.yml'
       - 'client/**'
       - 'native/client-audio/**'
+      - 'native/opus/**'
       - 'internal/audio/speexdsp/**'
       - 'internal/noiseudp/**'
       - 'internal/nativewire/**'
@@ -49,13 +51,6 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v5
-      - name: Checkout evaluated official libopus
-        uses: actions/checkout@v5
-        with:
-          repository: xiph/opus
-          ref: 22244de5a79bd1d6d623c32e72bf1954b56235be
-          path: build/native/opus-source
-          persist-credentials: false
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -68,9 +63,7 @@ jobs:
           cargo fmt --manifest-path client/Cargo.toml --check
       - name: Build official Opus for the Rust client
         run: |
-          cmake -S build/native/opus-source -B build/native/opus-build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PWD/build/native/opus-install" -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_SHARED_LIBS=OFF -DOPUS_BUILD_TESTING=OFF -DOPUS_BUILD_PROGRAMS=OFF
-          cmake --build build/native/opus-build --config Release --parallel 2
-          cmake --install build/native/opus-build --config Release
+          bash native/opus/build.sh
           if [[ "$RUNNER_OS" == Windows ]]; then
             echo 'PKG_CONFIG=C:/msys64/mingw64/bin/pkg-config.exe' >> "$GITHUB_ENV"
           fi

@@ -1,14 +1,15 @@
 # Resona native desktop
 
 This directory contains the GPUI desktop client. It uses `gpui` 0.2.2 and
-`gpui-component` 0.5.1 from crates.io. The UI starts a private `resona-core`
-child process beside the executable, or from `RESONA_CORE` during development,
-and communicates over inherited stdin/stdout NDJSON.
+`gpui-component` 0.5.1 from crates.io. The UI calls the framework-independent
+`../client` Rust library through bounded asynchronous commands and coalesced events.
+An owned Tokio runtime handles control/network tasks; devices and processors belong
+to their audio worker. No Go helper process or NDJSON pipe is shipped.
 
-Run against a development core without connecting to a server:
+Run a development build from the repository root:
 
 ```sh
-RESONA_CORE=../build/bin/resona-core cargo run
+make dev
 ```
 
 Build the macOS app bundle:
@@ -18,11 +19,8 @@ make -C .. build-desktop
 open dist/Resona.app
 ```
 
-Running `./scripts/package-macos.sh` directly also builds the core via
-`make build-core`. Both entries build the Go core (with CGO) and the Rust GUI from the current
-checkout. It does not reuse an old `build/bin/resona-core` by default. Set
-`RESONA_CORE_BINARY` only to deliberately package a supplied core, for example an
-isolated test harness; the caller is responsible for matching its IPC/protocol.
+Running `./scripts/package-macos.sh` directly builds the pinned official Opus
+static library, native audio-processing library and Rust desktop from this checkout.
 Quit any running Resona before replacing and reopening its bundle.
 
 For stable macOS Keychain identity across builds, install a valid Apple code-signing
@@ -33,8 +31,10 @@ security find-identity -v -p codesigning
 RESONA_CODESIGN_IDENTITY='Apple Development: Your Name (TEAMID)' make -C .. build-desktop
 ```
 
-Packaging signs the core as `dev.resona.core`, then the app as `dev.resona.client`,
-and verifies both. Use the same signing team and identifiers for subsequent builds.
+Packaging signs the native library, then the app as `dev.resona.client`, and verifies
+the completed bundle. The app itself now accesses Keychain, so an existing entry
+may require one-time authorization for this new accessor. Keep the same signing
+team and app identifier for subsequent builds.
 Signing failure fails the build; there is no silent ad-hoc fallback when an identity
 is supplied. Without an identity, local builds remain available but their
 ad-hoc signatures do not provide stable identity across binary changes. Existing
@@ -44,11 +44,11 @@ and old-item migration must be verified on the target Mac. Developer ID distribu
 also requires a separate hardened-runtime/notarization workflow; this signing option
 alone is not a notarized release pipeline.
 
-From the repository root, `make build` builds desktop, core and server;
+From the repository root, `make build` builds desktop and server;
 `make clean` removes `build/bin/`, generated `build/deploy/` and `desktop/dist/` while keeping compiler
 caches. `make clean-all` additionally removes `desktop/target/`. Keep cleanup
-and build in separate invocations. On Linux, `make build-desktop` places both
-executables in `build/bin/`; Windows keeps the dedicated build entry below.
+and build in separate invocations. On Linux, `make build-desktop` places the
+desktop executable and native audio library in `build/bin/`.
 
 The bundle includes a multi-resolution `Resona.icns` generated from
 `build/appicon.png` with macOS `sips` and `iconutil`. `CFBundleIconFile` supplies
@@ -68,9 +68,9 @@ The **macOS build** GitHub Action builds separate Apple Silicon (`macos-arm64`)
 and Intel (`macos-x64`) packages on main pushes, matching pull requests and version
 tags; it can also be started manually. Download the appropriate artifact, extract
 its inner ZIP and move `Resona.app` to Applications. `ditto` preserves bundle
-metadata and executable permissions. CI packages currently use ad-hoc signatures,
-not Developer ID or Apple notarization; Gatekeeper may block downloaded builds.
-Formal signing and notarization remain pending certificate setup.
+metadata and executable permissions. Trusted CI builds use the configured certificate;
+PRs use ad-hoc signatures. Neither is Apple notarization, and Gatekeeper may block
+downloaded development builds. Developer ID and notarization remain separate work.
 
 Both desktop workflows name artifacts `Resona-<version>-<platform>-<commit SHA>`.
 Branch builds use `v<VERSION>-dev`; exact matching version tags omit `-dev`.
@@ -80,7 +80,7 @@ Artifacts expire after 14 days and are not permanent GitHub Release assets.
 For Windows x64, run `build-windows.cmd` from the repository root after installing
 the tools once, or download an artifact from the **Windows build** GitHub Action.
 For prerequisites and detailed commands, see
-[Windows build instructions](../docs/windows-build.md). The Go audio core uses
-CGO/GCC; the Rust GUI uses the MSVC toolchain. Do not pass the Go GCC override
-to the Rust build. Windows packaging is implemented but still requires native
-build and runtime verification on Windows.
+[Windows build instructions](../docs/windows-build.md). Desktop and client use MSVC,
+with static official Opus/SpeexDSP/miniaudio. WebRTC/RNNoise uses a separate MinGW
+C ABI DLL, never a process. Go/GCC is retained only for reference/server tests.
+Windows native runtime verification remains required.

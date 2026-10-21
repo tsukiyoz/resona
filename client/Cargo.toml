@@ -3,7 +3,7 @@ name = "resona-client"
 version = "0.1.5"
 edition = "2024"
 publish = false
-description = "UI-independent Resona client core (migration in progress)"
+description = "UI-independent in-process Resona client core"
 
 [features]
 audio = ["dep:libloading"]

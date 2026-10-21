@@ -358,6 +358,40 @@ impl Backend for Native {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn native_windows_storage_preserves_format_across_fresh_stores() {
+        if std::env::var("RESONA_CREDENTIAL_INTEGRATION").as_deref() != Ok("1") {
+            return;
+        }
+        let mut random = [0u8; 16];
+        getrandom::fill(&mut random).unwrap();
+        let key = format!(
+            "rust-integration-{}",
+            random
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        );
+        struct Cleanup(String);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = Native.delete(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(key.clone());
+        assert!(!Native.has(&key).unwrap());
+        Store::new(Native).set(&key, "test-only-first").unwrap();
+        let mut store = Store::new(Native);
+        assert_eq!(store.get(&key).unwrap().as_str(), "test-only-first");
+        store.set(&key, "test-only-updated").unwrap();
+        assert_eq!(
+            Store::new(Native).get(&key).unwrap().as_str(),
+            "test-only-updated"
+        );
+        store.delete(&key).unwrap();
+        assert!(!Native.has(&key).unwrap());
+    }
     use std::cell::Cell;
     struct Mock {
         reads: Cell<u32>,

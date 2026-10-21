@@ -1,10 +1,11 @@
 # Rust client core
 
-This UI-independent crate starts the migration described in
-[ADR-0032](../docs/adr/0032-rust-client-core.md). The shipping desktop still uses
-the Go core. There is no second product core selector or alternate transport.
+This UI-independent crate is the shipping desktop core described in
+[ADR-0032](../docs/adr/0032-rust-client-core.md). GPUI calls it in process.
+The Go server and its embedded JetStream remain unchanged. There is no second
+product core selector or alternate transport.
 
-Implemented foundation:
+Implemented:
 
 - Existing RN06 cookie / Noise NK handshake, pinned server authentication and
   channel binding; the suite and application protocol are unchanged.
@@ -19,12 +20,18 @@ Implemented foundation:
 - Compatible identity seeds/bookmarks and strict migration/write protection;
   macOS Keychain and Windows Credential Manager preserve existing account keys.
   Blocking credential operations belong on a non-UI worker.
+- Product workspace, per-member/global playback gains, channel administration,
+  bounded memory diagnostics, notification cues and signed portable-update checks.
+- Owned miniaudio device worker, official Opus, jitter/PLC, mixer, PTT/VAD and
+  transactional SpeexDSP/WebRTC/RNNoise chains; scoped capture cannot cross rooms.
 
 Run `make test-client`, or:
 
 ```sh
-cargo test --locked --manifest-path client/Cargo.toml
-cargo clippy --locked --manifest-path client/Cargo.toml --all-targets -- -D warnings
+make build-opus
+export PKG_CONFIG_PATH="$PWD/build/native/opus-install/lib/pkgconfig" OPUS_STATIC=1
+cargo test --locked --manifest-path client/Cargo.toml --features audio
+cargo clippy --locked --manifest-path client/Cargo.toml --features audio --all-targets -- -D warnings
 ```
 
 Tests require Go and Rust but no audio hardware, UI, external NATS or CGO.
@@ -48,6 +55,10 @@ The caller owns the Tokio runtime. Native audio callbacks use bounded SPSC
 rings and never run codecs, DSP or network operations. Devices must be opened
 on their owning audio worker because the callback wakes that thread.
 
-Not migrated yet: product projections, updates/diagnostics, device/codec/3A/mixer
-ownership, GPUI integration and packaging. Do not infer lower memory or game
-interference until equivalent release workloads have been measured.
+`Core::start` owns the product workers; await `Core::close` to cancel and join
+bounded cleanup. The UI bridge reserves cancellation capacity and rejects superseded
+connection/PTT intents. OS authorization/driver calls cannot be forcibly interrupted;
+their owned state is retained safely and application exit has an outer deadline.
+Do not infer lower memory or game interference until equivalent release workloads
+have been measured. Native devices and Windows long-session behavior need platform
+acceptance independently of headless regression tests.

@@ -57,10 +57,8 @@ try {
     if (-not $SkipTests) { Invoke-Checked go @("test", "./internal/...") }
     New-Item -ItemType Directory -Force "build\bin" | Out-Null
     $BuildTime = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
-    $VersionFlags = "-X github.com/tsukiyoz/resona/internal/version.Version=$Version -X github.com/tsukiyoz/resona/internal/version.BuildTime=$BuildTime"
-    $VersionFlags += " -X github.com/tsukiyoz/resona/internal/updates.ManifestURL=$env:RESONA_UPDATE_URL -X github.com/tsukiyoz/resona/internal/updates.PublicKey=$env:RESONA_UPDATE_PUBLIC_KEY"
-    Invoke-Checked go @("build", "-ldflags", $VersionFlags, "-o", "build/bin/resona-core.exe", "./cmd/resona-core")
-    Invoke-Checked "./build/bin/resona-core.exe" @("--version")
+    $env:RESONA_VERSION = $Version
+    $env:RESONA_BUILD_TIME = $BuildTime
 
     $Mingw = Join-Path $Msys2Root "mingw64\bin"
     $MingwGcc = Join-Path $Mingw "gcc.exe"
@@ -109,18 +107,6 @@ try {
     if (-not (Test-Path $Apm)) { throw "WebRTC audio DLL missing: $Apm" }
     Copy-Item $Apm "build\bin\resona_webrtc_apm.dll"
     $env:RESONA_WEBRTC_PLUGIN_DIR = Join-Path $RepoDirectory "build\bin"
-    Invoke-Checked go @("test", "./internal/audio", "./internal/desktopipc")
-    $SmokeBinary = Join-Path $RepoDirectory "build\bin\resona-apm-smoke.exe"
-    Invoke-Checked go @("test", "-c", "-o", $SmokeBinary, "./internal/audio")
-    $BuildPath = $env:Path
-    try {
-        $env:Path = "$env:WINDIR\System32;$env:WINDIR"
-        Invoke-Checked $SmokeBinary @("-test.run", "^TestOptional(WebRTC|RNNoise)Processors$", "-test.v")
-    } finally {
-        $env:Path = $BuildPath
-        Remove-Item $SmokeBinary -ErrorAction SilentlyContinue
-    }
-    Remove-Item Env:RESONA_WEBRTC_PLUGIN_DIR
     # Restore the MSVC desktop compiler environment after building the isolated C ABI DLL.
     foreach ($Key in @("CC", "CXX", "LIBCLANG_PATH", "BINDGEN_EXTRA_CLANG_ARGS", "CFLAGS", "CXXFLAGS", "CXXSTDLIB", "RUSTFLAGS", "PKG_CONFIG_LIBDIR", "CARGO_TARGET_DIR")) {
         Remove-Item "Env:$Key" -ErrorAction SilentlyContinue
@@ -128,27 +114,39 @@ try {
     $env:Path = (Join-Path $Msys2Root "ucrt64\bin") + ";" + $VsPath
     $env:RUSTUP_TOOLCHAIN = "stable-x86_64-pc-windows-msvc"
     Remove-Item Env:CC, Env:CXX -ErrorAction SilentlyContinue
+    Invoke-Checked bash @("native/opus/build.sh")
+    $env:PKG_CONFIG = Join-Path $Mingw 'pkg-config.exe'
+    $env:PKG_CONFIG_PATH = (Join-Path $RepoDirectory 'build/native/opus-install/lib/pkgconfig').Replace('\','/')
+    $env:OPUS_STATIC = '1'
+    $env:RESONA_TEST_NATIVE_AUDIO = '1'
     if (-not $SkipTests) {
+        Invoke-Checked cargo @("test", "--locked", "--manifest-path", "client/Cargo.toml", "--features", "audio")
         Invoke-Checked cargo @("test", "--locked", "--manifest-path", "desktop/Cargo.toml", "--target", "x86_64-pc-windows-msvc")
     }
+    $Artifacts = & cargo test --locked --manifest-path client/Cargo.toml --features audio --no-run --message-format=json
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot build Rust native audio smoke test' }
+    $SmokeBinary = ($Artifacts | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'resona_client' -and $_.profile.test } | Select-Object -Last 1).executable
+    if (-not $SmokeBinary) { throw 'Rust audio smoke test executable missing' }
+    $BuildPath = $env:Path
+    try {
+        $env:Path = "$env:WINDIR\System32;$env:WINDIR"
+        Invoke-Checked $SmokeBinary @('audio::dsp::tests::product_external_library_runs_all_stages_when_requested', '--exact', '--nocapture')
+    } finally { $env:Path = $BuildPath }
     & "$PSScriptRoot\package-windows.ps1" -Version $Version
 
     $Package = Join-Path $RepoDirectory "desktop\dist\Resona-win-x64"
     Copy-Item "build\bin\resona_webrtc_apm.dll" $Package
-    # Include the GCC runtime candidates. These are needed only if the core's
-    # native libraries link them dynamically; copying is local to the package.
-    foreach ($Dll in @("libgcc_s_seh-1.dll", "libwinpthread-1.dll", "libstdc++-6.dll")) {
-        $Source = Join-Path $Msys2Root "ucrt64\bin\$Dll"
-        if (Test-Path $Source) { Copy-Item $Source $Package }
-    }
     $Licenses = Join-Path $Package "licenses"
     New-Item -ItemType Directory -Force $Licenses | Out-Null
     Copy-Item "$RepoDirectory\internal\audio\speexdsp\COPYING" "$Licenses\SpeexDSP.txt"
+    Copy-Item "$RepoDirectory\build\native\opus-source\COPYING" "$Licenses\Opus.txt"
+    $MiniAudio = Get-Content -Raw "$RepoDirectory\native\client-audio\miniaudio.h"
+    [IO.File]::WriteAllText("$Licenses\miniaudio.txt", $MiniAudio.Substring($MiniAudio.LastIndexOf('ALTERNATIVE 1 - Public Domain')), [Text.UTF8Encoding]::new($false))
     $env:RUSTUP_TOOLCHAIN = "stable-x86_64-pc-windows-gnu"
     $env:Path = "$Mingw;$(Join-Path $Msys2Root 'usr\bin');$env:Path"
     Invoke-Checked (Join-Path $Mingw "python.exe") @("native/webrtc-apm/licenses.py", "native/webrtc-apm/Cargo.toml", $Licenses, $ApmTarget)
     foreach ($Name in @("gcc-libs", "libwinpthread", "winpthreads", "gcc")) {
-        $Source = Join-Path $Msys2Root "ucrt64\share\licenses\$Name"
+        $Source = Join-Path $Msys2Root "mingw64\share\licenses\$Name"
         if (Test-Path $Source) { Copy-Item $Source $Licenses -Recurse -Force }
     }
     $Archive = Join-Path $RepoDirectory "desktop\dist\Resona-win-x64.zip"

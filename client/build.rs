@@ -1,4 +1,10 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("cargo:rerun-if-changed=../VERSION");
+    assert_eq!(
+        std::fs::read_to_string("../VERSION")?.trim(),
+        std::env::var("CARGO_PKG_VERSION")?,
+        "client/Cargo.toml must match root VERSION"
+    );
     let compiler =
         std::process::Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
             .arg("--version")

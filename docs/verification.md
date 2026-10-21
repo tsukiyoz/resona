@@ -434,3 +434,28 @@ go test ./deploy 通过。make build 完成本机 core/server 与 macOS release 
 握手为 RN06，需 client/server 同步升级。没有更改 tsukiyo 服务或操作其他用户。
 尚未做聊天加载/失败的完整实窗、Windows、长期磁盘/运行内存及等负载性能验收；
 不据集成测试宣称 JetStream 比原直接广播更省资源。64 MiB 不是物理目录配额。
+
+## 2026-10-21：Rust 客户端产品迁移
+
+按传输互通、会话与配置、音频、产品 Core、GPUI 接入逐步提交，见 ADR-0032。
+产品不再启动 Go helper；删除 cmd/resona-core 和 internal/desktopipc。
+Go client/audio 参考实现保留给机器人、基准和服务端互通测试，不进入桌面包。
+服务端和内嵌 JetStream 未更换；RN06 与已有配置、身份、密码格式保持一致。
+
+固定静态 Opus 1.6.1 并加载实际 C ABI 2 的全套处理后，44 项 Rust 单元、
+20 项真实 Go 回环互通和 50 项桌面测试通过。覆盖重放/篡改/换钥、背压与取消、
+重连/资源/聊天、凭据单次保存、逐用户音频链、试听停止回执及命令意图覆盖。
+go test ./internal/... ./cmd/...、make lint、make test-build、Rust Clippy 全音频
+all-targets 严格警告、格式和 shell 语法检查通过。测试使用临时数据、假凭据和
+无硬件设备；未读取用户密码、连接线上服务器或启动实际麦克风。
+
+make build-desktop 完成 Apple Silicon release 包，严格深度签名校验通过；
+应用与 APM 库只依赖系统动态库，Opus/Speex 静态链接。运行进程只有桌面本身，
+没有 resona-core。实窗验证离线书签、关于中的 Rust 构建信息、诊断与 15ms 核心
+探测成功。其后一次窗口激活卡住，线程采样发现 GPUI 0.2.2 持锁调用
+resignKeyWindow 后同步回调重锁；Core、音频和提示音线程正常等待。已终止本轮
+离线测试实例；此时不能将后续交互及正常退出计为通过，需独立依赖补丁验证。
+
+Windows CI 增加原生 Credential API 合成条目测试，以及无编译器 PATH 的 Rust
+音频 DLL 加载检查；macOS CI 校验 Rust 包及签名。Windows、Intel macOS、真实
+设备多人长听、游戏负载和等负载性能测量尚未执行；不据语言切换宣称资源下降。

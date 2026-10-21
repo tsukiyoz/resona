@@ -8,7 +8,7 @@
 
 1. 打开 基线应用 和 Resona，让双方进入同样的测试场景。
 2. 双击 `compare.cmd`。进程表有 PID、父 PID、线程数和 EXE 名称。
-3. 填写 基线应用 主进程 PID，再填写 `resona-desktop.exe` 的 PID。默认会计入已有子进程，包括 `resona-core.exe`，无需再填一次。
+3. 填写 基线应用 主进程 PID，再填写 `resona-desktop.exe` 的 PID。默认会计入已有子进程；新 Rust 客户端没有 Go core 子进程，旧版对照仍须计入它。
 4. 填写场景名称，例如 `offline-minimized`、`connected-listening` 或 `voice-vad-noise-medium`。不要填写密码或服务器地址。
 5. 有 10 秒准备时间，随后每秒采样一次，共两分钟。最小化场景请将两个客户端都最小化；工具不会恢复窗口、截屏或操作麦克风。
 6. 完成后同目录出现 `perf-日期时间/` 和 `perf-日期时间-report/`。前者含原始 `samples.csv` 和 `capture.json`，后者含 `report.md` 与 `report.json`。

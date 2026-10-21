@@ -10,7 +10,7 @@ on:
       - 'build-windows.cmd'
       - 'build/appicon.png'
       - 'desktop/**'
-      - 'cmd/resona-core/**'
+      - 'client/**'
       - 'internal/**'
       - 'native/**'
       - 'third_party/**'
@@ -23,7 +23,7 @@ on:
       - 'build-windows.cmd'
       - 'build/appicon.png'
       - 'desktop/**'
-      - 'cmd/resona-core/**'
+      - 'client/**'
       - 'internal/**'
       - 'native/**'
       - 'third_party/**'
@@ -70,7 +70,7 @@ jobs:
             $version = $env:BUILD_REF_NAME
           }
           "version=$version" >> $env:GITHUB_OUTPUT
-      - name: Set up UCRT64 compiler
+      - name: Set up native audio and reference-test compilers
         id: msys2
         uses: msys2/setup-msys2@v2
         with:
@@ -94,6 +94,7 @@ jobs:
       - name: Build and test
         shell: pwsh
         env:
+          RESONA_CREDENTIAL_INTEGRATION: '1'
           RESONA_MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
           RESONA_BUILD_VERSION: ${{ steps.version.outputs.version }}
           RESONA_UPDATE_URL: ${{ vars.RESONA_UPDATE_URL }}
