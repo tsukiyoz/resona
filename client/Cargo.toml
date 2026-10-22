@@ -1,6 +1,6 @@
 [package]
 name = "resona-client"
-version = "0.1.5"
+version = "0.2.0"
 edition = "2024"
 publish = false
 description = "UI-independent in-process Resona client core"
