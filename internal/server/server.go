@@ -41,6 +41,7 @@ type Server struct {
 	peers            map[uint16]*peer
 	next             uint32
 	wg               sync.WaitGroup
+	adminObservers   map[chan struct{}]struct{}
 }
 type peer struct {
 	chatGeneration uint64
@@ -421,6 +422,12 @@ func (s *Server) broadcastLocked(except *peer) {
 	for _, p := range s.peers {
 		if p != except {
 			s.sendStateLocked(p, w.StateKind, false)
+		}
+	}
+	for wake := range s.adminObservers {
+		select {
+		case wake <- struct{}{}:
+		default:
 		}
 	}
 }

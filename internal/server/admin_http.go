@@ -19,6 +19,7 @@ const adminBase = "/api/admin/v1"
 type adminSession struct {
 	Identity, Credential, CSRF string
 	Expires                    time.Time
+	Done                       chan struct{}
 }
 
 // AdminConsole owns bounded in-memory browser sessions; it creates no background
@@ -45,6 +46,7 @@ func NewAdminConsole(s *Server, origin string) (*AdminConsole, error) {
 	a.mux.HandleFunc("POST "+adminBase+"/login", a.login)
 	a.mux.HandleFunc("POST "+adminBase+"/logout", a.logout)
 	a.mux.HandleFunc("GET "+adminBase+"/session", a.sessionInfo)
+	a.registerResources()
 	return a, nil
 }
 
@@ -115,10 +117,11 @@ func (a *AdminConsole) login(w http.ResponseWriter, r *http.Request) {
 	}
 	expires := minTime(c.Expires, time.Now().Add(8*time.Hour))
 	secret := rand.Text() + rand.Text()
-	session := adminSession{Identity: c.Identity, Credential: c.ID, CSRF: rand.Text(), Expires: expires}
+	session := adminSession{Identity: c.Identity, Credential: c.ID, CSRF: rand.Text(), Expires: expires, Done: make(chan struct{})}
 	a.mu.Lock()
 	for key, previous := range a.sessions {
 		if !time.Now().Before(previous.Expires) {
+			close(previous.Done)
 			delete(a.sessions, key)
 		}
 	}
@@ -128,6 +131,9 @@ func (a *AdminConsole) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if old, err := r.Cookie("resona_admin"); err == nil {
+		if previous, ok := a.sessions[sessionKey(old.Value)]; ok {
+			close(previous.Done)
+		}
 		delete(a.sessions, sessionKey(old.Value))
 	}
 	a.sessions[sessionKey(secret)] = session
@@ -153,6 +159,7 @@ func (a *AdminConsole) authenticate(w http.ResponseWriter, r *http.Request) (adm
 	a.mu.Lock()
 	s, ok := a.sessions[key]
 	if ok && !time.Now().Before(s.Expires) {
+		close(s.Done)
 		delete(a.sessions, key)
 		ok = false
 	}
@@ -174,6 +181,9 @@ func (a *AdminConsole) logout(w http.ResponseWriter, r *http.Request) {
 	}
 	cookie, _ := r.Cookie("resona_admin")
 	a.mu.Lock()
+	if session, ok := a.sessions[sessionKey(cookie.Value)]; ok {
+		close(session.Done)
+	}
 	delete(a.sessions, sessionKey(cookie.Value))
 	a.mu.Unlock()
 	expired := a.cookie("", time.Unix(1, 0))
