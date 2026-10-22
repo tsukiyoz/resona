@@ -4635,11 +4635,19 @@ impl ResonaApp {
                                         let retry = view.clone();
                                         let retry_id = message.id.clone();
                                         let copy_text = message.text.clone();
-                                        let message_group =
-                                            SharedString::from(format!("message-{}", message.id));
-                                        div()
-                                            .id(SharedString::from(format!("text-{}", message.id)))
-                                            .group(message_group.clone())
+                                        let row = div()
+                                            .context_menu(move |menu, _, _| {
+                                                let text = copy_text.clone();
+                                                menu.item(
+                                                    PopupMenuItem::new("复制")
+                                                        .icon(IconName::Copy)
+                                                        .on_click(move |_, _, cx| {
+                                                            cx.write_to_clipboard(
+                                                                gpui::ClipboardItem::new_string(text.clone()),
+                                                            );
+                                                        }),
+                                                )
+                                            })
                                             .py_1()
                                             .flex()
                                             .items_start()
@@ -4728,32 +4736,6 @@ impl ResonaApp {
                                                         .on_click(move |_, _, cx| cx.open_url(&url))
                                                     }),
                                             )
-                                            .child(
-                                                div()
-                                                    .size(px(28.))
-                                                    .flex_shrink_0()
-                                                    .invisible()
-                                                    .group_hover(message_group, |style| {
-                                                        style.visible()
-                                                    })
-                                                    .child(
-                                                        Button::new(SharedString::from(format!(
-                                                            "copy-{}",
-                                                            message.id
-                                                        )))
-                                                        .icon(IconName::Copy)
-                                                        .size(px(28.))
-                                                        .ghost()
-                                                        .tooltip("复制消息")
-                                                        .on_click(move |_, _, cx| {
-                                                            cx.write_to_clipboard(
-                                                                gpui::ClipboardItem::new_string(
-                                                                    copy_text.clone(),
-                                                                ),
-                                                            )
-                                                        }),
-                                                    ),
-                                            )
                                             .when(
                                                 matches!(
                                                     message.status.as_str(),
@@ -4779,7 +4761,10 @@ impl ResonaApp {
                                                         }),
                                                     )
                                                 },
-                                            )
+                                            );
+                                        div()
+                                            .id(SharedString::from(format!("text-{}", message.id)))
+                                            .child(row)
                                     }),
                             ),
                     )
@@ -6645,12 +6630,7 @@ impl ResonaApp {
             Modal::Ownership { .. } => {
                 let pending =
                     self.claim_owner_pending() && self.workspace.session.server_role != "owner";
-                let role = match self.workspace.session.server_role.as_str() {
-                    "owner" => "所有者",
-                    "admin" => "管理员",
-                    "member" => "成员",
-                    _ => "未知角色",
-                };
+                let role = server_role_label(&self.workspace.session.server_role);
                 div().child(
                     div()
                         .id("server-ownership-panel")
@@ -7340,11 +7320,7 @@ impl ResonaApp {
                         .child(div().text_sm().child(format!(
                             "{} · {}",
                             session.account_name,
-                            match session.server_role.as_str() {
-                                "owner" => "所有者",
-                                "admin" => "管理员",
-                                _ => "用户",
-                            }
+                            server_role_label(&session.server_role)
                         )))
                         .child(
                             div()
@@ -7707,7 +7683,7 @@ impl ResonaApp {
                         )
                         .child(
                             Button::new("settings-nav-user")
-                                .child(settings_nav_contents("用户", IconName::User))
+                                .child(settings_nav_contents("身份", IconName::User))
                                 .compact()
                                 .justify_start()
                                 .ghost()
@@ -7902,7 +7878,7 @@ impl ResonaApp {
                                             "登录"
                                         }
                                     }
-                                    Modal::User => "用户",
+                                    Modal::User => "身份",
                                     _ => "关于",
                                 })))
                                 .when(
@@ -9063,6 +9039,15 @@ fn remove_inserted_newline(value: &str, cursor: usize) -> String {
         value.replace_range(cursor - 1..cursor, "");
     }
     value
+}
+fn server_role_label(role: &str) -> &'static str {
+    match role {
+        "guest" => "游客",
+        "member" => "成员",
+        "admin" => "管理员",
+        "owner" => "所有者",
+        _ => "未知角色",
+    }
 }
 fn message_status_label(status: &str) -> &'static str {
     match status {

@@ -28,13 +28,18 @@ Password work is limited to two concurrent hashes and never uses routing locks.
 At the maintainer's request, no device identity adopts an account or privileges.
 This experimental upgrade clears previous device-bound owner/admin credentials,
 claims and bans once. All devices enter as guests; users explicitly register in
-Settings -> User. Every account gets an independent random UID. New owner claims
+Settings -> Identity. Every account gets an independent random UID. New owner claims
 can only be consumed by a logged-in account. Existing web-only management tokens
 are not account login credentials. Back up both SQLite and KV together.
 
 Account nicknames are server-authoritative and synchronize on login/profile
 updates; guest nicknames remain connection-local. Management identifies accounts
 by UID plus nickname. No preference cloud synchronization is implied.
+Registration uses the requested nickname or the current guest nickname when
+omitted. In-session admission advances the voice epoch to isolate old frames,
+while preserving the channel and transmit/listen intent. Device selection, gains,
+activation and processing preferences remain local and are neither uploaded nor
+replaced with defaults on admission.
 
 ## Session behavior
 

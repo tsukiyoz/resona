@@ -122,7 +122,7 @@ impl resona_client::credentials::Backend for EmptyCredentials {
 #[tokio::test]
 async fn product_core_connects_synchronizes_chats_and_exits_without_devices() {
     use resona_client::{
-        audio::Config,
+        audio::{Config, Params, Spec},
         core::{Core, Options},
     };
     use serde_json::json;
@@ -134,11 +134,23 @@ async fn product_core_connects_synchronizes_chats_and_exits_without_devices() {
     options.credentials = Some(Box::new(EmptyCredentials(saved.clone())));
     let core = Core::start(options).await.unwrap();
     let mut handle = core.handle.clone();
-    let config = Config {
+    let mut config = Config {
         deafened: true,
         activation_mode: "continuous".into(),
         vad_threshold_db: -40,
+        volume: 175,
+        input_gain: 130,
+        input_device_id: "local-input".into(),
+        output_device_id: "local-output".into(),
         ..Default::default()
+    };
+    config.processing.preprocess[1] = Spec {
+        name: "ans".into(),
+        backend: "speex".into(),
+        params: Params {
+            level: 3,
+            ..Default::default()
+        },
     };
     handle
         .request("SetVoicePreferences", json!(config))
@@ -189,6 +201,37 @@ async fn product_core_connects_synchronizes_chats_and_exits_without_devices() {
     let workspace = handle.view.borrow().workspace.clone();
     let session = workspace.session.id.clone();
     let channel = workspace.session.channel_id.clone();
+    assert_eq!(workspace.session.server_role, "guest");
+    let before = handle.view.borrow().voice.clone();
+    handle
+        .request(
+            "AccountCommand",
+            json!({"sessionID":session,"action":"register","username":"product_account","nickname":"中文玩家🙂","password":"local-account-password"}),
+        )
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(2), async {
+        loop {
+            let view = handle.view.borrow_and_update().clone();
+            if !view.workspace.session.account_uid.is_empty()
+                && view.workspace.session.chat_state == "ready"
+            {
+                assert_eq!(view.workspace.session.server_role, "member");
+                for key in serde_json::to_value(&config)
+                    .unwrap()
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                {
+                    assert_eq!(view.voice[key], before[key], "registration replaced {key}");
+                }
+                break;
+            }
+            handle.view.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
     let details = handle
         .request(
             "GetChannelDetails",
@@ -540,6 +583,70 @@ async fn application_session_watches_moves_chats_and_routes_voice() {
         .unwrap();
     assert_eq!(voice.data, b"opaque-opus");
     assert!(!voice.instance.is_empty());
+    // Register in-place while unmuted: the identity epoch changes, not the
+    // user's transmit/listen intent. Both directions must remain usable.
+    let guest_epoch = b.handle.state.borrow().state.epoch;
+    b.handle
+        .command(
+            AppCommand::Account(resona_client::session::AccountRequest {
+                action: "register".into(),
+                username: "voice_account".into(),
+                nickname: "登录玩家".into(),
+                password: zeroize::Zeroizing::new("local-account-password".into()),
+                ..Default::default()
+            }),
+            Instant::now() + Duration::from_secs(4),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    wait_state(&mut b.handle, |s| !s.state.account_uid.is_empty()).await;
+    let member = b.handle.state.borrow().state.clone();
+    assert_ne!(member.epoch, guest_epoch);
+    let me = member
+        .members
+        .iter()
+        .find(|m| m.id == member.self_)
+        .unwrap();
+    assert!(!me.muted);
+    assert!(!me.deafened);
+    wait_state(&mut a.handle, |s| {
+        s.state
+            .members
+            .iter()
+            .any(|m| m.id == member.self_ && m.epoch == member.epoch)
+    })
+    .await;
+    assert!(b.voice_tx.send_scoped(guest_epoch, b"stale-guest").is_err());
+    b.voice_tx.send(b"registered-voice").unwrap();
+    assert_eq!(
+        timeout(Duration::from_secs(2), a.voice_rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .data,
+        b"registered-voice"
+    );
+    a.handle
+        .command(
+            AppCommand::VoiceState {
+                muted: false,
+                deafened: false,
+            },
+            Instant::now() + Duration::from_secs(3),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    a.voice_tx.send(b"to-registered-listener").unwrap();
+    assert_eq!(
+        timeout(Duration::from_secs(2), b.voice_rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .data,
+        b"to-registered-listener"
+    );
     a.handle
         .command(
             AppCommand::Chat {
@@ -638,6 +745,36 @@ async fn application_session_watches_moves_chats_and_routes_voice() {
             .unwrap()
             .data,
         b"new-channel-frame"
+    );
+    for moving in [&mut a, &mut b] {
+        moving
+            .handle
+            .command(
+                AppCommand::Move(1),
+                Instant::now() + Duration::from_secs(3),
+                &cancel,
+            )
+            .await
+            .unwrap();
+        wait_state(&mut moving.handle, |s| s.channel() == 1).await;
+    }
+    a.voice_tx.send(b"returned-a").unwrap();
+    b.voice_tx.send(b"returned-b").unwrap();
+    assert_eq!(
+        timeout(Duration::from_secs(2), a.voice_rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .data,
+        b"returned-b"
+    );
+    assert_eq!(
+        timeout(Duration::from_secs(2), b.voice_rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .data,
+        b"returned-a"
     );
     let late = a.handle.clone();
     a.close().await;
