@@ -56,10 +56,7 @@ func (s *Store) ProvisionOwnerClaim(replace bool) (string, error) {
 func (s *Store) Status(identity string) (string, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if s.record.Owner == identity && identity != "" {
-		return "owner", false
-	}
-	return "member", s.record.Owner == "" && s.record.Claim.Digest != "" && time.Now().Before(s.record.Claim.Expires)
+	return roleOf(s.record, identity), s.record.Owner == "" && s.record.Claim.Digest != "" && time.Now().Before(s.record.Claim.Expires)
 }
 
 // Claim atomically installs the immutable owner and consumes the one-use code.

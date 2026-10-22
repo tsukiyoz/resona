@@ -64,8 +64,7 @@ func (s *Server) mutateChannel(parent context.Context, identity string, kind uin
 	if ctx.Err() != nil {
 		return w.StorageFailed
 	}
-	role, _ := s.config.Store.Status(identity)
-	if role != "owner" {
+	if !s.config.Store.Allowed(identity, "channels", "write", "*") {
 		return w.PermissionDenied
 	}
 	var bitrate uint32
@@ -78,6 +77,10 @@ func (s *Server) mutateChannel(parent context.Context, identity string, kind uin
 	name = strings.TrimSpace(name)
 	code := uint8(w.OK)
 	err := s.config.Store.updateContext(ctx, func(r *resourceRecord) error {
+		if !authorized(*r, identity, "channels", "write", "*") {
+			code = w.PermissionDenied
+			return ErrPermission
+		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		channels := append([]w.Channel(nil), r.Channels.Channels...)

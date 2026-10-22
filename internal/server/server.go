@@ -365,7 +365,8 @@ func (s *Server) stateLocked(p *peer) w.State {
 			}
 		}
 	}
-	return w.State{Name: s.config.Name, Self: p.member.ID, Epoch: p.epoch, Channels: channels, Members: members, IdentityUID: p.identity, ServerRole: role, CanClaimOwner: canClaim, CanManageChannels: role == "owner", CanReorderChannels: role == "owner", CanConfigureChannelAudio: role == "owner", CanWatchResources: true, AllChannels: p.watch.AllChannels, AllMembers: p.watch.AllMembers, DefaultChannel: s.defaultChannel}
+	manage := s.config.Store.Allowed(p.identity, "channels", "write", "*")
+	return w.State{Name: s.config.Name, Self: p.member.ID, Epoch: p.epoch, Channels: channels, Members: members, IdentityUID: p.identity, ServerRole: role, CanClaimOwner: canClaim, CanManageChannels: manage, CanReorderChannels: manage, CanConfigureChannelAudio: manage, CanWatchResources: true, AllChannels: p.watch.AllChannels, AllMembers: p.watch.AllMembers, DefaultChannel: s.defaultChannel}
 }
 
 // One shared KV informer feeds the existing per-session interest projection.

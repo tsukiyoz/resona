@@ -25,6 +25,7 @@ type resourceRecord struct {
 	Channels channelRecord `json:"channels"`
 	Owner    string        `json:"owner,omitempty"`
 	Claim    claimSecret   `json:"claim"`
+	Admins   []string      `json:"admins,omitempty"`
 }
 
 // Store owns one embedded broker shared by chat and durable management state.
@@ -43,6 +44,9 @@ type Store struct {
 // OpenStore imports legacy access files only when KV has never been initialized.
 // Originals remain untouched. An existing invalid/deleted state fails closed.
 func OpenStore(cfg ChatConfig, legacyDir string, seed []w.Channel) (_ *Store, err error) {
+	if _, err := authorization(); err != nil {
+		return nil, err
+	}
 	c, err := openChat(cfg)
 	if err != nil {
 		return nil, err
@@ -108,6 +112,7 @@ func (s *Store) state() (resourceRecord, uint64) {
 	defer s.mu.RUnlock()
 	r := s.record
 	r.Channels.Channels = append([]w.Channel(nil), r.Channels.Channels...)
+	r.Admins = append([]string(nil), r.Admins...)
 	return r, s.revision
 }
 
@@ -128,6 +133,16 @@ func decodeResources(data []byte) (resourceRecord, error) {
 		(r.Claim != (claimSecret{}) && (r.Claim.Version != 1 || !validIdentity(r.Claim.Digest) || r.Claim.Expires.IsZero())) ||
 		(r.Owner != "" && r.Claim.Digest != "") {
 		return r, errors.New("invalid resource state; original preserved")
+	}
+	seen := make(map[string]bool, len(r.Admins))
+	if len(r.Admins) > 64 {
+		return r, ErrInvalid
+	}
+	for _, id := range r.Admins {
+		if !validIdentity(id) || id == r.Owner || seen[id] {
+			return r, ErrInvalid
+		}
+		seen[id] = true
 	}
 	return r, nil
 }
@@ -183,6 +198,10 @@ func (s *Store) update(fn func(*resourceRecord) error) error {
 }
 
 func (s *Store) updateContext(parent context.Context, fn func(*resourceRecord) error) error {
+	return s.updateAtContext(parent, 0, fn)
+}
+
+func (s *Store) updateAtContext(parent context.Context, revision uint64, fn func(*resourceRecord) error) error {
 	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
 	defer cancel()
 	select {
@@ -196,6 +215,9 @@ func (s *Store) updateContext(parent context.Context, fn func(*resourceRecord) e
 		if err != nil {
 			return err
 		}
+		if revision != 0 && entry.Revision() != revision {
+			return ErrConflict
+		}
 		r, err := decodeResources(entry.Value())
 		if err != nil {
 			return err
@@ -205,6 +227,7 @@ func (s *Store) updateContext(parent context.Context, fn func(*resourceRecord) e
 		}
 		// The cached immutable slice must never alias the mutation draft.
 		r.Channels.Channels = append([]w.Channel(nil), r.Channels.Channels...)
+		r.Admins = append([]string(nil), r.Admins...)
 		before := r
 		before.Channels.Channels = append([]w.Channel(nil), r.Channels.Channels...)
 		if err = fn(&r); err != nil {
@@ -229,7 +252,7 @@ func (s *Store) updateContext(parent context.Context, fn func(*resourceRecord) e
 		}
 		return s.install(r, revision)
 	}
-	return errors.New("resource revision conflict; retry the operation")
+	return ErrConflict
 }
 
 // watch receives the initial snapshot and subsequent revisions on one consumer,
