@@ -345,6 +345,10 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 			s.chatCommand(p, f, cmd)
 			continue
 		}
+		if f.Kind == w.ChatSyncKind && cmd.Before != 0 {
+			s.chatHistory(p, f, cmd)
+			continue
+		}
 		s.mu.Lock()
 		if p.removed {
 			s.mu.Unlock()

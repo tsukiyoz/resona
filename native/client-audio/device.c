@@ -16,6 +16,8 @@ typedef struct {
     ma_device input, output;
     ma_rb capture;
     ma_pcm_rb playback, reference, monitor;
+    ma_uint64 written[2], consumed[2];
+    ma_atomic_uint64 discard[2];
     ma_bool32 context_ok, input_ok, output_ok, capture_ok, playback_ok, reference_ok, monitor_ok;
     ma_atomic_uint32 epoch, failed, closing;
     ma_timer clock;
@@ -45,6 +47,18 @@ static ma_uint32 rb_write(ma_pcm_rb *rb, const float *in, ma_uint32 count, ma_ui
     }
     return done;
 }
+/* Only the callback advances read cursors. A route change publishes the last
+   producer position to discard, without resetting a live SPSC ring. */
+static ma_uint32 output_read(ra_device *d, int monitor, float *out, ma_uint32 frames) {
+    ma_pcm_rb *rb=monitor?&d->monitor:&d->playback;
+    ma_uint64 until=ma_atomic_uint64_get(&d->discard[monitor]);
+    while (d->consumed[monitor]<until) {
+        ma_uint32 n=(ma_uint32)(until-d->consumed[monitor]);void *data=NULL;
+        if(ma_pcm_rb_acquire_read(rb,&n,&data)!=MA_SUCCESS || n==0)break;
+        ma_pcm_rb_commit_read(rb,n);d->consumed[monitor]+=n;
+    }
+    ma_uint32 n=rb_read(rb,out,frames,2);d->consumed[monitor]+=n;return n;
+}
 static void data_callback(ma_device *device, void *output, const void *input, ma_uint32 frames) {
     ra_device *d=(ra_device*)device->pUserData;
     if (input) {
@@ -68,12 +82,12 @@ static void data_callback(ma_device *device, void *output, const void *input, ma
     if (output) {
         float *out=(float*)output;
         memset(out,0,(size_t)frames*2*sizeof(float));
-        rb_read(&d->playback,out,frames,2);
+        output_read(d,0,out,frames);
         rb_write(&d->reference,out,frames,2);
         float local[RA_FRAME*2];
         for (ma_uint32 i=0;i<frames;) {
             ma_uint32 n=RA_FRAME;if(n>frames-i)n=frames-i;
-            memset(local,0,(size_t)n*2*sizeof(float));rb_read(&d->monitor,local,n,2);
+            memset(local,0,(size_t)n*2*sizeof(float));output_read(d,1,local,n);
             for (ma_uint32 j=0;j<n*2;j++) {float v=out[i*2+j]+local[j];out[i*2+j]=v>1.0f?1.0f:(v< -1.0f? -1.0f:v);}
             i+=n;
         }
@@ -158,6 +172,7 @@ fail:ra_device_close(d);return NULL;
 }
 int ra_device_failed(ra_device *d){return (int)ma_atomic_uint32_get(&d->failed);}
 void ra_device_epoch(ra_device *d,ma_uint32 epoch){ma_atomic_uint32_set(&d->epoch,epoch);}
+void ra_device_discard(ra_device *d){for(int i=0;i<2;i++)ma_atomic_uint64_set(&d->discard[i],d->written[i]);}
 int ra_device_capture(ra_device *d,ra_frame *out) {
     size_t n=sizeof(*out);void *data=NULL;
     if(ma_rb_acquire_read(&d->capture,&n,&data)!=MA_SUCCESS || n!=sizeof(*out))return 0;
@@ -165,4 +180,4 @@ int ra_device_capture(ra_device *d,ra_frame *out) {
     out->time=ma_timer_get_time_in_seconds(&d->clock)-out->time;return 1;
 }
 ma_uint32 ra_device_reference(ra_device *d,float *out){return rb_read(&d->reference,out,RA_FRAME,2);}
-ma_uint32 ra_device_write(ra_device *d,const float *samples,int monitor){return rb_write(monitor?&d->monitor:&d->playback,samples,RA_FRAME,2);}
+ma_uint32 ra_device_write(ra_device *d,const float *samples,int monitor){ma_uint32 n=rb_write(monitor?&d->monitor:&d->playback,samples,RA_FRAME,2);d->written[monitor]+=n;return n;}

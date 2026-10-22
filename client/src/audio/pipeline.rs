@@ -168,6 +168,12 @@ impl Default for Jitter {
     }
 }
 impl Jitter {
+    fn reset(&mut self) {
+        self.packets.clear();
+        self.expected = None;
+        self.started = false;
+        self.ended = false;
+    }
     fn push(&mut self, packet: session::VoicePacket) -> bool {
         let expected = *self.expected.get_or_insert(packet.sequence);
         if (packet.sequence.wrapping_sub(expected) as i16) < 0
@@ -291,21 +297,12 @@ impl Pipeline {
     }
     pub fn route(&mut self, route: Route) -> Result<bool> {
         let changed = !self.route.same_scope(&route);
-        let pre = if changed {
-            Some(
-                self.factory
-                    .build(&self.config.processing.preprocess, &["aec", "ans"])?,
-            )
-        } else {
-            None
-        };
         self.encoder.bitrate(if route.bitrate == 0 {
             48_000
         } else {
             route.bitrate
         })?;
-        if let Some(pre) = pre {
-            self.pre = pre;
+        if changed {
             self.speakers.clear();
             self.receivers.clear();
             self.speaking.clear();
@@ -469,6 +466,13 @@ impl Pipeline {
         }
         let speaker = self.speakers.get_mut(&id).unwrap();
         let at = packet.at;
+        // VAD/PTT can pause without a delivered end marker. Once concealment
+        // expires, start a fresh playout window instead of rejecting new speech
+        // against sequence numbers advanced during silence.
+        if at.saturating_duration_since(speaker.last) > Duration::from_millis(120) {
+            speaker.jitter.reset();
+            speaker.pcm.clear();
+        }
         if speaker.jitter.push(packet) {
             speaker.last = at;
         } else {
@@ -809,6 +813,34 @@ mod tests {
                 bytes[..n].to_vec()
             })
             .collect()
+    }
+    #[test]
+    fn speech_resumes_after_a_gap_without_an_end_packet() {
+        let mut p = pipeline();
+        let now = Instant::now();
+        let packets = encoded();
+        feed(&mut p, &packets, 2, now);
+        let mut out = [0.0; FRAME * 2];
+        for ms in (0..300).step_by(20) {
+            p.render(now + Duration::from_millis(ms), &mut out).unwrap();
+        }
+        let resumed = now + Duration::from_millis(300);
+        for (i, data) in packets.iter().enumerate() {
+            let mut packet = packet((6 + i) as u16, false);
+            packet.data = data.clone();
+            packet.at = resumed;
+            p.push(
+                lifecycle::VoicePacket {
+                    generation: 3,
+                    packet,
+                },
+                resumed,
+            );
+        }
+        assert_eq!(p.counters.dropped, 0, "resumed speech rejected as late");
+        assert!(p.render(resumed, &mut out).unwrap());
+        assert!(out.iter().any(|v| v.abs() > 0.001));
+        assert_eq!(p.counters.decoded, 7);
     }
     #[test]
     fn gains_multiply_and_bad_packets_recover_without_affecting_other_audio() {

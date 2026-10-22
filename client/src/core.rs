@@ -851,6 +851,23 @@ impl App {
                 .await?;
                 Ok(json!({}))
             }
+            "LoadChannelHistory" => {
+                self.command(
+                    &string("sessionID"),
+                    session::Command::ChatHistory {
+                        channel: channel(&string("channelID"))?,
+                        epoch: params["epoch"]
+                            .as_u64()
+                            .and_then(|n| u32::try_from(n).ok())
+                            .ok_or("缺少频道代次")?,
+                        generation: params["generation"].as_u64().ok_or("缺少消息代次")?,
+                        before: params["before"].as_u64().ok_or("缺少消息游标")?,
+                    },
+                )
+                .await?;
+                self.refresh(true);
+                Ok(json!({}))
+            }
             "SetUserPlayback" => {
                 let id = string("userID");
                 let instance = string("instance");

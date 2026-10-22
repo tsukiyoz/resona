@@ -56,7 +56,9 @@ impl Default for State {
 }
 trait Stream: Send {
     fn failed(&self) -> bool;
+    fn pending(&self) -> usize;
     fn epoch(&mut self, epoch: u32);
+    fn discard(&mut self) {}
     fn capture(&mut self, out: &mut Captured) -> bool;
     fn reference(&mut self, out: &mut [f32; FRAME * 2]);
     fn write(&mut self, samples: &[f32; FRAME * 2], monitor: bool) -> Result<()>;
@@ -65,8 +67,14 @@ impl Stream for Device {
     fn failed(&self) -> bool {
         Device::failed(self)
     }
+    fn pending(&self) -> usize {
+        Device::pending(self)
+    }
     fn epoch(&mut self, epoch: u32) {
         Device::epoch(self, epoch)
+    }
+    fn discard(&mut self) {
+        Device::discard(self)
     }
     fn capture(&mut self, out: &mut Captured) -> bool {
         Device::capture(self, out)
@@ -206,6 +214,9 @@ impl Engine {
             fn failed(&self) -> bool {
                 false
             }
+            fn pending(&self) -> usize {
+                FRAME * 2
+            }
             fn epoch(&mut self, _: u32) {}
             fn capture(&mut self, _: &mut Captured) -> bool {
                 false
@@ -269,7 +280,6 @@ impl Engine {
                     route_revision: u64::MAX,
                     capture_epoch: 0,
                     transmitting: false,
-                    next_mix: Instant::now(),
                     next_publish: Instant::now(),
                 }
                 .run();
@@ -329,7 +339,6 @@ struct Worker {
     route_revision: u64,
     capture_epoch: u32,
     transmitting: bool,
-    next_mix: Instant,
     next_publish: Instant,
 }
 impl Worker {
@@ -445,6 +454,9 @@ impl Worker {
                 return Err("音频设置已取消".into());
             }
             self.device = device;
+            if let Some(device) = &mut self.device {
+                device.epoch(self.shared.gate.lock().map_err(|_| "音频状态不可用")?.epoch);
+            }
             self.pipeline = Some(pipeline);
         } else if let Some(pipeline) = &mut self.pipeline {
             pipeline.configure(apply.config.clone())?;
@@ -458,7 +470,6 @@ impl Worker {
             self.state.push_to_talk_pressed = false;
         }
         self.route_revision = u64::MAX;
-        self.next_mix = Instant::now();
         self.update_route()?;
         Ok(())
     }
@@ -487,28 +498,38 @@ impl Worker {
                         pipeline.config.muted = true;
                         self.state.config.muted = true;
                     }
-                    // Closing the old SPSC rings prevents buffered old-channel PCM
-                    // from reaching a new route. Only this worker touches them.
-                    self.device = None;
+                    if let Some(device) = &mut self.device {
+                        device.discard();
+                    }
                     self.transmitting = false;
-                    if pipeline.config.enabled
-                        && !pipeline.config.deafened
-                        && (pipeline.route.channel != 0 || self.monitor)
+                }
+                if !pipeline.config.enabled
+                    || pipeline.config.deafened
+                    || (pipeline.route.channel == 0 && !self.monitor)
+                {
+                    self.device = None;
+                }
+                // A newer scope may supersede a slow device open. Retry on its
+                // next route update even when the pipeline already has that scope.
+                if self.device.is_none()
+                    && pipeline.config.enabled
+                    && !pipeline.config.deafened
+                    && (pipeline.route.channel != 0 || self.monitor)
+                {
+                    let mut device = (self.open)(&pipeline.config, self.monitor)?;
+                    if self.shared.cancelled.load(Ordering::Acquire)
+                        || !self
+                            .shared
+                            .gate
+                            .lock()
+                            .map_err(|_| "音频状态不可用")?
+                            .route
+                            .same_scope(&pipeline.route)
                     {
-                        let device = (self.open)(&pipeline.config, self.monitor)?;
-                        if self.shared.cancelled.load(Ordering::Acquire)
-                            || self
-                                .shared
-                                .gate
-                                .lock()
-                                .map_err(|_| "音频状态不可用")?
-                                .revision
-                                != revision
-                        {
-                            drop(device);
-                        } else {
-                            self.device = Some(device);
-                        }
+                        drop(device);
+                    } else {
+                        device.epoch(epoch);
+                        self.device = Some(device);
                     }
                 }
                 self.state.active =
@@ -552,6 +573,9 @@ impl Worker {
         Ok(())
     }
     fn tick(&mut self) -> Result<()> {
+        self.tick_at(Instant::now())
+    }
+    fn tick_at(&mut self, now: Instant) -> Result<()> {
         if self.shared.cancelled.load(Ordering::Acquire) {
             return Ok(());
         }
@@ -564,7 +588,6 @@ impl Worker {
         let Some(pipeline) = &mut self.pipeline else {
             return Ok(());
         };
-        let now = Instant::now();
         for _ in 0..128 {
             match self.packets.try_recv() {
                 Ok(packet) => pipeline.push(packet, now),
@@ -609,8 +632,11 @@ impl Worker {
             )?;
             self.state.input_level_db = level;
             if self.monitor {
-                let _gate = self.shared.gate.lock().map_err(|_| "音频状态不可用")?;
-                if self.shared.cancelled.load(Ordering::Acquire) {
+                let gate = self.shared.gate.lock().map_err(|_| "音频状态不可用")?;
+                if self.shared.cancelled.load(Ordering::Acquire)
+                    || !gate.route.same_scope(&pipeline.route)
+                    || gate.epoch != epoch
+                {
                     return Ok(());
                 }
                 let stereo = std::array::from_fn(|i| captured.samples[i / 2]);
@@ -641,12 +667,18 @@ impl Worker {
                 }
             }
         }
-        if now >= self.next_mix {
-            self.next_mix = now + Duration::from_millis(20);
+        // Follow the sound card's sample clock. Relative timer deadlines drift
+        // on late wakes; two frames of lead absorb ordinary scheduling jitter.
+        for _ in 0..2 {
+            if device.pending() >= FRAME * 2 {
+                break;
+            }
             let mut out = [0.0; FRAME * 2];
             pipeline.render(now, &mut out)?;
-            let _gate = self.shared.gate.lock().map_err(|_| "音频状态不可用")?;
-            if !self.shared.cancelled.load(Ordering::Acquire) {
+            let gate = self.shared.gate.lock().map_err(|_| "音频状态不可用")?;
+            if !self.shared.cancelled.load(Ordering::Acquire)
+                && gate.route.same_scope(&pipeline.route)
+            {
                 device.write(&out, false)?;
             }
         }
@@ -691,7 +723,9 @@ impl Worker {
                 continue;
             }
             if self.device.is_some() {
-                thread::park_timeout(self.next_mix.saturating_duration_since(Instant::now()));
+                // Device callbacks drive refills; this is only a failure-check
+                // fallback if callbacks stop, not the playout clock.
+                thread::park_timeout(Duration::from_millis(20));
             } else {
                 while self.packets.try_recv().is_ok() {}
                 thread::park();
@@ -713,6 +747,157 @@ impl Worker {
 mod tests {
     use super::*;
     use std::{path::Path, sync::atomic::AtomicUsize};
+
+    #[derive(Default)]
+    struct Playback {
+        queued: usize,
+        missing: usize,
+        peak: usize,
+        voiced: usize,
+    }
+    struct ClockedStream(Arc<Mutex<Playback>>);
+    impl Stream for ClockedStream {
+        fn failed(&self) -> bool {
+            false
+        }
+        fn pending(&self) -> usize {
+            self.0.lock().unwrap().queued
+        }
+        fn epoch(&mut self, _: u32) {}
+        fn capture(&mut self, _: &mut Captured) -> bool {
+            false
+        }
+        fn reference(&mut self, out: &mut [f32; FRAME * 2]) {
+            out.fill(0.0);
+        }
+        fn write(&mut self, samples: &[f32; FRAME * 2], monitor: bool) -> Result<()> {
+            assert!(!monitor);
+            let mut playback = self.0.lock().unwrap();
+            playback.queued += FRAME;
+            playback.peak = playback.peak.max(playback.queued);
+            if samples.iter().any(|v| v.abs() > 0.001) {
+                playback.voiced += 1;
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn playback_follows_device_clock_despite_coarse_worker_wakes() {
+        use super::super::{Encoder, Peer};
+        for (speakers, wake_ms) in [1, 2]
+            .into_iter()
+            .flat_map(|speakers| [7, 16, 31].map(|wake| (speakers, wake)))
+        {
+            let now = Instant::now();
+            let playback = Arc::new(Mutex::new(Playback::default()));
+            let config = Config {
+                enabled: true,
+                muted: true,
+                ..Config::default()
+            };
+            let route = Route {
+                generation: 1,
+                epoch: 1,
+                channel: 1,
+                self_id: 1,
+                peers: (2..2 + speakers)
+                    .map(|id| {
+                        (
+                            id,
+                            Peer {
+                                instance: id.to_string(),
+                                epoch: 1,
+                                volume: 100,
+                                muted: false,
+                            },
+                        )
+                    })
+                    .collect(),
+                ..Default::default()
+            };
+            let (tx, packets) = mpsc::sync_channel(128);
+            let (_, commands) = tokio::sync::mpsc::channel(8);
+            let (state_tx, _) = watch::channel(State::default());
+            let mut worker = Worker {
+                shared: Arc::new(Shared {
+                    gate: Mutex::new(Gate {
+                        epoch: 1,
+                        pressed: false,
+                        enabled: false,
+                        route: route.clone(),
+                        sender: None,
+                        revision: 0,
+                    }),
+                    cancelled: AtomicBool::new(false),
+                    operation: AtomicU64::new(0),
+                    visible: AtomicBool::new(false),
+                }),
+                commands,
+                packets,
+                state_tx,
+                state: State::default(),
+                factory: factory(),
+                open: Box::new(|_, _| unreachable!()),
+                pipeline: Some(Pipeline::new(config, route, factory()).unwrap()),
+                device: Some(Box::new(ClockedStream(playback.clone()))),
+                monitor: false,
+                route_revision: 0,
+                capture_epoch: 1,
+                transmitting: false,
+                next_publish: now,
+            };
+            let mut encoder = Encoder::new(48_000).unwrap();
+            let pcm = std::array::from_fn(|i| (i as f32 * 0.08).sin() * 0.05);
+            let mut bytes = [0; 1024];
+            let n = encoder.encode(&pcm, &mut bytes).unwrap();
+            for ms in 0..10_000 {
+                let at = now + Duration::from_millis(ms);
+                // The sound card consumes continuously; waking a worker is not
+                // guaranteed to run it immediately (e.g. Windows timer granularity).
+                if ms > 0 {
+                    let mut output = playback.lock().unwrap();
+                    let consumed = output.queued.min(48);
+                    output.queued -= consumed;
+                    if ms > 100 {
+                        output.missing += 48 - consumed;
+                    }
+                }
+                if ms % 20 == 0 {
+                    for id in 2..2 + speakers {
+                        tx.try_send(lifecycle::VoicePacket {
+                            generation: 1,
+                            packet: session::VoicePacket {
+                                epoch: 1,
+                                sender_epoch: 1,
+                                sender: id,
+                                instance: id.to_string(),
+                                sequence: (ms / 20) as u16,
+                                end: false,
+                                data: bytes[..n].to_vec(),
+                                at,
+                            },
+                        })
+                        .unwrap();
+                    }
+                }
+                if ms % wake_ms == 0 {
+                    worker.tick_at(at).unwrap();
+                }
+            }
+            let output = playback.lock().unwrap();
+            assert_eq!(
+                output.missing, 0,
+                "{speakers} speakers / {wake_ms}ms wakes: playback underrun"
+            );
+            assert!(output.peak <= FRAME * 3, "unbounded playback latency");
+            assert!(output.voiced >= 490, "decoded speech must reach the device");
+            let counters = &worker.pipeline.as_ref().unwrap().counters;
+            assert_eq!(counters.dropped, 0);
+            assert!(counters.decoded >= u64::from(speakers) * 490);
+        }
+    }
+
     struct Fake(Arc<AtomicUsize>);
     impl Drop for Fake {
         fn drop(&mut self) {
@@ -722,6 +907,9 @@ mod tests {
     impl Stream for Fake {
         fn failed(&self) -> bool {
             false
+        }
+        fn pending(&self) -> usize {
+            FRAME * 2
         }
         fn epoch(&mut self, _: u32) {}
         fn capture(&mut self, _: &mut Captured) -> bool {
@@ -969,6 +1157,9 @@ mod tests {
         fn failed(&self) -> bool {
             false
         }
+        fn pending(&self) -> usize {
+            0
+        }
         fn epoch(&mut self, _: u32) {}
         fn capture(&mut self, _: &mut Captured) -> bool {
             false
@@ -981,8 +1172,158 @@ mod tests {
             Ok(())
         }
     }
+    #[derive(Default)]
+    struct RouteProbe {
+        epoch: AtomicU64,
+        writes: AtomicUsize,
+        discards: AtomicUsize,
+    }
+    struct RouteStream(Arc<RouteProbe>);
+    impl Stream for RouteStream {
+        fn failed(&self) -> bool {
+            false
+        }
+        fn pending(&self) -> usize {
+            0
+        }
+        fn epoch(&mut self, epoch: u32) {
+            self.0.epoch.store(epoch.into(), Ordering::SeqCst);
+        }
+        fn discard(&mut self) {
+            self.0.discards.fetch_add(1, Ordering::SeqCst);
+        }
+        fn capture(&mut self, _: &mut Captured) -> bool {
+            false
+        }
+        fn reference(&mut self, out: &mut [f32; FRAME * 2]) {
+            out.fill(0.0);
+        }
+        fn write(&mut self, _: &[f32; FRAME * 2], _: bool) -> Result<()> {
+            self.0.writes.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
     #[tokio::test]
-    async fn stop_during_route_open_never_writes_late_audio() {
+    async fn channel_and_identity_refreshes_keep_the_same_audio_device() {
+        async fn wait_for_audio(engine: &Engine, latest: &Mutex<Arc<RouteProbe>>) {
+            tokio::time::timeout(Duration::from_secs(1), async {
+                loop {
+                    let probe = latest.lock().unwrap().clone();
+                    let enabled = {
+                        let gate = engine.handle.shared.gate.lock().unwrap();
+                        gate.enabled
+                            && probe.writes.load(Ordering::SeqCst) > 0
+                            && probe.epoch.load(Ordering::SeqCst) == u64::from(gate.epoch)
+                    };
+                    if enabled {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .expect("a refresh stranded the active route without a working audio device");
+        }
+        for channel in [1, 2] {
+            let latest = Arc::new(Mutex::new(Arc::new(RouteProbe::default())));
+            let current = latest.clone();
+            let opens = Arc::new(AtomicUsize::new(0));
+            let opened = opens.clone();
+            let config = Config {
+                enabled: true,
+                muted: false,
+                activation_mode: "ptt".into(),
+                volume: 150,
+                input_gain: 125,
+                vad_threshold_db: -35,
+                input_device_id: "test-input".into(),
+                output_device_id: "test-output".into(),
+                ..Config::default()
+            };
+            let expected = config.clone();
+            let engine = Engine::start_with(
+                factory(),
+                Box::new(move |config, _| {
+                    assert_eq!(*config, expected);
+                    let probe = Arc::new(RouteProbe::default());
+                    *current.lock().unwrap() = probe.clone();
+                    opened.fetch_add(1, Ordering::SeqCst);
+                    Ok(Box::new(RouteStream(probe)))
+                }),
+            )
+            .unwrap();
+            let route = Route {
+                generation: 1,
+                epoch: 1,
+                channel: 1,
+                ..Default::default()
+            };
+            engine.handle.route(route.clone(), None).unwrap();
+            engine
+                .handle
+                .configure(config.clone(), false)
+                .await
+                .unwrap();
+            engine.handle.ptt(true).unwrap();
+            let original = latest.lock().unwrap().clone();
+            let mut next = Route {
+                epoch: 2,
+                channel,
+                ..route
+            };
+            engine.handle.route(next.clone(), None).unwrap();
+            wait_for_audio(&engine, &latest).await;
+            next.peers.insert(
+                2,
+                super::super::Peer {
+                    instance: "other".into(),
+                    epoch: 1,
+                    volume: 100,
+                    muted: false,
+                },
+            );
+            engine.handle.route(next.clone(), None).unwrap();
+            wait_for_audio(&engine, &latest).await;
+            assert!(Arc::ptr_eq(&original, &latest.lock().unwrap()));
+            assert_eq!(opens.load(Ordering::SeqCst), 1);
+            assert_eq!(original.discards.load(Ordering::SeqCst), 1);
+            assert_eq!(engine.handle.state.borrow().config, config);
+            assert!(!engine.handle.shared.gate.lock().unwrap().pressed);
+            // A second transition returns to the first channel without toggling audio.
+            next.channel = 1;
+            next.epoch += 1;
+            engine.handle.route(next, None).unwrap();
+            wait_for_audio(&engine, &latest).await;
+            assert_eq!(opens.load(Ordering::SeqCst), 1);
+            assert_eq!(original.discards.load(Ordering::SeqCst), 2);
+            // Reopening on the same route also needs the current capture epoch.
+            engine
+                .handle
+                .configure(
+                    Config {
+                        deafened: true,
+                        ..config.clone()
+                    },
+                    false,
+                )
+                .await
+                .unwrap();
+            engine.handle.configure(config, false).await.unwrap();
+            wait_for_audio(&engine, &latest).await;
+            assert_eq!(opens.load(Ordering::SeqCst), 2);
+            engine.handle.route(Route::default(), None).unwrap();
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while engine.handle.state.borrow().active {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .unwrap();
+            engine.close().await.unwrap();
+        }
+    }
+    #[tokio::test]
+    async fn stop_during_device_change_never_writes_late_audio() {
         let (entered, ready) = oneshot::channel();
         let mut entered = Some(entered);
         let (release, wait) = mpsc::channel();
@@ -1025,23 +1366,25 @@ mod tests {
             )
             .await
             .unwrap();
-        engine
-            .handle
-            .route(
-                Route {
-                    generation: 1,
-                    epoch: 2,
-                    channel: 2,
-                    ..Default::default()
-                },
-                None,
-            )
-            .unwrap();
+        let handle = engine.handle.clone();
+        let change = tokio::spawn(async move {
+            handle
+                .configure(
+                    Config {
+                        enabled: true,
+                        input_device_id: "replacement".into(),
+                        ..Default::default()
+                    },
+                    false,
+                )
+                .await
+        });
         ready.await.unwrap();
         engine.stop();
         let before = writes.load(Ordering::SeqCst);
         release.send(()).unwrap();
         engine.close().await.unwrap();
+        assert!(change.await.unwrap().is_err());
         assert_eq!(writes.load(Ordering::SeqCst), before);
     }
     #[tokio::test]

@@ -122,7 +122,7 @@ impl resona_client::credentials::Backend for EmptyCredentials {
 #[tokio::test]
 async fn product_core_connects_synchronizes_chats_and_exits_without_devices() {
     use resona_client::{
-        audio::Config,
+        audio::{Config, Params, Spec},
         core::{Core, Options},
     };
     use serde_json::json;
@@ -134,11 +134,23 @@ async fn product_core_connects_synchronizes_chats_and_exits_without_devices() {
     options.credentials = Some(Box::new(EmptyCredentials(saved.clone())));
     let core = Core::start(options).await.unwrap();
     let mut handle = core.handle.clone();
-    let config = Config {
+    let mut config = Config {
         deafened: true,
         activation_mode: "continuous".into(),
         vad_threshold_db: -40,
+        volume: 175,
+        input_gain: 130,
+        input_device_id: "local-input".into(),
+        output_device_id: "local-output".into(),
         ..Default::default()
+    };
+    config.processing.preprocess[1] = Spec {
+        name: "ans".into(),
+        backend: "speex".into(),
+        params: Params {
+            level: 3,
+            ..Default::default()
+        },
     };
     handle
         .request("SetVoicePreferences", json!(config))
@@ -189,6 +201,37 @@ async fn product_core_connects_synchronizes_chats_and_exits_without_devices() {
     let workspace = handle.view.borrow().workspace.clone();
     let session = workspace.session.id.clone();
     let channel = workspace.session.channel_id.clone();
+    assert_eq!(workspace.session.server_role, "guest");
+    let before = handle.view.borrow().voice.clone();
+    handle
+        .request(
+            "AccountCommand",
+            json!({"sessionID":session,"action":"register","username":"product_account","nickname":"中文玩家🙂","password":"local-account-password"}),
+        )
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(2), async {
+        loop {
+            let view = handle.view.borrow_and_update().clone();
+            if !view.workspace.session.account_uid.is_empty()
+                && view.workspace.session.chat_state == "ready"
+            {
+                assert_eq!(view.workspace.session.server_role, "member");
+                for key in serde_json::to_value(&config)
+                    .unwrap()
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                {
+                    assert_eq!(view.voice[key], before[key], "registration replaced {key}");
+                }
+                break;
+            }
+            handle.view.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
     let details = handle
         .request(
             "GetChannelDetails",
@@ -500,6 +543,104 @@ async fn channel_order_is_authoritative_and_does_not_change_default_or_voice_rou
 }
 
 #[tokio::test]
+async fn channel_history_pages_merge_with_live_and_cancel_on_reentry() {
+    use resona_client::session::{Command as AppCommand, Error as AppError};
+    let (_peer, address, key) = start_peer(&["-server"]);
+    let a = app_session(address, key, "history-author").await;
+    let cancel = CancellationToken::new();
+    for i in 1..=35 {
+        a.handle
+            .command(
+                AppCommand::Chat {
+                    channel: 1,
+                    text: format!("message-{i}"),
+                    id: format!("history-{i:08}"),
+                },
+                Instant::now() + Duration::from_secs(3),
+                &cancel,
+            )
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let mut b = app_session(address, key, "history-reader").await;
+    wait_state(&mut b.handle, |s| {
+        s.chat_status.status == 1 && s.chat_status.epoch != 0
+    })
+    .await;
+    let status = b.handle.state.borrow().chat_status;
+    assert!(status.has_more);
+    assert_eq!(b.handle.state.borrow().messages.len(), 20);
+    assert_eq!(
+        b.handle.state.borrow().messages.front().unwrap().text,
+        "message-16"
+    );
+    let older = AppCommand::ChatHistory {
+        channel: 1,
+        epoch: status.epoch,
+        generation: status.generation,
+        before: status.before,
+    };
+    let live = AppCommand::Chat {
+        channel: 1,
+        text: "live-36".into(),
+        id: "history-00000036".into(),
+    };
+    let (page, send) = tokio::join!(
+        b.handle.command(
+            older.clone(),
+            Instant::now() + Duration::from_secs(3),
+            &cancel
+        ),
+        a.handle
+            .command(live, Instant::now() + Duration::from_secs(3), &cancel)
+    );
+    page.unwrap();
+    send.unwrap();
+    wait_state(&mut b.handle, |s| s.messages.len() == 36).await;
+    {
+        let snapshot = b.handle.state.borrow();
+        assert!(!snapshot.chat_status.has_more);
+        assert!(
+            snapshot
+                .messages
+                .iter()
+                .zip(snapshot.messages.iter().skip(1))
+                .all(|(a, b)| a.sequence < b.sequence)
+        );
+        assert_eq!(snapshot.messages.front().unwrap().text, "message-1");
+        assert_eq!(snapshot.messages.back().unwrap().text, "live-36");
+        assert!(!snapshot.messages.back().unwrap().history);
+    }
+    for channel in [2, 1] {
+        b.handle
+            .command(
+                AppCommand::Move(channel),
+                Instant::now() + Duration::from_secs(3),
+                &cancel,
+            )
+            .await
+            .unwrap();
+        wait_state(&mut b.handle, |s| {
+            s.channel() == u32::from(channel)
+                && s.chat_status.status == 1
+                && s.chat_status.epoch == s.state.epoch
+        })
+        .await;
+    }
+    assert_eq!(b.handle.state.borrow().messages.len(), 20);
+    assert_eq!(
+        b.handle
+            .command(older, Instant::now() + Duration::from_secs(3), &cancel)
+            .await,
+        Err(AppError::Cancelled)
+    );
+    assert_eq!(b.handle.state.borrow().messages.len(), 20);
+    a.close().await;
+    b.close().await;
+}
+
+#[tokio::test]
 async fn application_session_watches_moves_chats_and_routes_voice() {
     use resona_client::session::Command as AppCommand;
     let (_peer, address, key) = start_peer(&["-server"]);
@@ -540,6 +681,70 @@ async fn application_session_watches_moves_chats_and_routes_voice() {
         .unwrap();
     assert_eq!(voice.data, b"opaque-opus");
     assert!(!voice.instance.is_empty());
+    // Register in-place while unmuted: the identity epoch changes, not the
+    // user's transmit/listen intent. Both directions must remain usable.
+    let guest_epoch = b.handle.state.borrow().state.epoch;
+    b.handle
+        .command(
+            AppCommand::Account(resona_client::session::AccountRequest {
+                action: "register".into(),
+                username: "voice_account".into(),
+                nickname: "登录玩家".into(),
+                password: zeroize::Zeroizing::new("local-account-password".into()),
+                ..Default::default()
+            }),
+            Instant::now() + Duration::from_secs(4),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    wait_state(&mut b.handle, |s| !s.state.account_uid.is_empty()).await;
+    let member = b.handle.state.borrow().state.clone();
+    assert_ne!(member.epoch, guest_epoch);
+    let me = member
+        .members
+        .iter()
+        .find(|m| m.id == member.self_)
+        .unwrap();
+    assert!(!me.muted);
+    assert!(!me.deafened);
+    wait_state(&mut a.handle, |s| {
+        s.state
+            .members
+            .iter()
+            .any(|m| m.id == member.self_ && m.epoch == member.epoch)
+    })
+    .await;
+    assert!(b.voice_tx.send_scoped(guest_epoch, b"stale-guest").is_err());
+    b.voice_tx.send(b"registered-voice").unwrap();
+    assert_eq!(
+        timeout(Duration::from_secs(2), a.voice_rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .data,
+        b"registered-voice"
+    );
+    a.handle
+        .command(
+            AppCommand::VoiceState {
+                muted: false,
+                deafened: false,
+            },
+            Instant::now() + Duration::from_secs(3),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    a.voice_tx.send(b"to-registered-listener").unwrap();
+    assert_eq!(
+        timeout(Duration::from_secs(2), b.voice_rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .data,
+        b"to-registered-listener"
+    );
     a.handle
         .command(
             AppCommand::Chat {
@@ -639,6 +844,36 @@ async fn application_session_watches_moves_chats_and_routes_voice() {
             .data,
         b"new-channel-frame"
     );
+    for moving in [&mut a, &mut b] {
+        moving
+            .handle
+            .command(
+                AppCommand::Move(1),
+                Instant::now() + Duration::from_secs(3),
+                &cancel,
+            )
+            .await
+            .unwrap();
+        wait_state(&mut moving.handle, |s| s.channel() == 1).await;
+    }
+    a.voice_tx.send(b"returned-a").unwrap();
+    b.voice_tx.send(b"returned-b").unwrap();
+    assert_eq!(
+        timeout(Duration::from_secs(2), a.voice_rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .data,
+        b"returned-b"
+    );
+    assert_eq!(
+        timeout(Duration::from_secs(2), b.voice_rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .data,
+        b"returned-a"
+    );
     let late = a.handle.clone();
     a.close().await;
     assert!(
@@ -730,6 +965,100 @@ async fn lost_command_acks_do_not_pause_incoming_voice() {
     );
     listener.close().await;
     source.close().await;
+}
+
+#[cfg(feature = "audio")]
+#[tokio::test]
+async fn simultaneous_opus_speakers_continue_during_jetstream_chat() {
+    use resona_client::{
+        audio::{Decoder, Encoder, FRAME},
+        session::Command as AppCommand,
+    };
+    let (_peer, address, key) = start_peer(&["-server"]);
+    let mut listener = app_session(address, key, "listener").await;
+    let left = app_session(address, key, "left").await;
+    let right = app_session(address, key, "right").await;
+    let cancel = CancellationToken::new();
+    for source in [&left, &right] {
+        source
+            .handle
+            .command(
+                AppCommand::VoiceState {
+                    muted: false,
+                    deafened: false,
+                },
+                Instant::now() + Duration::from_secs(3),
+                &cancel,
+            )
+            .await
+            .unwrap();
+    }
+    wait_state(&mut listener.handle, |s| {
+        s.state.members.len() == 3 && s.chat_status.status == 1
+    })
+    .await;
+    let mut encoder = Encoder::new(48_000).unwrap();
+    let pcm = std::array::from_fn(|i| (i as f32 * 0.08).sin() * 0.05);
+    let mut bytes = [0; 1024];
+    let n = encoder.encode(&pcm, &mut bytes).unwrap();
+    let mut senders = Vec::new();
+    for source in [&left, &right] {
+        let voice = source.voice_tx.clone();
+        let data = bytes[..n].to_vec();
+        senders.push(tokio::spawn(async move {
+            for _ in 0..100 {
+                voice.send(&data).unwrap();
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }));
+    }
+    let handle = listener.handle.clone();
+    let chat = tokio::spawn(async move {
+        for i in 0..3 {
+            handle
+                .command(
+                    AppCommand::Chat {
+                        channel: 1,
+                        text: "voice regression test".into(),
+                        id: format!("voice-chat-{i}"),
+                    },
+                    Instant::now() + Duration::from_secs(3),
+                    &CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(350)).await;
+        }
+    });
+    let mut received = std::collections::HashMap::new();
+    let mut decoders = std::collections::HashMap::new();
+    let mut out = [0.0; FRAME * 6];
+    let _ = timeout(Duration::from_secs(6), async {
+        while let Some(packet) = listener.voice_rx.recv().await {
+            let decoder = decoders
+                .entry(packet.sender)
+                .or_insert_with(|| Decoder::new().unwrap());
+            assert_eq!(decoder.decode(Some(&packet.data), &mut out).unwrap(), FRAME);
+            *received.entry(packet.sender).or_insert(0) += 1;
+            if received.len() == 2 && received.values().all(|n| *n == 100) {
+                break;
+            }
+        }
+    })
+    .await;
+    for sender in senders {
+        sender.await.unwrap();
+    }
+    chat.await.unwrap();
+    wait_state(&mut listener.handle, |s| s.messages.len() == 3).await;
+    assert_eq!(received.len(), 2);
+    assert!(
+        received.values().all(|n| *n >= 95),
+        "voice delivery: {received:?}"
+    );
+    listener.close().await;
+    left.close().await;
+    right.close().await;
 }
 
 async fn wait_lifecycle(

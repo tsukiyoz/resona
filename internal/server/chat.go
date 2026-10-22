@@ -5,9 +5,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -105,7 +107,13 @@ func openChatConfigured(cfg ChatConfig, preserveExisting bool) (_ *chatStore, er
 	if preserveExisting {
 		c.stream, err = c.js.Stream(ctx, "RESONA_CHAT")
 		if err == nil {
-			return c, nil
+			info := c.stream.CachedInfo()
+			if !info.Config.AllowDirect {
+				cfg := info.Config
+				cfg.AllowDirect = true
+				c.stream, err = c.js.UpdateStream(ctx, cfg)
+			}
+			return c, err
 		}
 		if !errors.Is(err, jetstream.ErrStreamNotFound) {
 			return nil, err
@@ -117,6 +125,7 @@ func openChatConfigured(cfg ChatConfig, preserveExisting bool) (_ *chatStore, er
 		Discard: jetstream.DiscardOld, MaxMsgsPerSubject: cfg.MaxMessagesPerChannel,
 		MaxBytes: cfg.MaxBytes, MaxAge: cfg.MaxAge, MaxMsgSize: 12 << 10,
 		MaxConsumers: w.MaxMembers * 2, Duplicates: min(2*time.Minute, cfg.MaxAge),
+		AllowDirect: true,
 	})
 	if err != nil {
 		return nil, err
@@ -150,9 +159,81 @@ func (c *chatStore) publish(ctx context.Context, msg w.Message) error {
 	return err
 }
 
-// One ephemeral pull consumer spans catch-up and live delivery in stream order.
-// No snapshot/live handoff gap, permanent per-user cursor, or voice-path I/O.
-func (c *chatStore) read(ctx context.Context, channel uint16, emit func(w.Message) error, ready func() error) error {
+// NATS' pinned direct multi-last API resolves the previous retained subject
+// sequence, even when other channels or retention create gaps. No body cache or
+// application-maintained sequence index is needed. All reads stay off voice locks.
+func (c *chatStore) previous(ctx context.Context, channel uint16, before uint64) (*w.Message, error) {
+	if before == 1 {
+		return nil, nil
+	}
+	request := struct {
+		Subjects []string `json:"multi_last"`
+		UpTo     uint64   `json:"up_to_seq,omitempty"`
+		Batch    int      `json:"batch"`
+	}{Subjects: []string{chatSubject(channel)}, Batch: 1}
+	if before != 0 {
+		request.UpTo = before - 1
+	}
+	data, err := json.Marshal(request)
+	if err != nil {
+		return nil, err
+	}
+	msg, err := c.conn.RequestWithContext(ctx, "$JS.API.DIRECT.GET.RESONA_CHAT", data)
+	if err != nil {
+		return nil, err
+	}
+	if msg.Header.Get("Status") == "404" {
+		return nil, nil
+	}
+	if msg.Header.Get("Status") != "" || msg.Header.Get("Nats-Subject") != chatSubject(channel) {
+		return nil, errors.New("chat history read failed")
+	}
+	sequence, err := strconv.ParseUint(msg.Header.Get("Nats-Sequence"), 10, 64)
+	if err != nil || sequence == 0 || (before != 0 && sequence >= before) {
+		return nil, errors.New("invalid chat history cursor")
+	}
+	timestamp, err := time.Parse(time.RFC3339Nano, msg.Header.Get("Nats-Time-Stamp"))
+	if err != nil {
+		return nil, err
+	}
+	frame, err := w.Read(bytes.NewReader(msg.Data))
+	var value w.Message
+	if err != nil || w.Decode(frame, &value) != nil || value.Channel != channel {
+		return nil, errors.New("invalid stored chat message")
+	}
+	value.Sequence, value.Timestamp, value.History = sequence, timestamp.UnixNano(), true
+	return &value, nil
+}
+
+func (c *chatStore) page(ctx context.Context, channel uint16, before uint64) (w.ChatPage, error) {
+	page := w.ChatPage{Channel: channel, Before: before}
+	cursor, size := before, 0
+	for {
+		msg, err := c.previous(ctx, channel, cursor)
+		if err != nil {
+			return page, err
+		}
+		if msg == nil {
+			break
+		}
+		// Leave room for page fields and epoch/self metadata added by the caller.
+		n := len(msg.Text) + len(msg.Nickname) + len(msg.AuthorUID) + len(msg.ClientID) + 128
+		if len(page.Messages) == 20 || size+n > 48<<10 {
+			page.HasMore = true
+			break
+		}
+		page.Messages = append(page.Messages, *msg)
+		size += n
+		cursor = msg.Sequence
+		page.NextBefore = cursor
+	}
+	slices.Reverse(page.Messages)
+	return page, nil
+}
+
+// Initial history and live delivery share a high-water mark. Messages committed
+// while the page is read are consumed starting at boundary+1, without a gap.
+func (c *chatStore) readPage(ctx context.Context, channel uint16, emit func(w.Message) error, ready func(w.ChatPage) error) error {
 	setup, cancel := context.WithTimeout(ctx, 2*time.Second)
 	last, err := c.stream.GetLastMsgForSubject(setup, chatSubject(channel))
 	var boundary uint64
@@ -162,8 +243,16 @@ func (c *chatStore) read(ctx context.Context, channel uint16, emit func(w.Messag
 		cancel()
 		return err
 	}
+	var page w.ChatPage
+	if boundary != 0 {
+		page, err = c.page(setup, channel, boundary+1)
+		if err != nil {
+			cancel()
+			return err
+		}
+	}
 	consumer, err := c.stream.CreateConsumer(setup, jetstream.ConsumerConfig{
-		FilterSubject: chatSubject(channel), DeliverPolicy: jetstream.DeliverAllPolicy,
+		FilterSubject: chatSubject(channel), DeliverPolicy: jetstream.DeliverByStartSequencePolicy, OptStartSeq: boundary + 1,
 		AckPolicy: jetstream.AckNonePolicy, ReplayPolicy: jetstream.ReplayInstantPolicy,
 		MemoryStorage: true, InactiveThreshold: 30 * time.Second,
 		MaxWaiting: 2, MaxRequestBatch: 4, MaxRequestMaxBytes: 48 << 10,
@@ -182,11 +271,13 @@ func (c *chatStore) read(ctx context.Context, channel uint16, emit func(w.Messag
 		return err
 	}
 	defer messages.Stop()
-	loading := boundary != 0 && consumer.CachedInfo().NumPending != 0
-	if !loading {
-		if err = ready(); err != nil {
+	for _, msg := range page.Messages {
+		if err = emit(msg); err != nil {
 			return err
 		}
+	}
+	if err = ready(page); err != nil {
+		return err
 	}
 	for {
 		msg, err := messages.Next(jetstream.NextContext(ctx))
@@ -207,13 +298,11 @@ func (c *chatStore) read(ctx context.Context, channel uint16, emit func(w.Messag
 		if err = emit(value); err != nil {
 			return err
 		}
-		if loading && (value.Sequence >= boundary || metadata.NumPending == 0) {
-			loading = false
-			if err = ready(); err != nil {
-				return err
-			}
-		}
 	}
+}
+
+func (c *chatStore) read(ctx context.Context, channel uint16, emit func(w.Message) error, ready func() error) error {
+	return c.readPage(ctx, channel, emit, func(w.ChatPage) error { return ready() })
 }
 
 func (s *Server) restartChatLocked(p *peer) {
@@ -264,11 +353,11 @@ func (s *Server) chatLoop(p *peer) {
 				return errors.New("chat delivery stalled")
 			}
 		}
-		err := s.chat.read(ctx, channel, func(msg w.Message) error {
+		err := s.chat.readPage(ctx, channel, func(msg w.Message) error {
 			msg.Epoch, msg.Self = epoch, msg.AuthorUID == author
 			return send(w.MessageKind, msg)
-		}, func() error {
-			return send(w.ChatStatusKind, w.ChatStatus{Channel: channel, Epoch: epoch, Generation: generation, Status: 1})
+		}, func(page w.ChatPage) error {
+			return send(w.ChatStatusKind, w.ChatStatus{Channel: channel, Epoch: epoch, Generation: generation, Status: 1, Before: page.NextBefore, HasMore: page.HasMore})
 		})
 		if ctx.Err() == nil && err != nil {
 			slog.Warn("channel chat unavailable", "channel", channel, "member_id", p.member.ID)
@@ -308,6 +397,50 @@ func (s *Server) chatCommand(p *peer, f w.Frame, cmd w.Command) {
 				code = w.StorageFailed
 			}
 			slog.Warn("chat persistence not confirmed", "channel", msg.Channel, "member_id", msg.Sender)
+		}
+	}
+	s.mu.Lock()
+	s.enqueueLocked(p, w.ReplyKind, f.Request, w.Reply{Code: code})
+	s.mu.Unlock()
+}
+
+func (s *Server) chatHistory(p *peer, f w.Frame, cmd w.Command) {
+	s.mu.Lock()
+	code := uint8(w.OK)
+	if p.removed {
+		code = w.PermissionDenied
+	} else if !p.commandBucket.take(10, 20) {
+		code = w.RateLimited
+	} else if cmd.Channel != p.member.Channel || cmd.Epoch != p.epoch || cmd.Generation != p.chatGeneration {
+		code = w.WrongChannel
+	}
+	author := p.authorUID()
+	s.mu.Unlock()
+	if code == w.OK {
+		ctx, cancel := context.WithTimeout(p.conn.Context(), 2*time.Second)
+		defer cancel()
+		page, err := s.chat.page(ctx, cmd.Channel, cmd.Before)
+		if err == nil {
+			page.Epoch, page.Generation = cmd.Epoch, cmd.Generation
+			for i := range page.Messages {
+				page.Messages[i].Epoch = cmd.Epoch
+				page.Messages[i].Self = page.Messages[i].AuthorUID == author
+			}
+			s.mu.Lock()
+			current := !p.removed && p.epoch == cmd.Epoch && p.chatGeneration == cmd.Generation && p.member.Channel == cmd.Channel
+			s.mu.Unlock()
+			if !current {
+				code = w.WrongChannel
+			} else if data, packErr := w.Pack(w.ChatPageKind, f.Request, page); packErr == nil {
+				select {
+				case p.chatOut <- data:
+					return
+				case <-ctx.Done():
+				}
+			}
+		}
+		if code == w.OK {
+			code = w.StorageFailed
 		}
 	}
 	s.mu.Lock()

@@ -110,6 +110,7 @@ pub struct Snapshot {
     pub state: Arc<pb::State>,
     pub messages: Arc<VecDeque<pb::Message>>,
     pub chat_status: pb::ChatStatus,
+    pub history_limited: bool,
     pub closed: Option<Error>,
     pub events: Arc<VecDeque<MemberEvent>>,
 }
@@ -140,6 +141,12 @@ pub enum Command {
         id: String,
     },
     ChatSync(u16),
+    ChatHistory {
+        channel: u16,
+        epoch: u32,
+        generation: u64,
+        before: u64,
+    },
     VoiceState {
         muted: bool,
         deafened: bool,
@@ -257,6 +264,22 @@ impl Command {
                     ..Default::default()
                 },
             ),
+            Self::ChatHistory {
+                channel,
+                epoch,
+                generation,
+                before,
+            } if *channel != 0 && *epoch != 0 && *generation != 0 && *before != 0 => wire::pack(
+                Kind::ChatSync,
+                id,
+                &pb::Command {
+                    channel: u32::from(*channel),
+                    epoch: *epoch,
+                    generation: *generation,
+                    before: *before,
+                    ..Default::default()
+                },
+            ),
             Self::Chat {
                 channel,
                 text,
@@ -360,7 +383,7 @@ impl Command {
     fn soft(&self) -> bool {
         matches!(
             self,
-            Self::Chat { .. } | Self::ChatSync(_) | Self::Watch { .. }
+            Self::Chat { .. } | Self::ChatSync(_) | Self::ChatHistory { .. } | Self::Watch { .. }
         )
     }
 }
@@ -571,6 +594,7 @@ impl Session {
             state: Arc::new(state),
             messages: Arc::new(VecDeque::new()),
             chat_status: pb::ChatStatus::default(),
+            history_limited: false,
             closed: None,
         };
         let (state_tx, state_rx) = watch::channel(snapshot.clone());
@@ -635,6 +659,70 @@ struct Driver {
     next: u32,
     credential: Arc<Mutex<Zeroizing<String>>>,
 }
+fn valid_message(m: &pb::Message, snapshot: &Snapshot) -> bool {
+    m.channel == snapshot.channel()
+        && m.epoch == snapshot.state.epoch
+        && m.sequence != 0
+        && m.timestamp > 0
+        && m.author_uid.len() == 64
+        && m.author_uid.bytes().all(|b| b.is_ascii_hexdigit())
+        && m.text.len() <= 8192
+        && m.nickname.len() <= 120
+        && m.client_id.len() <= 128
+}
+
+fn apply_history(snapshot: &mut Snapshot, page: pb::ChatPage) -> Result<()> {
+    if page.channel != snapshot.channel()
+        || page.epoch != snapshot.state.epoch
+        || page.generation != snapshot.chat_status.generation
+        || page.before != snapshot.chat_status.before
+    {
+        return Ok(());
+    }
+    if page.messages.len() > 20
+        || page.before == 0
+        || (page.has_more && page.messages.is_empty())
+        || page
+            .messages
+            .windows(2)
+            .any(|m| m[0].sequence >= m[1].sequence)
+        || page
+            .messages
+            .iter()
+            .any(|m| !valid_message(m, snapshot) || !m.history || m.sequence >= page.before)
+        || page.next_before != page.messages.first().map_or(0, |m| m.sequence)
+    {
+        return Err(Error::InvalidState);
+    }
+    let additional: Vec<_> = page
+        .messages
+        .into_iter()
+        .filter(|m| {
+            !snapshot
+                .messages
+                .iter()
+                .any(|old| old.sequence == m.sequence)
+        })
+        .collect();
+    let size: usize = snapshot
+        .messages
+        .iter()
+        .chain(additional.iter())
+        .map(|m| m.text.len() + m.nickname.len())
+        .sum();
+    if snapshot.messages.len() + additional.len() > 500 || size > 512 * 1024 {
+        snapshot.history_limited = true;
+        return Ok(());
+    }
+    let messages = Arc::make_mut(&mut snapshot.messages);
+    for msg in additional {
+        let index = messages.partition_point(|old| old.sequence < msg.sequence);
+        messages.insert(index, msg);
+    }
+    snapshot.chat_status.before = page.next_before;
+    snapshot.chat_status.has_more = page.has_more;
+    Ok(())
+}
 impl Driver {
     fn publish(&self) {
         self.state_tx.send_replace(self.snapshot.clone());
@@ -684,6 +772,12 @@ impl Driver {
                 request=self.requests.recv(),if self.pending.is_none() && self.writer.is_none()=>{
                     let Some(request)=request else {return Error::Cancelled;};
                     if request.cancel.is_cancelled() || request.deadline<=Instant::now(){let _=request.reply.send(Err(Error::Cancelled));continue;}
+                    if let Command::ChatHistory {channel,epoch,generation,before} = &request.command
+                        && (self.snapshot.channel()!=u32::from(*channel) || self.snapshot.state.epoch!=*epoch
+                            || self.snapshot.chat_status.generation!=*generation || self.snapshot.chat_status.before!=*before
+                            || !self.snapshot.chat_status.has_more || self.snapshot.history_limited) {
+                        let _=request.reply.send(Err(Error::Cancelled));continue;
+                    }
                     let Some(id)=self.next.checked_add(1) else {return Error::InvalidState;}; self.next=id;
                     let data=match request.command.frame(id){Ok(d)=>d,Err(e)=>{let _=request.reply.send(Err(e));continue;}};
                     let sender=conn.control_tx.clone();let deadline=request.deadline;let token=request.cancel.clone();
@@ -731,6 +825,7 @@ impl Driver {
                 if s.epoch != old.epoch {
                     self.snapshot.messages = Arc::new(VecDeque::new());
                     self.snapshot.chat_status = pb::ChatStatus::default();
+                    self.snapshot.history_limited = false;
                 } else if s.all_members == old.all_members && s.all_channels == old.all_channels {
                     let channel = self.snapshot.channel();
                     let events = Arc::make_mut(&mut self.snapshot.events);
@@ -782,15 +877,7 @@ impl Driver {
                 if m.epoch != self.snapshot.state.epoch {
                     return Ok(());
                 }
-                if m.channel != self.snapshot.channel()
-                    || m.sequence == 0
-                    || m.timestamp <= 0
-                    || m.author_uid.len() != 64
-                    || !m.author_uid.bytes().all(|b| b.is_ascii_hexdigit())
-                    || m.text.len() > 8192
-                    || m.nickname.len() > 120
-                    || m.client_id.len() > 128
-                {
+                if !valid_message(&m, &self.snapshot) {
                     return Err(Error::InvalidState);
                 }
                 let messages = Arc::make_mut(&mut self.snapshot.messages);
@@ -806,6 +893,7 @@ impl Driver {
                 while messages.len() > 500 || size > 512 * 1024 {
                     if let Some(m) = messages.pop_front() {
                         size -= m.text.len() + m.nickname.len();
+                        self.snapshot.history_limited = true;
                     }
                 }
                 self.publish();
@@ -822,6 +910,20 @@ impl Driver {
                 {
                     self.snapshot.chat_status = status;
                     self.publish();
+                }
+            }
+            pb::Kind::ChatPage => {
+                let page =
+                    pb::ChatPage::decode(f.body.as_slice()).map_err(|_| Error::InvalidState)?;
+                let matches = self.pending.as_ref().is_some_and(|pending| pending.id == f.request
+                    && matches!(&pending.request.command, Command::ChatHistory { channel, epoch, generation, before }
+                        if page.channel == u32::from(*channel) && page.epoch == *epoch
+                        && page.generation == *generation && page.before == *before));
+                if matches {
+                    apply_history(&mut self.snapshot, page)?;
+                    self.publish();
+                    self.pending.as_mut().unwrap().code = Some(0);
+                    self.finish_reply();
                 }
             }
             _ => return Err(Error::InvalidState),
@@ -867,6 +969,115 @@ impl Driver {
 #[cfg(test)]
 mod moderation_tests {
     use super::*;
+
+    fn history_fixture() -> (Snapshot, pb::ChatPage) {
+        let message = |sequence| pb::Message {
+            channel: 1,
+            epoch: 2,
+            sequence,
+            timestamp: 1,
+            author_uid: "a".repeat(64),
+            text: sequence.to_string(),
+            history: true,
+            ..Default::default()
+        };
+        let snapshot = Snapshot {
+            state: Arc::new(pb::State {
+                epoch: 2,
+                self_: 1,
+                members: vec![pb::Member {
+                    id: 1,
+                    channel: 1,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            messages: Arc::new((21..=40).map(message).collect()),
+            chat_status: pb::ChatStatus {
+                channel: 1,
+                epoch: 2,
+                generation: 3,
+                status: 1,
+                before: 21,
+                has_more: true,
+            },
+            history_limited: false,
+            closed: None,
+            events: Arc::new(VecDeque::new()),
+        };
+        let page = pb::ChatPage {
+            channel: 1,
+            epoch: 2,
+            generation: 3,
+            before: 21,
+            messages: (1..=20).map(message).collect(),
+            next_before: 1,
+            has_more: false,
+        };
+        (snapshot, page)
+    }
+
+    #[test]
+    fn history_is_ordered_scoped_and_cannot_evict_itself() {
+        let (mut snapshot, page) = history_fixture();
+        for (epoch, generation, before) in [(1, 3, 21), (2, 2, 21), (2, 3, 20)] {
+            let mut stale = page.clone();
+            stale.epoch = epoch;
+            stale.generation = generation;
+            stale.before = before;
+            apply_history(&mut snapshot, stale).unwrap();
+            assert_eq!(snapshot.messages.len(), 20);
+        }
+        apply_history(&mut snapshot, page.clone()).unwrap();
+        assert_eq!(
+            snapshot
+                .messages
+                .iter()
+                .map(|m| m.sequence)
+                .collect::<Vec<_>>(),
+            (1..=40).collect::<Vec<_>>()
+        );
+        assert!(!snapshot.chat_status.has_more);
+        apply_history(&mut snapshot, page).unwrap();
+        assert_eq!(snapshot.messages.len(), 40);
+
+        let (mut snapshot, mut page) = history_fixture();
+        let mut live = snapshot.messages.back().unwrap().clone();
+        live.sequence = 41;
+        live.history = false;
+        Arc::make_mut(&mut snapshot.messages).push_back(live);
+        apply_history(&mut snapshot, page.clone()).unwrap();
+        assert_eq!(snapshot.messages.back().unwrap().sequence, 41);
+        assert!(!snapshot.messages.back().unwrap().history);
+
+        let (mut snapshot, _) = history_fixture();
+        Arc::make_mut(&mut snapshot.messages)
+            .iter_mut()
+            .for_each(|m| m.text = "x".repeat(25 * 1024));
+        page.messages
+            .iter_mut()
+            .for_each(|m| m.text = "y".repeat(2048));
+        apply_history(&mut snapshot, page).unwrap();
+        assert!(snapshot.history_limited);
+        assert_eq!(snapshot.messages.len(), 20);
+        assert_eq!(snapshot.chat_status.before, 21);
+        assert_eq!(snapshot.chat_status.status, 1);
+    }
+
+    #[test]
+    fn invalid_history_pages_fail_before_mutating_messages() {
+        let (mut snapshot, mut page) = history_fixture();
+        page.messages[0].channel = 2;
+        assert_eq!(apply_history(&mut snapshot, page), Err(Error::InvalidState));
+        assert_eq!(snapshot.messages.len(), 20);
+        let (_, mut page) = history_fixture();
+        page.messages.reverse();
+        assert_eq!(apply_history(&mut snapshot, page), Err(Error::InvalidState));
+        let (_, mut page) = history_fixture();
+        page.messages.clear();
+        page.has_more = true;
+        assert_eq!(apply_history(&mut snapshot, page), Err(Error::InvalidState));
+    }
 
     #[test]
     fn account_forms_report_input_rules_before_admission() {

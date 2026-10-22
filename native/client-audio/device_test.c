@@ -38,6 +38,35 @@ int main(void) {
     for(int i=0;i<RA_FRAME*2;i++)assert(out[i]==0.4f);
     data_callback(&fake,out,NULL,RA_FRAME);
     for(int i=0;i<RA_FRAME*2;i++)assert(out[i]==0.0f);
+    assert(ra_device_pending(d)==0);
+    for(int i=0;i<20;i++) {
+        assert(ra_device_write(d,stereo,0)==RA_FRAME);
+        assert(ra_device_write(d,stereo,0)==RA_FRAME);
+        assert(ra_device_pending(d)==RA_FRAME*2);
+        for(int part=0;part<4;part++) {
+            data_callback(&fake,out,NULL,RA_FRAME/2);
+            assert(ra_device_pending(d)==RA_FRAME*2-(part+1)*RA_FRAME/2);
+            for(int j=0;j<RA_FRAME;j++)assert(out[j]==0.4f);
+        }
+    }
+    /* Drop only the old route, including partial callbacks and ring wrap. New
+       route samples queued before the callback must survive the discard. */
+    for(int round=0;round<100;round++) {
+        assert(ra_device_write(d,stereo,0)==RA_FRAME);
+        assert(ra_device_write(d,stereo,1)==RA_FRAME);
+        data_callback(&fake,out,NULL,RA_FRAME/2);
+        ra_device_discard(d);
+        float fresh[RA_FRAME*2];
+        for(int i=0;i<RA_FRAME*2;i++)fresh[i]=0.1f;
+        assert(ra_device_write(d,fresh,0)==RA_FRAME);
+        assert(ra_device_write(d,fresh,1)==RA_FRAME);
+        data_callback(&fake,out,NULL,RA_FRAME);
+        for(int i=0;i<RA_FRAME*2;i++)assert(fabsf(out[i]-0.2f)<0.00001f);
+        assert(ra_device_pending(d)==0);
+        ra_device_discard(d);
+        data_callback(&fake,out,NULL,RA_FRAME);
+        for(int i=0;i<RA_FRAME*2;i++)assert(out[i]==0.0f);
+    }
     ra_device_close(d);
     return 0;
 }

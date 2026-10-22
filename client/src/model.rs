@@ -8,6 +8,10 @@ pub use crate::config::ServerProfile;
 pub struct Session {
     pub chat_state: String,
     pub chat_epoch: u32,
+    pub chat_generation: u64,
+    pub chat_before: u64,
+    pub chat_has_more: bool,
+    pub chat_history_limited: bool,
     pub protocol: String,
     pub id: String,
     #[serde(rename = "sendingMessageID")]
