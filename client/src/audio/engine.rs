@@ -58,6 +58,7 @@ trait Stream: Send {
     fn failed(&self) -> bool;
     fn pending(&self) -> usize;
     fn epoch(&mut self, epoch: u32);
+    fn discard(&mut self) {}
     fn capture(&mut self, out: &mut Captured) -> bool;
     fn reference(&mut self, out: &mut [f32; FRAME * 2]);
     fn write(&mut self, samples: &[f32; FRAME * 2], monitor: bool) -> Result<()>;
@@ -71,6 +72,9 @@ impl Stream for Device {
     }
     fn epoch(&mut self, epoch: u32) {
         Device::epoch(self, epoch)
+    }
+    fn discard(&mut self) {
+        Device::discard(self)
     }
     fn capture(&mut self, out: &mut Captured) -> bool {
         Device::capture(self, out)
@@ -494,10 +498,16 @@ impl Worker {
                         pipeline.config.muted = true;
                         self.state.config.muted = true;
                     }
-                    // Closing the old SPSC rings prevents buffered old-channel PCM
-                    // from reaching a new route. Only this worker touches them.
-                    self.device = None;
+                    if let Some(device) = &mut self.device {
+                        device.discard();
+                    }
                     self.transmitting = false;
+                }
+                if !pipeline.config.enabled
+                    || pipeline.config.deafened
+                    || (pipeline.route.channel == 0 && !self.monitor)
+                {
+                    self.device = None;
                 }
                 // A newer scope may supersede a slow device open. Retry on its
                 // next route update even when the pipeline already has that scope.
@@ -622,8 +632,11 @@ impl Worker {
             )?;
             self.state.input_level_db = level;
             if self.monitor {
-                let _gate = self.shared.gate.lock().map_err(|_| "音频状态不可用")?;
-                if self.shared.cancelled.load(Ordering::Acquire) {
+                let gate = self.shared.gate.lock().map_err(|_| "音频状态不可用")?;
+                if self.shared.cancelled.load(Ordering::Acquire)
+                    || !gate.route.same_scope(&pipeline.route)
+                    || gate.epoch != epoch
+                {
                     return Ok(());
                 }
                 let stereo = std::array::from_fn(|i| captured.samples[i / 2]);
@@ -662,8 +675,10 @@ impl Worker {
             }
             let mut out = [0.0; FRAME * 2];
             pipeline.render(now, &mut out)?;
-            let _gate = self.shared.gate.lock().map_err(|_| "音频状态不可用")?;
-            if !self.shared.cancelled.load(Ordering::Acquire) {
+            let gate = self.shared.gate.lock().map_err(|_| "音频状态不可用")?;
+            if !self.shared.cancelled.load(Ordering::Acquire)
+                && gate.route.same_scope(&pipeline.route)
+            {
                 device.write(&out, false)?;
             }
         }
@@ -1161,6 +1176,7 @@ mod tests {
     struct RouteProbe {
         epoch: AtomicU64,
         writes: AtomicUsize,
+        discards: AtomicUsize,
     }
     struct RouteStream(Arc<RouteProbe>);
     impl Stream for RouteStream {
@@ -1172,6 +1188,9 @@ mod tests {
         }
         fn epoch(&mut self, epoch: u32) {
             self.0.epoch.store(epoch.into(), Ordering::SeqCst);
+        }
+        fn discard(&mut self) {
+            self.0.discards.fetch_add(1, Ordering::SeqCst);
         }
         fn capture(&mut self, _: &mut Captured) -> bool {
             false
@@ -1185,7 +1204,7 @@ mod tests {
         }
     }
     #[tokio::test]
-    async fn resource_refresh_during_channel_or_identity_open_keeps_audio_alive() {
+    async fn channel_and_identity_refreshes_keep_the_same_audio_device() {
         async fn wait_for_audio(engine: &Engine, latest: &Mutex<Arc<RouteProbe>>) {
             tokio::time::timeout(Duration::from_secs(1), async {
                 loop {
@@ -1205,13 +1224,11 @@ mod tests {
             .await
             .expect("a refresh stranded the active route without a working audio device");
         }
-        for (channel, superseded) in [(1, false), (2, false), (2, true)] {
-            let (entered, ready) = oneshot::channel();
-            let mut entered = Some(entered);
-            let (release, wait) = mpsc::channel();
+        for channel in [1, 2] {
             let latest = Arc::new(Mutex::new(Arc::new(RouteProbe::default())));
             let current = latest.clone();
-            let mut opens = 0;
+            let opens = Arc::new(AtomicUsize::new(0));
+            let opened = opens.clone();
             let config = Config {
                 enabled: true,
                 muted: false,
@@ -1230,11 +1247,7 @@ mod tests {
                     assert_eq!(*config, expected);
                     let probe = Arc::new(RouteProbe::default());
                     *current.lock().unwrap() = probe.clone();
-                    opens += 1;
-                    if opens == 2 {
-                        let _ = entered.take().unwrap().send(());
-                        wait.recv().unwrap();
-                    }
+                    opened.fetch_add(1, Ordering::SeqCst);
                     Ok(Box::new(RouteStream(probe)))
                 }),
             )
@@ -1252,15 +1265,14 @@ mod tests {
                 .await
                 .unwrap();
             engine.handle.ptt(true).unwrap();
+            let original = latest.lock().unwrap().clone();
             let mut next = Route {
                 epoch: 2,
                 channel,
                 ..route
             };
             engine.handle.route(next.clone(), None).unwrap();
-            ready.await.unwrap();
-            let opening = latest.lock().unwrap().clone();
-            // A ChatStatus/resource snapshot while the native device is opening.
+            wait_for_audio(&engine, &latest).await;
             next.peers.insert(
                 2,
                 super::super::Peer {
@@ -1270,19 +1282,11 @@ mod tests {
                     muted: false,
                 },
             );
-            if superseded {
-                next.channel = 1;
-                next.epoch += 1;
-            }
             engine.handle.route(next.clone(), None).unwrap();
-            release.send(()).unwrap();
             wait_for_audio(&engine, &latest).await;
-            if superseded {
-                assert_eq!(opening.writes.load(Ordering::SeqCst), 0);
-                assert!(!Arc::ptr_eq(&opening, &latest.lock().unwrap()));
-            } else {
-                assert!(Arc::ptr_eq(&opening, &latest.lock().unwrap()));
-            }
+            assert!(Arc::ptr_eq(&original, &latest.lock().unwrap()));
+            assert_eq!(opens.load(Ordering::SeqCst), 1);
+            assert_eq!(original.discards.load(Ordering::SeqCst), 1);
             assert_eq!(engine.handle.state.borrow().config, config);
             assert!(!engine.handle.shared.gate.lock().unwrap().pressed);
             // A second transition returns to the first channel without toggling audio.
@@ -1290,6 +1294,8 @@ mod tests {
             next.epoch += 1;
             engine.handle.route(next, None).unwrap();
             wait_for_audio(&engine, &latest).await;
+            assert_eq!(opens.load(Ordering::SeqCst), 1);
+            assert_eq!(original.discards.load(Ordering::SeqCst), 2);
             // Reopening on the same route also needs the current capture epoch.
             engine
                 .handle
@@ -1304,11 +1310,20 @@ mod tests {
                 .unwrap();
             engine.handle.configure(config, false).await.unwrap();
             wait_for_audio(&engine, &latest).await;
+            assert_eq!(opens.load(Ordering::SeqCst), 2);
+            engine.handle.route(Route::default(), None).unwrap();
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while engine.handle.state.borrow().active {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .unwrap();
             engine.close().await.unwrap();
         }
     }
     #[tokio::test]
-    async fn stop_during_route_open_never_writes_late_audio() {
+    async fn stop_during_device_change_never_writes_late_audio() {
         let (entered, ready) = oneshot::channel();
         let mut entered = Some(entered);
         let (release, wait) = mpsc::channel();
@@ -1351,23 +1366,25 @@ mod tests {
             )
             .await
             .unwrap();
-        engine
-            .handle
-            .route(
-                Route {
-                    generation: 1,
-                    epoch: 2,
-                    channel: 2,
-                    ..Default::default()
-                },
-                None,
-            )
-            .unwrap();
+        let handle = engine.handle.clone();
+        let change = tokio::spawn(async move {
+            handle
+                .configure(
+                    Config {
+                        enabled: true,
+                        input_device_id: "replacement".into(),
+                        ..Default::default()
+                    },
+                    false,
+                )
+                .await
+        });
         ready.await.unwrap();
         engine.stop();
         let before = writes.load(Ordering::SeqCst);
         release.send(()).unwrap();
         engine.close().await.unwrap();
+        assert!(change.await.unwrap().is_err());
         assert_eq!(writes.load(Ordering::SeqCst), before);
     }
     #[tokio::test]

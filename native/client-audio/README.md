@@ -19,6 +19,11 @@ Playback refills follow the output ring's remaining sample count, not relative
 wake the worker; the 20ms timed wait is only a fallback for stopped callbacks.
 No high-resolution global timer, busy wait or new audio thread is required.
 
+Route changes publish a discard boundary for playback/monitor samples. Only the
+callback advances read cursors, dropping queued old-route PCM while preserving
+new-route writes. Capture epochs remain separate, so releasing PTT never flushes
+remote playback. Device handles and outgoing DSP survive in-session route changes.
+
 `device_test.c` checks callback/ring behavior without opening hardware, including
 partial output periods and ring wrap. Rust engine tests additionally simulate
 one/two remote speakers with 7/16/31ms worker wakes and continuous device consumption.

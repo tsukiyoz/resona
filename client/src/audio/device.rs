@@ -46,6 +46,7 @@ unsafe extern "C" {
     fn ra_device_failed(device: *mut c_void) -> c_int;
     fn ra_device_pending(device: *mut c_void) -> u32;
     fn ra_device_epoch(device: *mut c_void, epoch: u32);
+    fn ra_device_discard(device: *mut c_void);
     fn ra_device_capture(device: *mut c_void, out: *mut Captured) -> c_int;
     fn ra_device_reference(device: *mut c_void, out: *mut f32) -> u32;
     fn ra_device_write(device: *mut c_void, samples: *const f32, monitor: c_int) -> u32;
@@ -128,6 +129,9 @@ impl Device {
     }
     pub fn epoch(&mut self, epoch: u32) {
         unsafe { ra_device_epoch(self.handle.as_ptr(), epoch) };
+    }
+    pub fn discard(&mut self) {
+        unsafe { ra_device_discard(self.handle.as_ptr()) };
     }
     pub fn capture(&mut self, out: &mut Captured) -> bool {
         unsafe { ra_device_capture(self.handle.as_ptr(), out) != 0 }

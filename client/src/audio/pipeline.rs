@@ -297,21 +297,12 @@ impl Pipeline {
     }
     pub fn route(&mut self, route: Route) -> Result<bool> {
         let changed = !self.route.same_scope(&route);
-        let pre = if changed {
-            Some(
-                self.factory
-                    .build(&self.config.processing.preprocess, &["aec", "ans"])?,
-            )
-        } else {
-            None
-        };
         self.encoder.bitrate(if route.bitrate == 0 {
             48_000
         } else {
             route.bitrate
         })?;
-        if let Some(pre) = pre {
-            self.pre = pre;
+        if changed {
             self.speakers.clear();
             self.receivers.clear();
             self.speaking.clear();
