@@ -749,3 +749,18 @@ impl Driver {
         }
     }
 }
+
+#[cfg(test)]
+mod moderation_tests {
+    use super::*;
+
+    #[test]
+    fn explicit_membership_denials_never_trigger_reconnect() {
+        for (code, message) in [(3, "移出"), (4, "封禁"), (5, "人数已满")] {
+            let error = Error::Transport(noise::Error::RemoteClosed(code));
+            assert!(!error.retryable());
+            assert!(error.message().contains(message));
+        }
+        assert!(Error::Transport(noise::Error::RemoteClosed(0)).retryable());
+    }
+}

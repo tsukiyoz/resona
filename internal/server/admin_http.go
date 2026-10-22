@@ -3,10 +3,12 @@ package server
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"strings"
@@ -15,6 +17,9 @@ import (
 )
 
 const adminBase = "/api/admin/v1"
+
+//go:embed web/*
+var adminAssets embed.FS
 
 type adminSession struct {
 	Identity, Credential, CSRF string
@@ -31,6 +36,7 @@ type AdminConsole struct {
 	mu          sync.Mutex
 	sessions    map[string]adminSession
 	loginBucket bucket
+	requests    chan struct{}
 }
 
 func NewAdminConsole(s *Server, origin string) (*AdminConsole, error) {
@@ -42,13 +48,18 @@ func NewAdminConsole(s *Server, origin string) (*AdminConsole, error) {
 		return nil, errors.New("public admin origin requires HTTPS")
 	}
 	u.Path = ""
-	a := &AdminConsole{server: s, origin: u, mux: http.NewServeMux(), sessions: make(map[string]adminSession)}
+	a := &AdminConsole{server: s, origin: u, mux: http.NewServeMux(), sessions: make(map[string]adminSession), requests: make(chan struct{}, 32)}
 	a.mux.HandleFunc("POST "+adminBase+"/login", a.login)
 	a.mux.HandleFunc("POST "+adminBase+"/logout", a.logout)
 	a.mux.HandleFunc("GET "+adminBase+"/session", a.sessionInfo)
 	a.registerResources()
 	a.registerMembers()
 	a.mux.HandleFunc("PUT "+adminBase+"/settings", a.settings)
+	assets, _ := fs.Sub(adminAssets, "web")
+	a.mux.Handle("GET /admin/", http.StripPrefix("/admin/", http.FileServer(http.FS(assets))))
+	a.mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/admin/", http.StatusTemporaryRedirect)
+	})
 	return a, nil
 }
 
@@ -60,6 +71,15 @@ func (a *AdminConsole) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Host != a.origin.Host || (r.Method != "GET" && r.Header.Get("Origin") != a.origin.String()) {
 		adminError(w, http.StatusForbidden, "请求来源不受信任")
 		return
+	}
+	if strings.HasPrefix(r.URL.Path, adminBase) && r.URL.Path != adminBase+"/events" {
+		select {
+		case a.requests <- struct{}{}:
+			defer func() { <-a.requests }()
+		default:
+			adminError(w, 429, "管理请求过多，请稍后再试")
+			return
+		}
 	}
 	a.mux.ServeHTTP(w, r)
 }
@@ -127,16 +147,19 @@ func (a *AdminConsole) login(w http.ResponseWriter, r *http.Request) {
 			delete(a.sessions, key)
 		}
 	}
-	if len(a.sessions) >= 64 {
+	oldKey := ""
+	if old, err := r.Cookie("resona_admin"); err == nil {
+		oldKey = sessionKey(old.Value)
+	}
+	_, replacing := a.sessions[oldKey]
+	if len(a.sessions) >= 64 && !replacing {
 		a.mu.Unlock()
 		adminError(w, http.StatusServiceUnavailable, "管理会话已满，请稍后再试")
 		return
 	}
-	if old, err := r.Cookie("resona_admin"); err == nil {
-		if previous, ok := a.sessions[sessionKey(old.Value)]; ok {
-			close(previous.Done)
-		}
-		delete(a.sessions, sessionKey(old.Value))
+	if previous, ok := a.sessions[oldKey]; ok {
+		close(previous.Done)
+		delete(a.sessions, oldKey)
 	}
 	a.sessions[sessionKey(secret)] = session
 	a.mu.Unlock()

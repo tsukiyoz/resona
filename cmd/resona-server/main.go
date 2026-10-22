@@ -60,6 +60,8 @@ func newCommand() (*cobra.Command, error) {
 	chatMessages := flags.Int64("chat-max-messages", 200, "maximum retained messages per channel")
 	chatBytes := flags.Int64("chat-max-bytes", 64<<20, "maximum retained chat stream bytes across channels")
 	chatAge := flags.Duration("chat-max-age", 7*24*time.Hour, "maximum retained chat message age")
+	adminListen := flags.String("admin-listen", "", "optional HTTP management bind address (e.g. 127.0.0.1:9989)")
+	adminOrigin := flags.String("admin-origin", "", "browser origin; public origins require HTTPS (default: local listen address)")
 	adminIdentity := ""
 	adminLabel := "Web administration"
 	adminTTL := 30 * 24 * time.Hour
@@ -166,7 +168,7 @@ func newCommand() (*cobra.Command, error) {
 		slog.Info("server listening", "address", s.Addr().String(), "version", version.Current().String())
 		pub, _ := noiseudp.PublicKey(noiseKey)
 		slog.Info("server identity", "public_key", hex.EncodeToString(pub))
-		return s.Serve(cmd.Context())
+		return s.ServeWithAdmin(cmd.Context(), *adminListen, *adminOrigin)
 	}
 	root.RunE = func(cmd *cobra.Command, _ []string) error { return execute(cmd, "serve") }
 	serve := &cobra.Command{

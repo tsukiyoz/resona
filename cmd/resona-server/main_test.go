@@ -2,10 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	w "github.com/tsukiyoz/resona/internal/nativewire"
 
 	"github.com/tsukiyoz/resona/internal/server"
 )
@@ -22,6 +26,42 @@ func executeTest(t *testing.T, args ...string) (string, error) {
 	cmd.SetArgs(args)
 	err = cmd.Execute()
 	return out.String(), err
+}
+
+func TestOfflineAdminCredentialBindsExistingOwnerAndUsesAccessLock(t *testing.T) {
+	dir := t.TempDir()
+	store, err := server.OpenStore(server.ChatConfig{Directory: filepath.Join(dir, "chat")}, dir, []w.Channel{{ID: 1, Name: "Lobby"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, err := store.ProvisionOwnerClaim(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Claim(strings.Repeat("a", 64), claim); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+	out, err := executeTest(t, "--access-dir", dir, "admin", "token", "--label", "Laptop", "--expires", "24h")
+	if err != nil || len(strings.TrimSpace(out)) < 32 {
+		t.Fatal("credential provisioning failed", err)
+	}
+	store, err = server.OpenStore(server.ChatConfig{Directory: filepath.Join(dir, "chat")}, dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, _, err = store.IssueAdminCredential(context.Background(), strings.Repeat("b", 64), strings.Repeat("a", 64), "Invalid", time.Hour, 0); err == nil {
+		t.Fatal("member issued token")
+	}
+	lock, err := server.LockAccess(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if _, err = executeTest(t, "--access-dir", dir, "admin", "token"); err == nil {
+		t.Fatal("live store lock bypassed")
+	}
 }
 
 func TestCommandHelpVersionAndInvalidInputDoNotStartServer(t *testing.T) {

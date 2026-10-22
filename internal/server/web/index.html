@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Resona · 服务器管理</title>
+    <link rel="icon" href="logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="app.css" />
+    <script src="app.js" type="module"></script>
+  </head>
+  <body>
+    <section id="login-screen">
+      <form id="login-form" class="login-form">
+        <img
+          class="brand-logo"
+          src="logo.svg"
+          alt="Resona"
+          width="40"
+          height="40"
+        />
+        <h1>Resona</h1>
+        <p class="muted">服务器管理</p>
+        <label for="token">管理凭据</label>
+        <input
+          id="token"
+          name="token"
+          type="password"
+          required
+          autocomplete="off"
+          spellcheck="false"
+          maxlength="256"
+        />
+        <p id="login-error" role="alert"></p>
+        <button type="submit" class="primary">登录</button>
+      </form>
+    </section>
+    <div id="workspace" hidden>
+      <aside>
+        <div class="brand">
+          <img src="logo.svg" width="28" height="28" alt="" /><strong
+            >Resona</strong
+          ><span class="muted">管理</span>
+        </div>
+        <div class="server-label">
+          <span class="muted">当前服务器</span
+          ><strong id="server-name"></strong>
+        </div>
+        <nav aria-label="服务器管理">
+          <button data-view="channels">
+            <svg><use href="icons.svg#hash"></use></svg><span>频道</span>
+          </button>
+          <button data-view="members">
+            <svg><use href="icons.svg#users"></use></svg><span>在线成员</span
+            ><span id="member-count" class="count"></span>
+          </button>
+          <button data-view="access">
+            <svg><use href="icons.svg#shield"></use></svg
+            ><span>身份与权限</span>
+          </button>
+          <button data-view="settings">
+            <svg><use href="icons.svg#settings"></use></svg
+            ><span>服务器设置</span>
+          </button>
+        </nav>
+        <div class="sidebar-bottom"><span id="role-label"></span></div>
+      </aside>
+      <main>
+        <header>
+          <div>
+            <h1 id="view-title">频道</h1>
+            <p id="view-subtitle" class="muted"></p>
+          </div>
+          <div class="connection">
+            <span id="connection-status" role="status">正在连接</span
+            ><button id="refresh" class="icon" title="刷新" aria-label="刷新">
+              <svg><use href="icons.svg#refresh"></use></svg></button
+            ><button
+              id="logout"
+              class="icon"
+              title="退出登录"
+              aria-label="退出登录"
+            >
+              <svg><use href="icons.svg#logout"></use></svg>
+            </button>
+          </div>
+        </header>
+        <div id="notice" role="status" hidden></div>
+        <section id="view"></section>
+      </main>
+    </div>
+    <dialog id="editor">
+      <form id="editor-form">
+        <div class="dialog-heading">
+          <h2 id="editor-title"></h2>
+          <button
+            type="button"
+            class="icon"
+            id="close-editor"
+            aria-label="关闭"
+          >
+            <svg><use href="icons.svg#x"></use></svg>
+          </button>
+        </div>
+        <div id="editor-fields"></div>
+        <div id="editor-error" role="alert"></div>
+        <div id="conflict" hidden></div>
+        <footer>
+          <button
+            type="button"
+            class="icon"
+            id="editor-logout"
+            title="退出登录"
+            aria-label="退出登录"
+          >
+            <svg><use href="icons.svg#logout"></use></svg></button
+          ><button type="button" id="cancel-editor">取消</button
+          ><button type="submit" class="primary" id="save-editor">保存</button>
+        </footer>
+      </form>
+    </dialog>
+  </body>
+</html>

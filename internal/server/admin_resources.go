@@ -22,6 +22,13 @@ type AdminMember struct {
 	Muted    bool   `json:"muted"`
 }
 
+type AdminChannel struct {
+	ID          uint16 `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Bitrate     uint32 `json:"bitrate"`
+}
+
 type AdminSnapshot struct {
 	Revision       uint64            `json:"revision"`
 	Identity       string            `json:"identity"`
@@ -30,7 +37,7 @@ type AdminSnapshot struct {
 	Name           string            `json:"name"`
 	MaxClients     int               `json:"max_clients"`
 	DefaultChannel uint16            `json:"default_channel"`
-	Channels       []w.Channel       `json:"channels"`
+	Channels       []AdminChannel    `json:"channels"`
 	Members        []AdminMember     `json:"members"`
 	Owner          string            `json:"owner"`
 	Admins         []string          `json:"admins"`
@@ -43,7 +50,10 @@ func (s *Server) adminSnapshot(identity string) AdminSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r, revision := s.config.Store.state()
-	state := AdminSnapshot{Revision: revision, Identity: identity, Role: roleOf(r, identity), Name: s.config.Name, MaxClients: s.config.MaxClients, DefaultChannel: r.Channels.Default, Channels: r.Channels.Channels, Members: []AdminMember{}, Owner: r.Owner, Admins: r.Admins, Capabilities: make(map[string]bool)}
+	state := AdminSnapshot{Revision: revision, Identity: identity, Role: roleOf(r, identity), Name: s.config.Name, MaxClients: s.config.MaxClients, DefaultChannel: r.Channels.Default, Channels: []AdminChannel{}, Members: []AdminMember{}, Owner: r.Owner, Admins: r.Admins, Capabilities: make(map[string]bool)}
+	for _, ch := range r.Channels.Channels {
+		state.Channels = append(state.Channels, AdminChannel(ch))
+	}
 	state.Bans = r.Bans
 	state.Settings = r.Settings
 	if r.Settings != nil {
