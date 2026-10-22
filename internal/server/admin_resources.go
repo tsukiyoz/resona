@@ -35,6 +35,7 @@ type AdminSnapshot struct {
 	Owner          string            `json:"owner"`
 	Admins         []string          `json:"admins"`
 	Credentials    []AdminCredential `json:"credentials,omitempty"`
+	Bans           []Ban             `json:"bans"`
 }
 
 func (s *Server) adminSnapshot(identity string) AdminSnapshot {
@@ -42,10 +43,14 @@ func (s *Server) adminSnapshot(identity string) AdminSnapshot {
 	defer s.mu.Unlock()
 	r, revision := s.config.Store.state()
 	state := AdminSnapshot{Revision: revision, Identity: identity, Role: roleOf(r, identity), Name: s.config.Name, MaxClients: s.config.MaxClients, DefaultChannel: r.Channels.Default, Channels: r.Channels.Channels, Members: []AdminMember{}, Owner: r.Owner, Admins: r.Admins, Capabilities: make(map[string]bool)}
+	state.Bans = r.Bans
 	for _, object := range []string{"channels", "members", "roles", "settings", "tokens"} {
 		state.Capabilities[object] = authorized(r, identity, object, "write", "member")
 	}
 	for _, p := range s.peers {
+		if p.removed {
+			continue
+		}
 		state.Members = append(state.Members, AdminMember{ID: p.member.ID, Instance: p.member.Instance, Identity: p.identity, Nickname: p.member.Nickname, Channel: p.member.Channel, Role: roleOf(r, p.identity), Muted: p.member.Muted})
 	}
 	slices.SortFunc(state.Members, func(a, b AdminMember) int { return int(a.ID) - int(b.ID) })

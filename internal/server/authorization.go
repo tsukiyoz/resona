@@ -67,7 +67,7 @@ func roleOf(r resourceRecord, identity string) string {
 
 func authorized(r resourceRecord, identity, object, action, target string) bool {
 	e, err := authorization()
-	if err != nil || !validIdentity(identity) {
+	if err != nil || !validIdentity(identity) || isBanned(r, identity) {
 		return false
 	}
 	ok, err := e.Enforce(roleOf(r, identity), object, action, target)
@@ -91,6 +91,9 @@ func (s *Store) SetRole(ctx context.Context, actor, identity, role string, revis
 			return ErrInvalid
 		}
 		r.Admins = slices.DeleteFunc(r.Admins, func(id string) bool { return id == identity })
+		if role == "member" {
+			r.Credentials = slices.DeleteFunc(r.Credentials, func(c AdminCredential) bool { return c.Identity == identity })
+		}
 		if role == "admin" {
 			if len(r.Admins) >= 64 {
 				return ErrInvalid

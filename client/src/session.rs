@@ -57,6 +57,12 @@ impl Error {
     }
     pub fn message(&self) -> &'static str {
         match self {
+            Self::Transport(noise::Error::RemoteClosed(3)) => {
+                "你已被管理员移出服务器，可手动重新连接"
+            }
+            Self::Transport(noise::Error::RemoteClosed(4)) => {
+                "你的身份已被服务器封禁，请联系管理员"
+            }
             Self::AuthenticationRejected | Self::Transport(noise::Error::RemoteClosed(2)) => {
                 "服务器拒绝连接，请检查服务器密码"
             }

@@ -27,6 +27,7 @@ type resourceRecord struct {
 	Claim       claimSecret       `json:"claim"`
 	Admins      []string          `json:"admins,omitempty"`
 	Credentials []AdminCredential `json:"credentials,omitempty"`
+	Bans        []Ban             `json:"bans,omitempty"`
 }
 
 // Store owns one embedded broker shared by chat and durable management state.
@@ -115,6 +116,7 @@ func (s *Store) state() (resourceRecord, uint64) {
 	r.Channels.Channels = append([]w.Channel(nil), r.Channels.Channels...)
 	r.Admins = append([]string(nil), r.Admins...)
 	r.Credentials = append([]AdminCredential(nil), r.Credentials...)
+	r.Bans = append([]Ban(nil), r.Bans...)
 	return r, s.revision
 }
 
@@ -155,6 +157,16 @@ func decodeResources(data []byte) (resourceRecord, error) {
 			return r, ErrInvalid
 		}
 		seen[c.ID] = true
+	}
+	if len(r.Bans) > 256 {
+		return r, ErrInvalid
+	}
+	clear(seen)
+	for _, b := range r.Bans {
+		if !validIdentity(b.Identity) || b.Identity == r.Owner || seen[b.Identity] || b.Expires.IsZero() || (b.Reason != "" && !validName(b.Reason, 200)) {
+			return r, ErrInvalid
+		}
+		seen[b.Identity] = true
 	}
 	return r, nil
 }
@@ -241,6 +253,7 @@ func (s *Store) updateAtContext(parent context.Context, revision uint64, fn func
 		r.Channels.Channels = append([]w.Channel(nil), r.Channels.Channels...)
 		r.Admins = append([]string(nil), r.Admins...)
 		r.Credentials = append([]AdminCredential(nil), r.Credentials...)
+		r.Bans = append([]Ban(nil), r.Bans...)
 		before := r
 		before.Channels.Channels = append([]w.Channel(nil), r.Channels.Channels...)
 		if err = fn(&r); err != nil {
