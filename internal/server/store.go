@@ -21,11 +21,12 @@ const resourceKey = "state"
 // resourceRecord is one CAS transaction: claiming an owner consumes its claim,
 // and channel creation advances the non-reusable ID allocator in the same write.
 type resourceRecord struct {
-	Version  int           `json:"version"`
-	Channels channelRecord `json:"channels"`
-	Owner    string        `json:"owner,omitempty"`
-	Claim    claimSecret   `json:"claim"`
-	Admins   []string      `json:"admins,omitempty"`
+	Version     int               `json:"version"`
+	Channels    channelRecord     `json:"channels"`
+	Owner       string            `json:"owner,omitempty"`
+	Claim       claimSecret       `json:"claim"`
+	Admins      []string          `json:"admins,omitempty"`
+	Credentials []AdminCredential `json:"credentials,omitempty"`
 }
 
 // Store owns one embedded broker shared by chat and durable management state.
@@ -113,6 +114,7 @@ func (s *Store) state() (resourceRecord, uint64) {
 	r := s.record
 	r.Channels.Channels = append([]w.Channel(nil), r.Channels.Channels...)
 	r.Admins = append([]string(nil), r.Admins...)
+	r.Credentials = append([]AdminCredential(nil), r.Credentials...)
 	return r, s.revision
 }
 
@@ -143,6 +145,16 @@ func decodeResources(data []byte) (resourceRecord, error) {
 			return r, ErrInvalid
 		}
 		seen[id] = true
+	}
+	if len(r.Credentials) > 64 {
+		return r, ErrInvalid
+	}
+	clear(seen)
+	for _, c := range r.Credentials {
+		if len(c.ID) != 26 || seen[c.ID] || !validIdentity(c.Identity) || !validIdentity(c.Digest) || !validName(c.Label, 64) || c.Expires.IsZero() {
+			return r, ErrInvalid
+		}
+		seen[c.ID] = true
 	}
 	return r, nil
 }
@@ -228,6 +240,7 @@ func (s *Store) updateAtContext(parent context.Context, revision uint64, fn func
 		// The cached immutable slice must never alias the mutation draft.
 		r.Channels.Channels = append([]w.Channel(nil), r.Channels.Channels...)
 		r.Admins = append([]string(nil), r.Admins...)
+		r.Credentials = append([]AdminCredential(nil), r.Credentials...)
 		before := r
 		before.Channels.Channels = append([]w.Channel(nil), r.Channels.Channels...)
 		if err = fn(&r); err != nil {

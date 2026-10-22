@@ -27,6 +27,12 @@ func validIdentity(id string) bool {
 	return err == nil && len(data) == 32 && id == hex.EncodeToString(data)
 }
 
+func (s *Store) OwnerIdentity() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.record.Owner
+}
+
 // ProvisionOwnerClaim is an offline operation under LockAccess. Only the digest
 // and expiry are persisted. Replacing an unused claim never replaces an owner.
 func (s *Store) ProvisionOwnerClaim(replace bool) (string, error) {
