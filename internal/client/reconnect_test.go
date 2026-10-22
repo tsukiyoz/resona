@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/tsukiyoz/resona/internal/audio"
@@ -299,33 +300,85 @@ func waitConnectionState(t *testing.T, s *Service, predicate func(Session) bool)
 }
 
 func TestImmediateRetryRacingTimerDoesNotWakeTheNextAttempt(t *testing.T) {
-	var calls atomic.Int32
-	var update func(RemoteState)
-	s, _ := serviceWithProfile(t, connectorFunc(func(_ context.Context, _ ServerProfile, _ string, callback func(RemoteState)) (RemoteConnection, error) {
-		if calls.Add(1) == 1 {
-			update = callback
-			callback(RemoteState{ChannelID: "1"})
-			return &fakeConnection{}, nil
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		now := make(chan struct{}, 1)
+		woke := make(chan bool, 1)
+		admit := make(chan struct{})
+		done := make(chan struct{})
+		go func() {
+			woke <- waitConnectionRetry(ctx, time.Second, now)
+			<-admit
+			drainRetrySignal(now)
+			close(done)
+		}()
+		synctest.Wait()
+		synctest.Sleep(time.Second)
+		if !<-woke {
+			t.Fatal("retry timer did not wake the worker")
 		}
-		return nil, errors.New("temporary failure")
-	}))
-	s.reconnectDelay = 50 * time.Millisecond
-	defer s.Shutdown()
-	_, _ = s.ConnectServer("home", "")
-	waitForMode(t, s, "connected")
-	update(RemoteState{Closed: true, Retryable: true})
-	waitConnectionState(t, s, func(state Session) bool { return state.ConnectionWaiting })
-	// Hold admission past timer expiry, then enqueue the accepted click. The dial
-	// must satisfy both triggers even if the worker already selected the timer.
-	s.mu.Lock()
-	time.Sleep(75 * time.Millisecond)
-	s.reconnectNow <- struct{}{}
-	s.mu.Unlock()
-	waitConnectionState(t, s, func(state Session) bool { return state.ConnectionAttempt == 1 && state.ConnectionWaiting })
-	time.Sleep(10 * time.Millisecond)
-	if calls.Load() != 2 {
-		t.Fatalf("one click started an extra dial: %d", calls.Load())
-	}
+		// The timer has already won; a click accepted before admission must
+		// be consumed by the same attempt rather than wake the next one.
+		now <- struct{}{}
+		close(admit)
+		<-done
+		select {
+		case <-now:
+			t.Fatal("a click racing the timer survived admission")
+		default:
+		}
+	})
+}
+
+func TestImmediateRetryIsRejectedDuringDial(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var calls atomic.Int32
+		var update func(RemoteState)
+		finishDial := make(chan struct{})
+		s, _ := serviceWithProfile(t, connectorFunc(func(ctx context.Context, _ ServerProfile, _ string, callback func(RemoteState)) (RemoteConnection, error) {
+			if calls.Add(1) == 1 {
+				update = callback
+				callback(RemoteState{ChannelID: "1"})
+				return &fakeConnection{}, nil
+			}
+			select {
+			case <-finishDial:
+			case <-ctx.Done():
+			}
+			return nil, errors.New("temporary failure")
+		}))
+		s.reconnectDelay = time.Second
+		defer s.Shutdown()
+		_, _ = s.ConnectServer("home", "")
+		synctest.Wait()
+		before := s.GetSessionState()
+		if before.Mode != "connected" {
+			t.Fatalf("initial connection failed: %+v", before)
+		}
+		update(RemoteState{Closed: true, Retryable: true})
+		synctest.Wait()
+		if _, err := s.RetryConnection(before.ID); err != nil {
+			t.Fatal("retry while waiting was rejected", err)
+		}
+		synctest.Wait()
+		if calls.Load() != 2 || s.GetSessionState().ConnectionWaiting {
+			t.Fatal("immediate retry did not start one dial")
+		}
+		if _, err := s.RetryConnection(before.ID); err == nil {
+			t.Fatal("retry during an in-flight dial was accepted")
+		}
+		close(finishDial)
+		synctest.Wait()
+		synctest.Sleep(time.Second - time.Nanosecond)
+		if calls.Load() != 2 || !s.GetSessionState().ConnectionWaiting {
+			t.Fatal("a retry signal bypassed the next backoff")
+		}
+		synctest.Sleep(time.Nanosecond)
+		if calls.Load() != 3 {
+			t.Fatal("the next scheduled retry did not run")
+		}
+	})
 }
 
 func TestReconnectThreeFailuresAreVisibleAndImmediateRetryWakesOneWorker(t *testing.T) {

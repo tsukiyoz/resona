@@ -117,10 +117,6 @@ func (s *Service) startReconnectLocked(plan reconnectPlan, old RemoteConnection,
 			if err == nil && attemptCtx.Err() != nil {
 				err = attemptCtx.Err()
 			}
-			// A retry requested while this dial was in flight is already
-			// satisfied by it; dropping it here keeps one click from starting a
-			// second dial on the next iteration.
-			drainRetrySignal(now)
 			if err != nil {
 				stop()
 				if conn != nil {
