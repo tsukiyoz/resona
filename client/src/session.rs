@@ -193,10 +193,10 @@ impl AccountRequest {
             "change_password" => Some(self.new_password.as_str()),
             _ => None,
         };
-        if let Some(password) = password {
-            if !(8..=256).contains(&password.len()) || password.contains('\0') {
-                return Err("密码需为 8–256 字节（英文字母、数字和符号各占 1 字节）");
-            }
+        if let Some(password) = password
+            && (!(8..=256).contains(&password.len()) || password.contains('\0'))
+        {
+            return Err("密码需为 8–256 字节（英文字母、数字和符号各占 1 字节）");
         }
         if matches!(self.action.as_str(), "password" | "change_password")
             && (self.password.is_empty()
