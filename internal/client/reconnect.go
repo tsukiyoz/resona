@@ -92,10 +92,7 @@ func (s *Service) startReconnectLocked(plan reconnectPlan, old RemoteConnection,
 			s.state.Session.ConnectionAttempt = attempt + 1
 			s.state.Session.ConnectionWaiting = false
 			// A click racing the timer is satisfied by this dial, not the next one.
-			select {
-			case <-now:
-			default:
-			}
+			drainRetrySignal(now)
 			s.notifyChangedLocked()
 			s.mu.Unlock()
 			started := time.Now()
@@ -120,6 +117,10 @@ func (s *Service) startReconnectLocked(plan reconnectPlan, old RemoteConnection,
 			if err == nil && attemptCtx.Err() != nil {
 				err = attemptCtx.Err()
 			}
+			// A retry requested while this dial was in flight is already
+			// satisfied by it; dropping it here keeps one click from starting a
+			// second dial on the next iteration.
+			drainRetrySignal(now)
 			if err != nil {
 				stop()
 				if conn != nil {
@@ -224,6 +225,15 @@ func reconnectBackoff(attempt int) time.Duration {
 func retryableConnect(err error) bool {
 	var failure *ConnectFailure
 	return !errors.As(err, &failure) || failure.Retryable
+}
+
+// drainRetrySignal discards a pending immediate-retry request. The channel holds
+// at most one signal and retries are coalesced, so an empty channel is expected.
+func drainRetrySignal(now <-chan struct{}) {
+	select {
+	case <-now:
+	default:
+	}
 }
 
 func waitConnectionRetry(ctx context.Context, delay time.Duration, now <-chan struct{}) bool {
