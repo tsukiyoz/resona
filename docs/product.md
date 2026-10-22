@@ -228,3 +228,30 @@ Rust 单元和 Go 服务器互通回归覆盖以上核心路径；设备、Windo
 退出继续执行，即使本次事件不需要重绘。每批最多处理 64 个事件，避免持续积压占住
 输入处理。Windows 验收需分别覆盖主界面、设备试听、切换前后台和最小化，并在相同
 release 工作负载下采集 GPU；单元测试通过不代表实际 GPU 降幅已验证。
+# Server-local account acceptance (2026-10-22)
+
+- Guest connections remain available without registration. The account settings
+  page identifies the current server and separates device proof from account UID.
+- Password/token login and registration use masked secrets, bounded waiting,
+  duplicate-submit protection and explicit server-confirmed success. Account
+  actions do not apply unrelated audio/appearance drafts. No passwords or tokens
+  appear in workspace snapshots, diagnostics or ordinary config.
+- Invalid credentials preserve the current usable connection and show a safe
+  error. Leaving settings does not pretend a committed login was rolled back;
+  authoritative state continues to reconcile. Disconnect/exit cancels pending
+  work and stale completions cannot alter another connection.
+- Logout revokes the current account token, clears local account state and
+  disconnects. Reconnecting explicitly starts as guest. Password changes revoke
+  old tokens; successful current-session rotation is server-confirmed.
+- Transient network recovery retains account identity and restores the channel
+  with the microphone muted. Revoked credentials and replacement are terminal,
+  visible failures, never silent guest fallback or replacement/reconnect loops.
+- A valid new account admission atomically removes an older same-UID connection
+  from voice/control routing. Invalid or banned login never displaces it. The
+  older device explicitly reports that the account connected elsewhere.
+- Existing owner/admin migration requires proof of the original device key,
+  is one-time and restart-safe. Public UIDs cannot claim accounts. Backups cover
+  SQLite and KV together; failures preserve the original data.
+- Web administration accepts account passwords and retains existing web tokens.
+  Successful account authentication does not grant management permission by
+  itself; Casbin remains authoritative. Web sessions do not displace voice.
