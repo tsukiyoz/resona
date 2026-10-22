@@ -42,6 +42,7 @@ m = g(r.sub, p.sub) && r.obj == p.obj && r.act == p.act && (p.target == "*" || r
 		{"admin", "panel", "read", "*"},
 		{"admin", "channels", "write", "*"},
 		{"admin", "members", "write", "member"},
+		{"admin", "members", "write", "guest"},
 		{"owner", "members", "write", "admin"},
 		{"owner", "roles", "write", "*"},
 		{"owner", "settings", "write", "*"},
@@ -56,6 +57,9 @@ m = g(r.sub, p.sub) && r.obj == p.obj && r.act == p.act && (p.target == "*" || r
 })
 
 func roleOf(r resourceRecord, identity string) string {
+	if identity == "" {
+		return "guest"
+	}
 	if identity != "" && identity == r.Owner {
 		return "owner"
 	}

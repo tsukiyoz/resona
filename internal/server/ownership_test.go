@@ -133,10 +133,10 @@ func TestOwnerClaimDisabledAndPersistenceFailureDoesNotGrant(t *testing.T) {
 	}
 }
 
-func TestLegacyOwnerImportPreservesOriginalAndIgnoresConsumedClaim(t *testing.T) {
+func TestOldDeviceOwnerAndClaimsAreIgnored(t *testing.T) {
 	dir := t.TempDir()
 	id := strings.Repeat("a", 64)
-	data, _ := json.Marshal(ownerRecord{Version: 1, Identity: id})
+	data := []byte(`{"version":1,"identity":"` + id + `"}`)
 	if err := os.WriteFile(filepath.Join(dir, "owner.json"), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -144,15 +144,15 @@ func TestLegacyOwnerImportPreservesOriginalAndIgnoresConsumedClaim(t *testing.T)
 		t.Fatal(err)
 	}
 	s := testStore(t, dir)
-	if role, canClaim := s.Status(id); role != "owner" || canClaim {
-		t.Fatal("legacy owner not imported")
+	if role, canClaim := s.Status(""); role != "guest" || canClaim || s.OwnerIdentity() != "" {
+		t.Fatal("old device privilege inherited")
 	}
 	s.Close()
 	if err := os.WriteFile(filepath.Join(dir, "owner.json"), []byte("broken"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	reopened := testStore(t, dir)
-	if role, _ := reopened.Status(id); role != "owner" {
+	if role, _ := reopened.Status(""); role != "guest" || reopened.OwnerIdentity() != "" {
 		t.Fatal("stale legacy file overwrote KV")
 	}
 }

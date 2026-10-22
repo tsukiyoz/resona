@@ -40,18 +40,21 @@ func TestOwnerClaimAndPersistentIdentityAcrossServerRestart(t *testing.T) {
 		}
 		a, oa := connect(p)
 		uid := oa.snapshot().IdentityUID
-		if len(uid) != 64 || oa.snapshot().ServerRole != "member" || !oa.snapshot().CanClaimOwner {
+		if len(uid) != 64 || oa.snapshot().ServerRole != "guest" || oa.snapshot().CanClaimOwner {
 			t.Fatal("incorrect initial identity state")
 		}
 		if a.ClaimOwner(context.Background(), strings.Repeat("0", 64)) == nil {
 			t.Fatal("wrong code accepted")
+		}
+		if err := a.command(context.Background(), w.AccountKind, w.AccountCommand{Action: "register", Username: "owner", Password: "test-account-password"}); err != nil {
+			t.Fatal(err)
 		}
 		if err := a.ClaimOwner(context.Background(), token); err != nil {
 			t.Fatal(err)
 		}
 		eventually(t, func() bool { return oa.snapshot().ServerRole == "owner" && !oa.snapshot().CanClaimOwner })
 		b, ob := connectTest(t, p)
-		if ob.snapshot().IdentityUID == uid || ob.snapshot().ServerRole != "member" || ob.snapshot().CanClaimOwner {
+		if ob.snapshot().IdentityUID == uid || ob.snapshot().ServerRole != "guest" || ob.snapshot().CanClaimOwner {
 			t.Fatal("nickname inherited ownership")
 		}
 		if b.ClaimOwner(context.Background(), token) == nil {
@@ -65,7 +68,13 @@ func TestOwnerClaimAndPersistentIdentityAcrossServerRestart(t *testing.T) {
 		}
 		owner = openTestResources(t, dir)
 		p, _, _ = startServerOwned(t, owner)
-		_, again := connect(p)
+		reconnected, again := connect(p)
+		if again.snapshot().ServerRole != "guest" {
+			t.Fatal("device inherited account")
+		}
+		if err := reconnected.command(context.Background(), w.AccountKind, w.AccountCommand{Action: "password", Username: "owner", Password: "test-account-password"}); err != nil {
+			t.Fatal(err)
+		}
 		if again.snapshot().IdentityUID != uid || again.snapshot().ServerRole != "owner" || again.snapshot().CanClaimOwner {
 			t.Fatal("restart lost ownership")
 		}

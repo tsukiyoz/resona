@@ -78,31 +78,24 @@ func TestAccountsPasswordTokenRestartAndRevocation(t *testing.T) {
 	}
 }
 
-func TestLegacyPrivilegesCanOnlyBeAdoptedOnceByTheirDevice(t *testing.T) {
+func TestAccountUIDsAndPasswordSaltsAreIndependent(t *testing.T) {
 	ctx := context.Background()
 	s, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	device := strings.Repeat("a", 64)
-	if err = s.ImportLegacy(ctx, []string{device}); err != nil {
+	owner, err := s.Register(ctx, "owner", testPassword, "玩家")
+	if err != nil {
 		t.Fatal(err)
 	}
-	other, err := s.Register(ctx, "stranger", testPassword, strings.Repeat("b", 64))
-	if err != nil || other.UID == device {
-		t.Fatal("a different device adopted the reserved owner", err)
-	}
-	owner, err := s.Register(ctx, "owner", testPassword, device)
-	if err != nil || owner.UID != device {
-		t.Fatal("the legacy owner could not preserve its stable role UID", err)
-	}
-	if err = s.ImportLegacy(ctx, []string{device}); err != nil {
-		t.Fatal(err)
-	}
-	second, err := s.Register(ctx, "second", testPassword, device)
+	second, err := s.Register(ctx, "second", testPassword, "玩家")
 	if err != nil || second.UID == owner.UID {
-		t.Fatal("legacy device proof was reused to take an initialized account", err)
+		t.Fatal("accounts did not receive independent stable UIDs", err)
+	}
+	updated, err := s.UpdateProfile(ctx, owner, "新昵称")
+	if err != nil || updated.UID != owner.UID || updated.Nickname != "新昵称" {
+		t.Fatal("profile update changed identity", err)
 	}
 	var hashes []string
 	for _, uid := range []string{owner.UID, second.UID} {

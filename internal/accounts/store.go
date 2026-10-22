@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/crypto/argon2"
@@ -34,6 +35,7 @@ const tokenLifetime = 30 * 24 * time.Hour
 type Account struct {
 	UID      string `json:"uid"`
 	Username string `json:"username"`
+	Nickname string `json:"nickname"`
 	Version  uint64 `json:"-"`
 }
 
@@ -42,6 +44,7 @@ type Account struct {
 type Proof struct {
 	Account
 	TokenID string
+	Expires time.Time
 }
 
 type Store struct {
@@ -104,9 +107,9 @@ func Open(directory string) (_ *Store, err error) {
 		_, err = db.ExecContext(ctx, `BEGIN IMMEDIATE;
 CREATE TABLE accounts (
  uid TEXT PRIMARY KEY CHECK(length(uid)=64),
- username TEXT UNIQUE,
+ username TEXT NOT NULL UNIQUE,
  password_hash TEXT NOT NULL DEFAULT '',
- legacy_device TEXT UNIQUE,
+ nickname TEXT NOT NULL DEFAULT '',
  version INTEGER NOT NULL DEFAULT 1 CHECK(version>0),
  created INTEGER NOT NULL
 );
@@ -115,7 +118,6 @@ CREATE TABLE tokens (
  digest TEXT UNIQUE NOT NULL, expires INTEGER NOT NULL, version INTEGER NOT NULL
 );
 CREATE INDEX tokens_account ON tokens(uid);
-CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 PRAGMA user_version=1;
 COMMIT;`)
 		if err != nil {
@@ -127,36 +129,6 @@ COMMIT;`)
 }
 
 func (s *Store) Close() error { return s.db.Close() }
-
-// ImportLegacy reserves existing privileged UIDs exactly once. Only the device
-// proving the old key can set the first password; public UIDs are not credentials.
-func (s *Store) ImportLegacy(ctx context.Context, identities []string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	var done string
-	err = tx.QueryRowContext(ctx, "SELECT value FROM metadata WHERE key='legacy_imported'").Scan(&done)
-	if err == nil {
-		return nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	for _, uid := range identities {
-		if len(uid) != 64 {
-			return ErrInvalid
-		}
-		if _, err = tx.ExecContext(ctx, "INSERT OR IGNORE INTO accounts(uid,legacy_device,created) VALUES(?,?,?)", uid, uid, time.Now().Unix()); err != nil {
-			return err
-		}
-	}
-	if _, err = tx.ExecContext(ctx, "INSERT INTO metadata VALUES('legacy_imported','1')"); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
 
 func canonicalName(name string) (string, bool) {
 	name = strings.ToLower(name)
@@ -214,9 +186,9 @@ func passwordMatches(encoded, password string) bool {
 	return subtle.ConstantTimeCompare(got, want) == 1
 }
 
-func (s *Store) Register(ctx context.Context, name, password, device string) (Account, error) {
+func (s *Store) Register(ctx context.Context, name, password, nickname string) (Account, error) {
 	name, ok := canonicalName(name)
-	if !ok || !validPassword(password) {
+	if !ok || !validPassword(password) || !validNickname(nickname) {
 		return Account{}, ErrInvalid
 	}
 	release, err := s.hashSlot(ctx)
@@ -237,21 +209,21 @@ func (s *Store) Register(ctx context.Context, name, password, device string) (Ac
 	if existing != 0 {
 		return Account{}, ErrExists
 	}
-	var uid string
-	err = tx.QueryRowContext(ctx, "SELECT uid FROM accounts WHERE legacy_device=? AND username IS NULL", device).Scan(&uid)
-	if err == nil {
-		_, err = tx.ExecContext(ctx, "UPDATE accounts SET username=?,password_hash=?,legacy_device=NULL WHERE uid=? AND username IS NULL", name, hash, uid)
-	} else if errors.Is(err, sql.ErrNoRows) {
-		uid = hex.EncodeToString(randomBytes(32))
-		_, err = tx.ExecContext(ctx, "INSERT INTO accounts(uid,username,password_hash,created) VALUES(?,?,?,?)", uid, name, hash, time.Now().Unix())
+	if err = tx.QueryRowContext(ctx, "SELECT count(*) FROM accounts").Scan(&existing); err != nil {
+		return Account{}, err
 	}
+	if existing >= 10000 {
+		return Account{}, ErrBusy
+	}
+	uid := hex.EncodeToString(randomBytes(32))
+	_, err = tx.ExecContext(ctx, "INSERT INTO accounts(uid,username,password_hash,nickname,created) VALUES(?,?,?,?,?)", uid, name, hash, nickname, time.Now().Unix())
 	if err != nil {
 		return Account{}, err
 	}
 	if err = tx.Commit(); err != nil {
 		return Account{}, err
 	}
-	return Account{UID: uid, Username: name, Version: 1}, nil
+	return Account{UID: uid, Username: name, Nickname: nickname, Version: 1}, nil
 }
 
 func randomBytes(size int) []byte {
@@ -274,7 +246,7 @@ func (s *Store) Password(ctx context.Context, name, password string) (Account, e
 	defer release()
 	var a Account
 	var hash string
-	err = s.db.QueryRowContext(ctx, "SELECT uid,username,password_hash,version FROM accounts WHERE username=?", name).Scan(&a.UID, &a.Username, &hash, &a.Version)
+	err = s.db.QueryRowContext(ctx, "SELECT uid,username,nickname,password_hash,version FROM accounts WHERE username=?", name).Scan(&a.UID, &a.Username, &a.Nickname, &hash, &a.Version)
 	if errors.Is(err, sql.ErrNoRows) {
 		hash = s.dummy
 	} else if err != nil {
@@ -295,6 +267,8 @@ func tokenDigest(secret string) string {
 	return hex.EncodeToString(hash[:])
 }
 
+// Issue rotates the account's sole native-session credential. This also revokes
+// recovery by an old device whose transport disappeared before replacement.
 func (s *Store) Issue(ctx context.Context, a Account) (Proof, string, error) {
 	secret := "ra1_" + rand.Text() + rand.Text()
 	id := rand.Text()
@@ -313,21 +287,18 @@ func (s *Store) Issue(ctx context.Context, a Account) (Proof, string, error) {
 	if version != a.Version {
 		return Proof{}, "", ErrCredentials
 	}
-	var count int
-	if err = tx.QueryRowContext(ctx, "SELECT count(*) FROM tokens WHERE uid=?", a.UID).Scan(&count); err != nil {
+	if _, err = tx.ExecContext(ctx, "DELETE FROM tokens WHERE uid=?", a.UID); err != nil {
 		return Proof{}, "", err
 	}
-	if count >= 16 {
-		return Proof{}, "", ErrBusy
-	}
-	_, err = tx.ExecContext(ctx, "INSERT INTO tokens(id,uid,digest,expires,version) VALUES(?,?,?,?,?)", id, a.UID, tokenDigest(secret), time.Now().Add(tokenLifetime).Unix(), a.Version)
+	expires := time.Now().Add(tokenLifetime)
+	_, err = tx.ExecContext(ctx, "INSERT INTO tokens(id,uid,digest,expires,version) VALUES(?,?,?,?,?)", id, a.UID, tokenDigest(secret), expires.Unix(), a.Version)
 	if err != nil {
 		return Proof{}, "", err
 	}
 	if err = tx.Commit(); err != nil {
 		return Proof{}, "", err
 	}
-	return Proof{Account: a, TokenID: id}, secret, nil
+	return Proof{Account: a, TokenID: id, Expires: expires}, secret, nil
 }
 
 func (s *Store) Token(ctx context.Context, secret string) (Proof, error) {
@@ -335,12 +306,14 @@ func (s *Store) Token(ctx context.Context, secret string) (Proof, error) {
 		return Proof{}, ErrCredentials
 	}
 	var p Proof
-	err := s.db.QueryRowContext(ctx, `SELECT a.uid,COALESCE(a.username,''),a.version,t.id
+	var expiry int64
+	err := s.db.QueryRowContext(ctx, `SELECT a.uid,a.username,a.nickname,a.version,t.id,t.expires
 FROM accounts a JOIN tokens t ON t.uid=a.uid
-WHERE t.digest=? AND t.expires>? AND t.version=a.version`, tokenDigest(secret), time.Now().Unix()).Scan(&p.UID, &p.Username, &p.Version, &p.TokenID)
+WHERE t.digest=? AND t.expires>? AND t.version=a.version`, tokenDigest(secret), time.Now().Unix()).Scan(&p.UID, &p.Username, &p.Nickname, &p.Version, &p.TokenID, &expiry)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Proof{}, ErrCredentials
 	}
+	p.Expires = time.Unix(expiry, 0)
 	return p, err
 }
 
@@ -361,9 +334,37 @@ func (s *Store) ChangePassword(ctx context.Context, a Account, old, password str
 		return Account{}, ErrInvalid
 	}
 	current, err := s.Password(ctx, a.Username, old)
-	if err != nil || current.UID != a.UID || current.Version != a.Version {
+	if err != nil {
+		return Account{}, err
+	}
+	if current.UID != a.UID || current.Version != a.Version {
 		return Account{}, ErrCredentials
 	}
+	return s.replacePassword(ctx, a, password)
+}
+
+// ResetPassword is for offline server-local recovery under the access lock.
+// It preserves the UID and revokes every account token and browser session.
+func (s *Store) ResetPassword(ctx context.Context, name, password string) (Account, error) {
+	name, ok := canonicalName(name)
+	if !ok || !validPassword(password) {
+		return Account{}, ErrInvalid
+	}
+	var uid string
+	if err := s.db.QueryRowContext(ctx, "SELECT uid FROM accounts WHERE username=?", name).Scan(&uid); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Account{}, ErrCredentials
+		}
+		return Account{}, err
+	}
+	a, err := s.Account(ctx, uid)
+	if err != nil {
+		return Account{}, err
+	}
+	return s.replacePassword(ctx, a, password)
+}
+
+func (s *Store) replacePassword(ctx context.Context, a Account, password string) (Account, error) {
 	release, err := s.hashSlot(ctx)
 	if err != nil {
 		return Account{}, err
@@ -395,9 +396,46 @@ func (s *Store) ChangePassword(ctx context.Context, a Account, old, password str
 
 func (s *Store) Account(ctx context.Context, uid string) (Account, error) {
 	var a Account
-	err := s.db.QueryRowContext(ctx, "SELECT uid,COALESCE(username,''),version FROM accounts WHERE uid=?", uid).Scan(&a.UID, &a.Username, &a.Version)
+	err := s.db.QueryRowContext(ctx, "SELECT uid,username,nickname,version FROM accounts WHERE uid=?", uid).Scan(&a.UID, &a.Username, &a.Nickname, &a.Version)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = fmt.Errorf("%w: account unavailable", ErrCredentials)
 	}
 	return a, err
+}
+
+func validNickname(nickname string) bool {
+	return strings.TrimSpace(nickname) != "" && utf8.ValidString(nickname) && utf8.RuneCountInString(nickname) <= 30 && strings.IndexFunc(nickname, unicode.IsControl) < 0
+}
+
+func (s *Store) UpdateProfile(ctx context.Context, a Account, nickname string) (Account, error) {
+	if !validNickname(nickname) {
+		return Account{}, ErrInvalid
+	}
+	result, err := s.db.ExecContext(ctx, "UPDATE accounts SET nickname=? WHERE uid=? AND version=?", nickname, a.UID, a.Version)
+	if err != nil {
+		return Account{}, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil || n != 1 {
+		return Account{}, ErrCredentials
+	}
+	a.Nickname = nickname
+	return a, nil
+}
+
+func (s *Store) List(ctx context.Context) ([]Account, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT uid,username,nickname,version FROM accounts ORDER BY username LIMIT 10000")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []Account{}
+	for rows.Next() {
+		var a Account
+		if err = rows.Scan(&a.UID, &a.Username, &a.Nickname, &a.Version); err != nil {
+			return nil, err
+		}
+		result = append(result, a)
+	}
+	return result, rows.Err()
 }

@@ -16,6 +16,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/tsukiyoz/resona/internal/accounts"
 	"github.com/tsukiyoz/resona/internal/nativeidentity"
 	w "github.com/tsukiyoz/resona/internal/nativewire"
 )
@@ -30,6 +31,8 @@ type Config struct {
 	MaxClients int
 }
 type Server struct {
+	accountGate       chan struct{}
+	accountBucket     bucket
 	chat              *chatStore
 	channelMu         sync.Mutex
 	deletingChannel   uint16
@@ -45,6 +48,9 @@ type Server struct {
 	pendingMaxClients int
 }
 type peer struct {
+	account        accounts.Proof
+	accountExpires time.Time
+	accountBucket  bucket
 	removed        bool
 	chatGeneration uint64
 	chatCancel     context.CancelFunc
@@ -132,7 +138,7 @@ func Listen(address string, cfg Config) (*Server, error) {
 		return nil, err
 	}
 	cfg.Channels = cfg.Store.snapshot().Channels.Channels
-	return &Server{listener: l, config: cfg, chat: cfg.Store.chat, defaultChannel: cfg.Store.snapshot().Channels.Default, peers: map[uint16]*peer{}}, nil
+	return &Server{listener: l, config: cfg, chat: cfg.Store.chat, defaultChannel: cfg.Store.snapshot().Channels.Default, peers: map[uint16]*peer{}, accountGate: make(chan struct{}, 1)}, nil
 }
 func (s *Server) Addr() net.Addr { return s.listener.Addr() }
 
@@ -275,13 +281,26 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 		if f.Request == 0 {
 			return
 		}
+		s.mu.Lock()
+		active := !p.removed && (p.account.UID == "" || time.Now().Before(p.accountExpires))
+		s.mu.Unlock()
+		if !active {
+			_ = c.CloseWithError(w.AccountRevoked, "account session ended")
+			return
+		}
+		if f.Kind == w.AccountKind {
+			if !s.accountCommand(p, f) {
+				return
+			}
+			continue
+		}
 		if f.Kind == w.WatchResourcesKind {
 			var watch w.WatchResources
 			if w.Decode(f, &watch) != nil || (watch.AllMembers && !watch.AllChannels) {
 				return
 			}
 			s.mu.Lock()
-			if p.commandBucket.take(10, 20) {
+			if !p.removed && p.commandBucket.take(10, 20) {
 				p.watch = watch
 				s.sendStateLocked(p, w.StateKind, true)
 				s.enqueueLocked(p, w.ReplyKind, f.Request, w.Reply{Code: w.OK})
@@ -309,7 +328,7 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 				continue
 			}
 			code := uint8(w.OK)
-			if s.config.Store.claim(c.Context(), p.identity, claim.Token) != nil {
+			if p.principal() == "" || s.config.Store.claim(c.Context(), p.principal(), claim.Token) != nil {
 				code = w.Rejected
 			}
 			s.mu.Lock()
@@ -327,6 +346,10 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 			continue
 		}
 		s.mu.Lock()
+		if p.removed {
+			s.mu.Unlock()
+			return
+		}
 		if !p.commandBucket.take(10, 20) {
 			s.enqueueLocked(p, w.ReplyKind, f.Request, w.Reply{Code: w.RateLimited})
 			s.mu.Unlock()
@@ -377,16 +400,21 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 
 func (s *Server) stateLocked(p *peer) w.State {
 	members := make([]w.Member, 0, len(s.peers))
+	resources := s.config.Store.snapshot()
 	for _, v := range s.peers {
 		if v.removed {
 			continue
 		}
 		if p.watch.AllMembers || v.member.Channel == p.member.Channel {
-			members = append(members, v.member)
+			member := v.member
+			member.AccountUID = v.principal()
+			member.ServerRole = roleOf(resources, v.principal())
+			members = append(members, member)
 		}
 	}
 	sort.Slice(members, func(i, j int) bool { return members[i].ID < members[j].ID })
-	role, canClaim := s.config.Store.Status(p.identity)
+	role, canClaim := s.config.Store.Status(p.principal())
+	canClaim = canClaim && p.principal() != ""
 	channels := s.config.Channels
 	if !p.watch.AllChannels {
 		channels = nil
@@ -396,8 +424,8 @@ func (s *Server) stateLocked(p *peer) w.State {
 			}
 		}
 	}
-	manage := s.config.Store.Allowed(p.identity, "channels", "write", "*")
-	return w.State{Name: s.config.Name, Self: p.member.ID, Epoch: p.epoch, Channels: channels, Members: members, IdentityUID: p.identity, ServerRole: role, CanClaimOwner: canClaim, CanManageChannels: manage, CanReorderChannels: manage, CanConfigureChannelAudio: manage, CanWatchResources: true, AllChannels: p.watch.AllChannels, AllMembers: p.watch.AllMembers, DefaultChannel: s.defaultChannel}
+	manage := s.config.Store.Allowed(p.principal(), "channels", "write", "*")
+	return w.State{Name: s.config.Name, Self: p.member.ID, Epoch: p.epoch, Channels: channels, Members: members, IdentityUID: p.identity, AccountUID: p.principal(), AccountName: p.account.Username, ServerRole: role, CanClaimOwner: canClaim, CanManageChannels: manage, CanReorderChannels: manage, CanConfigureChannelAudio: manage, CanWatchResources: true, AllChannels: p.watch.AllChannels, AllMembers: p.watch.AllMembers, DefaultChannel: s.defaultChannel}
 }
 
 // One shared KV informer feeds the existing per-session interest projection.
@@ -542,6 +570,11 @@ func (s *Server) voiceLoop(p *peer) {
 			continue
 		}
 		s.mu.Lock()
+		if p.principal() != "" && !at.Before(p.accountExpires) {
+			s.mu.Unlock()
+			_ = p.conn.CloseWithError(w.AccountRevoked, "account session expired")
+			return
+		}
 		if p.removed || v.Epoch != p.epoch || p.member.Muted || !p.voiceBucket.take(60, 10) {
 			s.mu.Unlock()
 			continue

@@ -28,6 +28,17 @@ enum Kind {
   KIND_CHAT_SYNC = 14;
   KIND_CHAT_STATUS = 15;
   KIND_REORDER_CHANNEL = 16;
+  KIND_ACCOUNT = 17;
+}
+// Sent only over the authenticated reliable control stream. No secret is part
+// of State, resource events, chat messages, or diagnostic exports.
+message AccountCommand {
+  string action = 1; // register, password, token, change_password, logout
+  string username = 2;
+  string password = 3;
+  string token = 4;
+  string new_password = 5;
+  string nickname = 6;
 }
 message Hello {
   string nickname = 1;
@@ -59,6 +70,8 @@ message Member {
   bool muted = 5;
   bool deafened = 6;
   uint32 epoch = 7;
+  string account_uid = 8;
+  string server_role = 9;
 }
 message State {
   string name = 1;
@@ -77,6 +90,8 @@ message State {
   bool all_members = 14;
   uint32 default_channel = 15;
   bool can_reorder_channels = 16;
+  string account_uid = 17;
+  string account_name = 18;
 }
 // VoiceState sets both flags; it is not a partial update. Missing flags mean false.
 message Command {
@@ -88,6 +103,7 @@ message Command {
 }
 message Reply {
   uint32 code = 1; // Application range: 0..255; unknown codes mean failure.
+  string account_token = 2; // Only returned once by a successful account command.
 }
 message Message {
   uint32 channel = 1;

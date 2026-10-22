@@ -249,9 +249,10 @@ release 工作负载下采集 GPU；单元测试通过不代表实际 GPU 降幅
 - A valid new account admission atomically removes an older same-UID connection
   from voice/control routing. Invalid or banned login never displaces it. The
   older device explicitly reports that the account connected elsewhere.
-- Existing owner/admin migration requires proof of the original device key,
-  is one-time and restart-safe. Public UIDs cannot claim accounts. Backups cover
-  SQLite and KV together; failures preserve the original data.
+- Previous device-bound owner/admin roles are intentionally discarded. Devices
+  enter as guests and register/login explicitly in Settings -> User. Nicknames
+  of logged-in accounts synchronize with the server; guest edits stay local.
+  Backups cover SQLite and KV together.
 - Web administration accepts account passwords and retains existing web tokens.
   Successful account authentication does not grant management permission by
   itself; Casbin remains authoritative. Web sessions do not displace voice.

@@ -41,7 +41,7 @@ func (s *Server) manageChannel(p *peer, kind uint8, id uint16, name, description
 	if p.conn != nil {
 		ctx = p.conn.Context()
 	}
-	return s.ManageChannel(ctx, p.identity, kind, id, name, description, audioBitrate...)
+	return s.ManageChannel(ctx, p.principal(), kind, id, name, description, audioBitrate...)
 }
 
 // ManageChannel is the shared authorized mutation boundary for native commands
@@ -224,7 +224,7 @@ func (s *Server) channelCommand(p *peer, f w.Frame) bool {
 	code := uint8(w.RateLimited)
 	if p.commandBucket.take(2, 4) {
 		if f.Kind == w.ReorderChannelKind {
-			code = s.ReorderChannel(p.conn.Context(), p.identity, id, beforeID)
+			code = s.ReorderChannel(p.conn.Context(), p.principal(), id, beforeID)
 		} else {
 			code = s.manageChannel(p, f.Kind, id, name, description, bitrate)
 		}

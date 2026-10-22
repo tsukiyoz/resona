@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/tsukiyoz/resona/internal/accounts"
 	w "github.com/tsukiyoz/resona/internal/nativewire"
 )
 
@@ -30,20 +32,21 @@ type AdminChannel struct {
 }
 
 type AdminSnapshot struct {
-	Revision       uint64            `json:"revision"`
-	Identity       string            `json:"identity"`
-	Role           string            `json:"role"`
-	Capabilities   map[string]bool   `json:"capabilities"`
-	Name           string            `json:"name"`
-	MaxClients     int               `json:"max_clients"`
-	DefaultChannel uint16            `json:"default_channel"`
-	Channels       []AdminChannel    `json:"channels"`
-	Members        []AdminMember     `json:"members"`
-	Owner          string            `json:"owner"`
-	Admins         []string          `json:"admins"`
-	Credentials    []AdminCredential `json:"credentials,omitempty"`
-	Bans           []Ban             `json:"bans"`
-	Settings       *ServerSettings   `json:"settings"`
+	Revision       uint64             `json:"revision"`
+	Identity       string             `json:"identity"`
+	Role           string             `json:"role"`
+	Capabilities   map[string]bool    `json:"capabilities"`
+	Name           string             `json:"name"`
+	MaxClients     int                `json:"max_clients"`
+	DefaultChannel uint16             `json:"default_channel"`
+	Channels       []AdminChannel     `json:"channels"`
+	Members        []AdminMember      `json:"members"`
+	Owner          string             `json:"owner"`
+	Admins         []string           `json:"admins"`
+	Credentials    []AdminCredential  `json:"credentials,omitempty"`
+	Bans           []Ban              `json:"bans"`
+	Settings       *ServerSettings    `json:"settings"`
+	Accounts       []accounts.Account `json:"accounts"`
 }
 
 func (s *Server) adminSnapshot(identity string) AdminSnapshot {
@@ -67,7 +70,11 @@ func (s *Server) adminSnapshot(identity string) AdminSnapshot {
 		if p.removed {
 			continue
 		}
-		state.Members = append(state.Members, AdminMember{ID: p.member.ID, Instance: p.member.Instance, Identity: p.identity, Nickname: p.member.Nickname, Channel: p.member.Channel, Role: roleOf(r, p.identity), Muted: p.member.Muted})
+		identity := p.principal()
+		if identity == "" {
+			identity = p.identity
+		}
+		state.Members = append(state.Members, AdminMember{ID: p.member.ID, Instance: p.member.Instance, Identity: identity, Nickname: p.member.Nickname, Channel: p.member.Channel, Role: roleOf(r, p.principal()), Muted: p.member.Muted})
 	}
 	slices.SortFunc(state.Members, func(a, b AdminMember) int { return int(a.ID) - int(b.ID) })
 	if state.Capabilities["tokens"] {
@@ -90,8 +97,14 @@ func (a *AdminConsole) registerResources() {
 
 func (a *AdminConsole) state(wr http.ResponseWriter, r *http.Request) {
 	if session, ok := a.authenticate(wr, r); ok {
-		adminJSON(wr, 200, a.server.adminSnapshot(session.Identity))
+		adminJSON(wr, 200, a.snapshot(r.Context(), session.Identity))
 	}
+}
+
+func (a *AdminConsole) snapshot(ctx context.Context, identity string) AdminSnapshot {
+	state := a.server.adminSnapshot(identity)
+	state.Accounts, _ = a.server.config.Store.accounts.List(ctx)
+	return state
 }
 
 // Register before reading the snapshot; coalescing wakeups always fetch current
@@ -129,7 +142,7 @@ func (a *AdminConsole) events(wr http.ResponseWriter, r *http.Request) {
 		}
 		return controller.Flush() == nil
 	}
-	if !write("state", s.adminSnapshot(session.Identity)) {
+	if !write("state", a.snapshot(r.Context(), session.Identity)) {
 		return
 	}
 	heartbeat := time.NewTicker(20 * time.Second)
@@ -147,15 +160,15 @@ func (a *AdminConsole) events(wr http.ResponseWriter, r *http.Request) {
 			write("expired", map[string]string{"error": "登录已过期"})
 			return
 		case <-wake:
-			if !s.config.Store.adminSessionValid(session.Identity, session.Credential) {
+			if !a.sessionValid(r.Context(), session) {
 				write("expired", map[string]string{"error": "权限或凭据已撤销"})
 				return
 			}
-			if !write("state", s.adminSnapshot(session.Identity)) {
+			if !write("state", a.snapshot(r.Context(), session.Identity)) {
 				return
 			}
 		case <-heartbeat.C:
-			if !s.config.Store.adminSessionValid(session.Identity, session.Credential) {
+			if !a.sessionValid(r.Context(), session) {
 				write("expired", map[string]string{"error": "权限或凭据已撤销"})
 				return
 			}

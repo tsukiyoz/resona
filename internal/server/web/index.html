@@ -21,16 +21,25 @@
         />
         <h1>Resona</h1>
         <p class="muted">服务器管理</p>
-        <label for="token">管理凭据</label>
+        <label for="login-method">登录方式</label>
+        <select id="login-method"><option value="password">账号密码</option><option value="token">Token</option></select>
+        <div id="password-login">
+          <label for="username">账号</label>
+          <input id="username" name="username" autocomplete="username" maxlength="32" required />
+          <label for="account-password">密码</label>
+          <input id="account-password" type="password" autocomplete="current-password" maxlength="256" required />
+        </div>
+        <div id="token-login" hidden>
+        <label for="token">登录 Token</label>
         <input
           id="token"
           name="token"
           type="password"
-          required
           autocomplete="off"
           spellcheck="false"
           maxlength="256"
         />
+        </div>
         <p id="login-error" role="alert"></p>
         <button type="submit" class="primary">登录</button>
       </form>

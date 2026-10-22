@@ -1,7 +1,7 @@
 # ADR-0035: Server-local accounts independent of device keys
 
 Date: 2026-10-22
-Status: Accepted; implementation in progress
+Status: Accepted
 
 ## Decision
 
@@ -23,19 +23,18 @@ constraint and server build tests, not package claims. Database schema version 1
 uses foreign keys, unique normalized names and token digests, WAL and FULL sync.
 Password work is limited to two concurrent hashes and never uses routing locks.
 
-## Existing identities
+## Fresh account identities
 
-On the first account-database initialization, reserve existing management UIDs
-and their original device UIDs in one SQLite transaction, with a durable import
-marker. Account registration by the cryptographically verified original device
-may initialize that reserved account exactly once, preserving existing KV role
-references. Other devices receive random UIDs. The legacy mapping is consumed
-in the same transaction as the first password. Existing web-only management
-tokens retain their existing purpose and are not silently account credentials.
+At the maintainer's request, no device identity adopts an account or privileges.
+This experimental upgrade clears previous device-bound owner/admin credentials,
+claims and bans once. All devices enter as guests; users explicitly register in
+Settings -> User. Every account gets an independent random UID. New owner claims
+can only be consumed by a logged-in account. Existing web-only management tokens
+are not account login credentials. Back up both SQLite and KV together.
 
-No roles are dual-written between SQL and KV. Existing assignments refer to the
-reserved account UID; role changes remain KV operations. Preserve and back up
-both data stores together. Do not restore one to an unrelated point in time.
+Account nicknames are server-authoritative and synchronize on login/profile
+updates; guest nicknames remain connection-local. Management identifies accounts
+by UID plus nickname. No preference cloud synchronization is implied.
 
 ## Session behavior
 
@@ -44,6 +43,12 @@ for that UID. Reject invalid/banned admission before replacement. Remove the old
 peer's voice/control authority before publishing the new principal, and close it
 with a dedicated terminal reason so it does not reconnect and replace the new
 device. Web management sessions do not replace voice connections.
+
+The account has one native recovery token at a time, rotated transactionally on
+each successful native authentication. Rotation invalidates even disconnected
+devices, not just peers currently in the routing map. An exported token is
+therefore rotated after native login too. Browser password sessions validate the
+account password version independently and do not mint a native token.
 
 Login is an in-session command. Only server-confirmed state denotes success.
 Logout revokes the current account credential and closes the connection; a new
