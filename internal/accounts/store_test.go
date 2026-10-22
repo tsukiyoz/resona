@@ -11,6 +11,40 @@ import (
 
 const testPassword = "correct horse battery staple"
 
+func TestEightBytePasswordAcrossAccountActions(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.Register(ctx, "alice", "short-7", "Alice"); !errors.Is(err, ErrInvalid) {
+		t.Fatal("seven-byte registration password accepted", err)
+	}
+	a, err := s.Register(ctx, "alice", "exactly8", "Alice")
+	if err != nil {
+		t.Fatal("eight-byte registration password rejected", err)
+	}
+	if _, err := s.Password(ctx, "alice", "exactly8"); err != nil {
+		t.Fatal("eight-byte password login failed", err)
+	}
+	if _, err := s.ChangePassword(ctx, a, "exactly8", "short-7"); !errors.Is(err, ErrInvalid) {
+		t.Fatal("seven-byte replacement password accepted", err)
+	}
+	if _, err := s.ChangePassword(ctx, a, "exactly8", "changed8"); err != nil {
+		t.Fatal("eight-byte replacement password rejected", err)
+	}
+	if _, err := s.ResetPassword(ctx, "alice", "short-7"); !errors.Is(err, ErrInvalid) {
+		t.Fatal("seven-byte reset password accepted", err)
+	}
+	if _, err := s.ResetPassword(ctx, "alice", "reset-p8"); err != nil {
+		t.Fatal("eight-byte reset password rejected", err)
+	}
+	if _, err := s.Password(ctx, "alice", "reset-p8"); err != nil {
+		t.Fatal("reset password login failed", err)
+	}
+}
+
 func TestAccountsPasswordTokenRestartAndRevocation(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

@@ -272,6 +272,7 @@ async fn accounts_keep_device_proofs_separate_and_revoke_replaced_recovery() {
             action: "register".into(),
             username: "alice".into(),
             password: Zeroizing::new("local-account-password".into()),
+            nickname: "中文玩家".into(),
             ..Default::default()
         },
     )
@@ -281,13 +282,26 @@ async fn accounts_keep_device_proofs_separate_and_revoke_replaced_recovery() {
     let uid = first.handle.state.borrow().state.account_uid.clone();
     assert_ne!(uid, device);
     assert_eq!(first.handle.state.borrow().state.identity_uid, device);
+    assert_eq!(
+        first
+            .handle
+            .state
+            .borrow()
+            .state
+            .members
+            .iter()
+            .find(|m| m.id == first.handle.state.borrow().state.self_)
+            .unwrap()
+            .nickname,
+        "中文玩家"
+    );
     let old = first.handle.account_token();
     assert!(!old.is_empty());
     account(
         &first.handle,
         AccountRequest {
             action: "update_profile".into(),
-            nickname: "Alice updated".into(),
+            nickname: "改名玩家🙂".into(),
             ..Default::default()
         },
     )
@@ -332,7 +346,7 @@ async fn accounts_keep_device_proofs_separate_and_revoke_replaced_recovery() {
             .find(|m| m.id == state.self_)
             .unwrap()
             .nickname,
-        "Alice updated"
+        "改名玩家🙂"
     );
     let third = app_session(address, key, "Another guest").await;
     assert!(matches!(
@@ -489,7 +503,7 @@ async fn channel_order_is_authoritative_and_does_not_change_default_or_voice_rou
 async fn application_session_watches_moves_chats_and_routes_voice() {
     use resona_client::session::Command as AppCommand;
     let (_peer, address, key) = start_peer(&["-server"]);
-    let mut a = app_session(address, key, "alpha").await;
+    let mut a = app_session(address, key, "中文玩家🙂").await;
     let mut b = app_session(address, key, "beta").await;
     let cancel = CancellationToken::new();
     wait_state(&mut a.handle, |s| {
@@ -530,7 +544,7 @@ async fn application_session_watches_moves_chats_and_routes_voice() {
         .command(
             AppCommand::Chat {
                 channel: 1,
-                text: "test message".into(),
+                text: "中文消息🙂 👍🏽 👩‍💻 🇨🇳 e\u{301}".into(),
                 id: "session-chat-1".into(),
             },
             Instant::now() + Duration::from_secs(3),
@@ -546,6 +560,36 @@ async fn application_session_watches_moves_chats_and_routes_voice() {
         s.messages.iter().any(|m| m.client_id == "session-chat-1")
     })
     .await;
+    let message = b
+        .handle
+        .state
+        .borrow()
+        .messages
+        .iter()
+        .find(|m| m.client_id == "session-chat-1")
+        .unwrap()
+        .clone();
+    assert_eq!(message.nickname, "中文玩家🙂");
+    assert_eq!(message.text, "中文消息🙂 👍🏽 👩‍💻 🇨🇳 e\u{301}");
+    // A late subscriber receives the same UTF-8 through persisted channel history.
+    let mut late_reader = app_session(address, key, "旁观者").await;
+    wait_state(&mut late_reader.handle, |s| {
+        s.messages.iter().any(|m| m.client_id == "session-chat-1")
+    })
+    .await;
+    assert_eq!(
+        late_reader
+            .handle
+            .state
+            .borrow()
+            .messages
+            .iter()
+            .find(|m| m.client_id == "session-chat-1")
+            .unwrap()
+            .text,
+        message.text
+    );
+    late_reader.close().await;
     a.handle
         .command(
             AppCommand::Move(2),

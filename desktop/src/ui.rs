@@ -20,6 +20,7 @@ use gpui_component::{
     checkbox::Checkbox,
     input::{Input, InputEvent, InputState},
     menu::{ContextMenuExt, DropdownMenu, PopupMenuItem},
+    popover::Popover,
     scroll::ScrollableElement,
     tooltip::Tooltip,
 };
@@ -47,7 +48,7 @@ const RED: u32 = 0xe28282;
 
 const INCOMING_BATCH: usize = 64;
 
-gpui::actions!(resona, [DismissModal, Quit]);
+gpui::actions!(resona, [DismissModal, DismissEmoji, Quit]);
 
 // Enable per-frame/event stderr tracing with RESONA_FRAME_TRACE.
 fn frame_trace() -> bool {
@@ -70,6 +71,7 @@ fn incoming_kind(incoming: &Incoming) -> &'static str {
 
 #[derive(Clone, Copy)]
 enum VoiceIcon {
+    Smile,
     Volume,
     Mic,
     MicOff,
@@ -80,6 +82,7 @@ enum VoiceIcon {
 impl IconNamed for VoiceIcon {
     fn path(self) -> SharedString {
         match self {
+            Self::Smile => "smile.svg",
             Self::Volume => "volume-2.svg",
             Self::Mic => "mic.svg",
             Self::MicOff => "mic-off.svg",
@@ -92,7 +95,7 @@ impl IconNamed for VoiceIcon {
 
 #[derive(Clone)]
 enum Pending {
-    Account(String),
+    Account(String, u64),
     AccountToken(String, u64),
     ChatRetry(String, String, u32),
     Update(&'static str),
@@ -281,6 +284,8 @@ pub struct ResonaApp {
     composer_height: f32,
     composer_drag: Option<(f32, f32)>,
     chat_collapsed: bool,
+    emoji_scope: Option<(String, u32)>,
+    emoji_focus: FocusHandle,
     chat_unread: bool,
     chat_follow_bottom: bool,
     chat_scroll: gpui::ScrollHandle,
@@ -407,12 +412,12 @@ impl ResonaApp {
             cx.new(|cx| InputState::new(window, cx).placeholder("3–32 位字母、数字、_ . -"));
         let account_password = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("密码，至少 12 字节")
+                .placeholder("密码，至少 8 字节")
                 .masked(true)
         });
         let account_new_password = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("新密码，至少 12 字节")
+                .placeholder("新密码，至少 8 字节")
                 .masked(true)
         });
         let account_nickname =
@@ -544,7 +549,9 @@ impl ResonaApp {
                     }
                     match this.modal.clone() {
                         Some(Modal::User) => this.submit_account(
-                            (*input == this.account_nickname).then_some("update_profile"),
+                            (*input == this.account_nickname
+                                && !this.workspace.session.account_uid.is_empty())
+                            .then_some("update_profile"),
                             window,
                             cx,
                         ),
@@ -607,6 +614,8 @@ impl ResonaApp {
             composer_height: 210.,
             composer_drag: None,
             chat_collapsed: false,
+            emoji_scope: None,
+            emoji_focus: cx.focus_handle(),
             chat_unread: false,
             chat_follow_bottom: true,
             chat_scroll: gpui::ScrollHandle::new(),
@@ -827,7 +836,7 @@ impl ResonaApp {
 
     fn request_failed(&mut self, pending: Pending, error: String) {
         match pending {
-            Pending::Account(session) | Pending::AccountToken(session, _) => {
+            Pending::Account(session, _) | Pending::AccountToken(session, _) => {
                 if session == self.workspace.session.id && matches!(self.modal, Some(Modal::User)) {
                     self.account_notice = error;
                 }
@@ -1009,17 +1018,21 @@ impl ResonaApp {
             Incoming::Response { id, result } => {
                 let pending = self.pending.remove(&id);
                 match (pending, result) {
-                    (Some(Pending::Account(session)), result) => {
+                    (Some(Pending::Account(session, revision)), result) => {
                         if session == self.workspace.session.id {
+                            let current = revision == self.account_revision
+                                && matches!(self.modal, Some(Modal::User))
+                                && !self.closing;
                             match result {
                                 Ok(value) => {
                                     self.apply_workspace(value, window, cx);
-                                    if matches!(self.modal, Some(Modal::User)) {
+                                    if current {
                                         self.account_notice = "操作已完成".into();
                                         self.account_mode = "password";
                                     }
                                 }
-                                Err(error) => self.account_notice = error,
+                                Err(error) if current => self.account_notice = error,
+                                Err(_) => {}
                             }
                         }
                     }
@@ -1520,6 +1533,7 @@ impl ResonaApp {
                 let new_message = workspace.messages.last().map(|m| &m.id)
                     != self.workspace.messages.last().map(|m| &m.id);
                 if changed_channel {
+                    self.emoji_scope = None;
                     self.chat_unread = false;
                     self.chat_follow_bottom = true;
                     self.chat_scroll = gpui::ScrollHandle::new();
@@ -2563,7 +2577,7 @@ impl ResonaApp {
             || self
                 .pending
                 .values()
-                .any(|p| matches!(p, Pending::Account(_) | Pending::AccountToken(..)))
+                .any(|p| matches!(p, Pending::Account(..) | Pending::AccountToken(..)))
         {
             return;
         }
@@ -2573,19 +2587,66 @@ impl ResonaApp {
         } else {
             self.account_mode
         });
-        let params = json!({"sessionID":self.workspace.session.id, "action":action,
-            "username": self.account_name.read(cx).value().to_string(),
-            "password": self.account_password.read(cx).unmask_value().to_string(),
-            "newPassword": self.account_new_password.read(cx).unmask_value().to_string(),
-            "token": self.account_token.read(cx).unmask_value().to_string(),
-            "nickname": self.account_nickname.read(cx).value().to_string()});
+        let command = resona_client::session::AccountRequest {
+            action: action.into(),
+            username: self.account_name.read(cx).value().to_string(),
+            password: self
+                .account_password
+                .read(cx)
+                .unmask_value()
+                .to_string()
+                .into(),
+            new_password: self
+                .account_new_password
+                .read(cx)
+                .unmask_value()
+                .to_string()
+                .into(),
+            token: self
+                .account_token
+                .read(cx)
+                .unmask_value()
+                .to_string()
+                .into(),
+            nickname: self.account_nickname.read(cx).value().to_string(),
+        };
+        if let Err(error) = command.validate() {
+            self.account_notice = error.into();
+            cx.notify();
+            return;
+        }
+        let params = json!({"sessionID":self.workspace.session.id, "action":command.action,
+            "username":command.username, "password":command.password.as_str(),
+            "newPassword":command.new_password.as_str(), "token":command.token.as_str(),
+            "nickname":command.nickname});
         self.clear_account_secrets(window, cx);
         self.account_notice.clear();
         self.request(
             "AccountCommand",
             params,
-            Pending::Account(self.workspace.session.id.clone()),
+            Pending::Account(self.workspace.session.id.clone(), self.account_revision),
         );
+        cx.notify();
+    }
+
+    fn set_account_mode(
+        &mut self,
+        mode: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.clear_account_secrets(window, cx);
+        self.account_revision = self.account_revision.wrapping_add(1);
+        self.account_mode = mode;
+        self.account_notice.clear();
+        let input = if mode == "token" {
+            &self.account_token
+        } else {
+            &self.account_name
+        };
+        input.update(cx, |input, cx| {
+            input.focus(window, cx);
+        });
         cx.notify();
     }
 
@@ -4210,8 +4271,8 @@ impl ResonaApp {
             .into_any_element()
     }
 
-    fn render_chat(&self, channel: &crate::model::Channel, view: &Entity<Self>) -> AnyElement {
-        let can_send = (self.workspace.session.mode == "preview" || self.workspace.connected())
+    fn chat_input_available(&self) -> bool {
+        (self.workspace.session.mode == "preview" || self.workspace.connected())
             && !self.resources_blocked()
             && self.workspace.session.switching_channel_id.is_empty()
             && self.workspace.session.sending_message_id.is_empty()
@@ -4219,7 +4280,171 @@ impl ResonaApp {
                 self.workspace.session.chat_state.as_str(),
                 "loading" | "failed"
             )
-            && !self.pending.values().any(|p| matches!(p, Pending::Send(_)));
+            && !self.pending.values().any(|p| matches!(p, Pending::Send(_)))
+    }
+
+    fn emoji_context(&self) -> Option<(String, u32)> {
+        (!self.closing
+            && self.modal.is_none()
+            && !self.chat_collapsed
+            && self.chat_input_available()
+            && visible_text_channel(&self.workspace, &self.selected_server).is_some())
+        .then(|| {
+            (
+                format!(
+                    "{}\0{}",
+                    self.workspace.session.id,
+                    draft_key(&self.workspace)
+                ),
+                self.workspace.session.chat_epoch,
+            )
+        })
+    }
+
+    fn render_emoji_picker(&self, view: &Entity<Self>) -> AnyElement {
+        let owner = view.clone();
+        let keyboard_owner = view.clone();
+        let content_owner = view.clone();
+        let content_focus = self.emoji_focus.clone();
+        Popover::new("chat-emoji-picker")
+            .anchor(gpui::Corner::BottomRight)
+            .track_focus(&self.emoji_focus)
+            .open(self.emoji_scope.is_some())
+            .on_open_change(move |open, window, cx| {
+                owner.update(cx, |this, cx| {
+                    let composing = this.chat_input.update(cx, |input, cx| {
+                        input.marked_text_range(window, cx).is_some()
+                    });
+                    this.emoji_scope = if *open && !composing {
+                        this.emoji_context()
+                    } else {
+                        None
+                    };
+                    cx.notify();
+                });
+            })
+            .trigger(
+                Button::new("choose-emoji")
+                    .icon(VoiceIcon::Smile)
+                    .text()
+                    .size(px(28.))
+                    .tooltip("表情")
+                    .disabled(!self.chat_input_available())
+                    .on_click(move |event, window, cx| {
+                        if matches!(event, gpui::ClickEvent::Keyboard(_)) {
+                            keyboard_owner.update(cx, |this, cx| {
+                                let composing = this.chat_input.update(cx, |input, cx| {
+                                    input.marked_text_range(window, cx).is_some()
+                                });
+                                if !composing {
+                                    this.emoji_scope = this.emoji_context();
+                                    if this.emoji_scope.is_some() {
+                                        this.emoji_focus.focus(window);
+                                    }
+                                }
+                                cx.notify();
+                            });
+                        }
+                    }),
+            )
+            .content(move |_, _, cx| {
+                let scope = content_owner.read(cx).emoji_scope.clone();
+                let groups: &[(&str, &[&str])] = &[
+                    (
+                        "表情",
+                        &[
+                            "😀", "😄", "😁", "😂", "🤣", "😊", "🥰", "😎", "🤔", "🫡", "😅", "😭",
+                            "🥺", "😤", "😱", "😴", "🤯", "🥳", "🤩", "😏", "🙃", "😇", "🤐", "🤗",
+                        ],
+                    ),
+                    (
+                        "手势",
+                        &[
+                            "👍", "👎", "👏", "🙌", "🤝", "🙏", "💪", "✌️", "👋", "👌", "🤞", "🤟",
+                            "🫶", "👀", "💯", "❤️",
+                        ],
+                    ),
+                    (
+                        "游戏与日常",
+                        &[
+                            "🎮", "🎯", "🏆", "🥇", "🔥", "⚡", "💥", "✨", "✅", "❌", "❓", "💤",
+                            "🎉", "🎵", "🎧", "🎤", "🚀", "🍻", "☕", "🍕", "🐱", "🐶", "🌙", "☀️",
+                        ],
+                    ),
+                ];
+                let escape_owner = content_owner.clone();
+                let contents = div().w(px(252.)).flex().flex_col().gap_3().children(
+                    groups.iter().enumerate().map(|(group, (name, emojis))| {
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(div().text_xs().text_color(rgb(MUTED)).child(*name))
+                            .children(emojis.chunks(8).enumerate().map(|(row, emojis)| {
+                                div().flex().gap_1().children(emojis.iter().enumerate().map(
+                                    |(col, emoji)| {
+                                        let emoji = *emoji;
+                                        let owner = content_owner.clone();
+                                        let scope = scope.clone();
+                                        Button::new(("emoji", group * 32 + row * 8 + col))
+                                            .label(emoji)
+                                            .ghost()
+                                            .w(px(28.))
+                                            .h(px(28.))
+                                            .p_0()
+                                            .text_size(px(20.))
+                                            .on_click(move |_, window, cx| {
+                                                owner.update(cx, |this, cx| {
+                                                    if scope.is_some()
+                                                        && scope == this.emoji_scope
+                                                        && scope == this.emoji_context()
+                                                    {
+                                                        this.chat_input.update(cx, |input, cx| {
+                                                            if input
+                                                                .marked_text_range(window, cx)
+                                                                .is_none()
+                                                            {
+                                                                input.replace(emoji, window, cx);
+                                                                input.focus(window, cx);
+                                                            }
+                                                        });
+                                                    }
+                                                    this.emoji_scope = None;
+                                                    cx.notify();
+                                                });
+                                            })
+                                    },
+                                ))
+                            }))
+                    }),
+                );
+                div()
+                    .id("emoji-scroll")
+                    .key_context("ResonaEmoji")
+                    .track_focus(&content_focus)
+                    .on_action(move |_: &DismissEmoji, window, cx| {
+                        escape_owner.update(cx, |this, cx| {
+                            if this.emoji_scope.is_some()
+                                && this.emoji_scope == this.emoji_context()
+                            {
+                                this.chat_input
+                                    .update(cx, |input, cx| input.focus(window, cx));
+                            }
+                            this.emoji_scope = None;
+                            cx.notify();
+                        });
+                        cx.stop_propagation();
+                    })
+                    .w(px(252.))
+                    .max_h(px(280.))
+                    .overflow_y_scrollbar()
+                    .child(contents)
+            })
+            .into_any_element()
+    }
+
+    fn render_chat(&self, channel: &crate::model::Channel, view: &Entity<Self>) -> AnyElement {
+        let can_send = self.chat_input_available();
         let toggle = view.clone();
         let latest = view.clone();
         let send = view.clone();
@@ -4575,7 +4800,7 @@ impl ResonaApp {
                                     .appearance(false)
                                     .w_full()
                                     .h_full()
-                                    .pr(px(44.))
+                                    .pr(px(80.))
                                     .disabled(!can_send),
                             )
                             .child(
@@ -4583,6 +4808,11 @@ impl ResonaApp {
                                     .absolute()
                                     .right(px(5.))
                                     .bottom(px(5.))
+                                    .occlude()
+                                    .flex()
+                                    .gap_1()
+                                    .child(self.render_emoji_picker(view))
+                                    .child(div()
                                     .size(px(28.))
                                     .rounded(px(5.))
                                     .border_1()
@@ -4600,7 +4830,7 @@ impl ResonaApp {
                                                     this.send_message(window, cx)
                                                 });
                                             }),
-                                    ),
+                                    )),
                             ),
                     )
             })
@@ -5448,9 +5678,11 @@ impl ResonaApp {
             || self.microphone_test.busy;
         let entity = view.clone();
         let mut content = div()
+            .w_full()
+            .min_w_0()
             .flex()
             .flex_col()
-            .gap_4()
+            .gap_6()
             .when(!self.capabilities.voice, |s| {
                 s.child(
                     div()
@@ -5541,6 +5773,8 @@ impl ResonaApp {
                 let entity = view.clone();
                 Button::new(SharedString::from(format!("activation-{mode}")))
                     .label(label)
+                    .compact()
+                    .outline()
                     .selected(self.editing_preferences().activation_mode == mode)
                     .disabled(preferences_disabled)
                     .on_click(move |_, _, cx| {
@@ -5553,14 +5787,11 @@ impl ResonaApp {
             content = content
                 .child(
                     div()
-                        .border_t_1()
-                        .border_color(rgb(LINE))
-                        .pt_3()
                         .flex()
                         .flex_col()
-                        .gap_2()
+                        .gap_3()
                         .child(div().text_xs().text_color(rgb(MUTED)).child("发言激活"))
-                        .child(div().flex().gap_2().children(mode_buttons)),
+                        .child(div().flex().flex_wrap().gap_2().children(mode_buttons)),
                 )
                 .when(self.editing_preferences().activation_mode == "ptt", |s| {
                     let status = if !self.hotkey_error.is_empty() {
@@ -5666,10 +5897,10 @@ impl ResonaApp {
                 div()
                     .border_t_1()
                     .border_color(rgb(LINE))
-                    .pt_3()
+                    .pt_4()
                     .flex()
                     .flex_col()
-                    .gap_3()
+                    .gap_4()
                     .child(div().text_sm().child("麦克风处理"))
                     .child(self.processor_selector(
                         "pre-aec",
@@ -5720,7 +5951,7 @@ impl ResonaApp {
                         div()
                             .border_t_1()
                             .border_color(rgb(LINE))
-                            .pt_3()
+                            .pt_4()
                             .text_sm()
                             .child("收听处理"),
                     )
@@ -5908,12 +6139,12 @@ impl ResonaApp {
             .flex()
             .flex_col()
             .child(
-                content
+                div()
+                    .id("audio-settings-scroll")
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scrollbar()
-                    .p_5()
-                    .pr_6(),
+                    .child(content.p_5().pr_6()),
             )
     }
 
@@ -6972,50 +7203,36 @@ impl ResonaApp {
                 let busy = self
                     .pending
                     .values()
-                    .any(|p| matches!(p, Pending::Account(_) | Pending::AccountToken(..)));
+                    .any(|p| matches!(p, Pending::Account(..) | Pending::AccountToken(..)));
                 let session = &self.workspace.session;
                 let mut page = div()
-                    .id("user-settings-scroll")
                     .w_full()
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scrollbar()
-                    .p_5()
+                    .max_w(px(400.))
+                    .min_w_0()
                     .flex()
                     .flex_col()
-                    .gap_4()
-                    .child(div().text_sm().child(if connected {
-                        session.server_name.clone()
-                    } else {
-                        "请先连接服务器".into()
-                    }));
-                if connected && !logged {
-                    page = page.child(
-                        div().flex().gap_2().children(
-                            [
-                                ("password", "账号登录"),
-                                ("register", "注册"),
-                                ("token", "Token 登录"),
-                            ]
-                            .into_iter()
-                            .map(|(mode, label)| {
-                                let entity = entity.clone();
-                                Button::new(mode)
-                                    .label(label)
-                                    .compact()
-                                    .selected(self.account_mode == mode)
-                                    .disabled(busy)
-                                    .on_click(move |_, window, cx| {
-                                        entity.update(cx, |this, cx| {
-                                            this.clear_account_secrets(window, cx);
-                                            this.account_mode = mode;
-                                            this.account_notice.clear();
-                                            cx.notify();
-                                        });
-                                    })
-                            }),
-                        ),
+                    .gap_5()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(div().text_sm().font_weight(gpui::FontWeight::MEDIUM).child(
+                                if connected {
+                                    session.server_name.clone()
+                                } else {
+                                    "未连接服务器".into()
+                                },
+                            ))
+                            .child(div().text_xs().text_color(rgb(MUTED)).child(if !connected {
+                                "连接服务器后可管理账号"
+                            } else if logged {
+                                "当前服务器账号"
+                            } else {
+                                "当前以游客身份连接"
+                            })),
                     );
+                if connected && !logged {
                     if self.account_mode == "token" {
                         page = page.child(field(
                             "登录 Token",
@@ -7023,7 +7240,16 @@ impl ResonaApp {
                         ));
                     } else {
                         page = page
-                            .child(field("账号", Input::new(&self.account_name).disabled(busy)))
+                            .child(field(
+                                "用户名",
+                                Input::new(&self.account_name).disabled(busy),
+                            ))
+                            .when(self.account_mode == "register", |page| {
+                                page.child(field(
+                                    "昵称",
+                                    Input::new(&self.account_nickname).disabled(busy),
+                                ))
+                            })
                             .child(field(
                                 "密码",
                                 Input::new(&self.account_password)
@@ -7031,21 +7257,84 @@ impl ResonaApp {
                                     .mask_toggle(),
                             ));
                     }
-                    let entity = entity.clone();
+                    let switch_mode = if self.account_mode == "register" {
+                        "password"
+                    } else {
+                        "register"
+                    };
+                    let switch_label = if self.account_mode == "register" {
+                        "返回登录"
+                    } else {
+                        "注册"
+                    };
+                    let entity_switch = entity.clone();
+                    let entity_submit = entity.clone();
                     page = page.child(
-                        Button::new("account-login")
-                            .label(if busy {
-                                "处理中…"
-                            } else if self.account_mode == "register" {
-                                "注册并登录"
-                            } else {
-                                "登录"
-                            })
-                            .disabled(busy)
-                            .on_click(move |_, window, cx| {
-                                entity.update(cx, |this, cx| this.submit_account(None, window, cx));
-                            }),
+                        div()
+                            .flex()
+                            .items_center()
+                            .flex_wrap()
+                            .justify_end()
+                            .gap_2()
+                            .child(
+                                Button::new("account-register-mode")
+                                    .label(switch_label)
+                                    .text_color(rgb(MUTED))
+                                    .ghost()
+                                    .compact()
+                                    .disabled(busy)
+                                    .on_click(move |_, window, cx| {
+                                        entity_switch.update(cx, |this, cx| {
+                                            this.set_account_mode(switch_mode, window, cx)
+                                        });
+                                    }),
+                            )
+                            .child(
+                                Button::new("account-login")
+                                    .label(if busy {
+                                        "处理中…"
+                                    } else if self.account_mode == "register" {
+                                        "注册并登录"
+                                    } else {
+                                        "登录"
+                                    })
+                                    .primary()
+                                    .min_w(px(96.))
+                                    .disabled(busy)
+                                    .on_click(move |_, window, cx| {
+                                        entity_submit.update(cx, |this, cx| {
+                                            this.submit_account(None, window, cx)
+                                        });
+                                    }),
+                            ),
                     );
+                    if self.account_mode != "register" {
+                        let token_mode = if self.account_mode == "token" {
+                            "password"
+                        } else {
+                            "token"
+                        };
+                        let entity = entity.clone();
+                        page = page.child(
+                            div().flex().child(
+                                Button::new("account-token-mode")
+                                    .label(if self.account_mode == "token" {
+                                        "使用密码登录"
+                                    } else {
+                                        "使用 Token 登录"
+                                    })
+                                    .ghost()
+                                    .compact()
+                                    .text_color(rgb(MUTED))
+                                    .disabled(busy)
+                                    .on_click(move |_, window, cx| {
+                                        entity.update(cx, |this, cx| {
+                                            this.set_account_mode(token_mode, window, cx)
+                                        });
+                                    }),
+                            ),
+                        );
+                    }
                 } else if connected && logged {
                     page = page
                         .child(div().text_sm().child(format!(
@@ -7059,9 +7348,16 @@ impl ResonaApp {
                         )))
                         .child(
                             div()
+                                .id("account-uid")
                                 .text_xs()
                                 .text_color(rgb(MUTED))
-                                .child(format!("UID {}", session.account_uid)),
+                                .child(format!("UID {}", session.account_uid))
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .tooltip({
+                                    let uid = session.account_uid.clone();
+                                    move |window, cx| Tooltip::new(uid.clone()).build(window, cx)
+                                }),
                         )
                         .child(field(
                             "昵称",
@@ -7069,14 +7365,17 @@ impl ResonaApp {
                         ));
                     let entity_save = entity.clone();
                     page = page.child(
-                        Button::new("account-profile")
-                            .label("保存资料")
-                            .disabled(busy)
-                            .on_click(move |_, window, cx| {
-                                entity_save.update(cx, |this, cx| {
-                                    this.submit_account(Some("update_profile"), window, cx)
-                                });
-                            }),
+                        div().flex().child(
+                            Button::new("account-profile")
+                                .label("保存昵称")
+                                .primary()
+                                .disabled(busy)
+                                .on_click(move |_, window, cx| {
+                                    entity_save.update(cx, |this, cx| {
+                                        this.submit_account(Some("update_profile"), window, cx)
+                                    });
+                                }),
+                        ),
                     );
                     if self.account_mode == "change_password" {
                         page = page
@@ -7092,16 +7391,44 @@ impl ResonaApp {
                                     .disabled(busy)
                                     .mask_toggle(),
                             ));
+                        let entity_cancel = entity.clone();
                         let entity = entity.clone();
                         page = page.child(
-                            Button::new("account-save-password")
-                                .label("确认修改密码")
-                                .disabled(busy)
-                                .on_click(move |_, window, cx| {
-                                    entity.update(cx, |this, cx| {
-                                        this.submit_account(Some("change_password"), window, cx)
-                                    });
-                                }),
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    Button::new("account-save-password")
+                                        .label("确认修改密码")
+                                        .primary()
+                                        .disabled(busy)
+                                        .on_click(move |_, window, cx| {
+                                            entity.update(cx, |this, cx| {
+                                                this.submit_account(
+                                                    Some("change_password"),
+                                                    window,
+                                                    cx,
+                                                )
+                                            });
+                                        }),
+                                )
+                                .child(
+                                    Button::new("account-cancel-password")
+                                        .label("取消")
+                                        .ghost()
+                                        .disabled(busy)
+                                        .on_click({
+                                            let entity = entity_cancel;
+                                            move |_, window, cx| {
+                                                entity.update(cx, |this, cx| {
+                                                    this.clear_account_secrets(window, cx);
+                                                    this.account_mode = "password";
+                                                    cx.notify();
+                                                });
+                                            }
+                                        }),
+                                ),
                         );
                     }
                     let entity_password = entity.clone();
@@ -7112,9 +7439,13 @@ impl ResonaApp {
                             .flex()
                             .flex_wrap()
                             .gap_2()
+                            .pt_4()
+                            .border_t_1()
+                            .border_color(rgb(LINE))
                             .child(
                                 Button::new("account-change-password")
                                     .label("修改密码")
+                                    .ghost()
                                     .disabled(busy)
                                     .on_click(move |_, window, cx| {
                                         entity_password.update(cx, |this, cx| {
@@ -7127,6 +7458,7 @@ impl ResonaApp {
                             .child(
                                 Button::new("account-copy-token")
                                     .icon(IconName::Copy)
+                                    .ghost()
                                     .tooltip("复制账号登录 Token")
                                     .disabled(busy)
                                     .on_click(move |_, _, cx| {
@@ -7146,6 +7478,7 @@ impl ResonaApp {
                             .child(
                                 Button::new("account-logout")
                                     .label("退出账号并断开")
+                                    .ghost()
                                     .disabled(busy)
                                     .on_click(move |_, window, cx| {
                                         entity_logout.update(cx, |this, cx| {
@@ -7167,12 +7500,22 @@ impl ResonaApp {
                     }
                 }
                 div().w_full().flex_1().min_h_0().child(
-                    page.child(
-                        div()
-                            .text_sm()
-                            .text_color(rgb(MUTED))
-                            .child(self.account_notice.clone()),
-                    ),
+                    div()
+                        .id("user-settings-scroll")
+                        .w_full()
+                        .h_full()
+                        .overflow_y_scrollbar()
+                        .child(div().w_full().p_5().child(page.when(
+                            !self.account_notice.is_empty(),
+                            |page| {
+                                page.child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(rgb(MUTED))
+                                        .child(self.account_notice.clone()),
+                                )
+                            },
+                        ))),
                 )
             }
             Modal::Diagnostics => {
@@ -7549,6 +7892,16 @@ impl ResonaApp {
                                     Modal::Settings => "提示音",
                                     Modal::Appearance => "外观",
                                     Modal::Diagnostics => "诊断",
+                                    Modal::User
+                                        if self.workspace.connected()
+                                            && self.workspace.session.account_uid.is_empty() =>
+                                    {
+                                        if self.account_mode == "register" {
+                                            "注册"
+                                        } else {
+                                            "登录"
+                                        }
+                                    }
                                     Modal::User => "用户",
                                     _ => "关于",
                                 })))
@@ -7576,99 +7929,104 @@ impl ResonaApp {
                                 ),
                         )
                         .child(card)
-                        .child(
-                            div()
-                                .h(px(60.))
-                                .flex_shrink_0()
-                                .px_4()
-                                .border_t_1()
-                                .border_color(rgb(LINE))
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .text_xs()
-                                        .text_color(rgb(AMBER))
-                                        .child(if self.settings_discard {
-                                            "放弃未应用的修改？".to_owned()
-                                        } else {
-                                            if self.settings_notice.is_empty()
-                                                && self.preference_error.is_some()
-                                            {
-                                                "偏好处于保护状态，本次修改不保存；详情见诊断"
-                                                    .into()
+                        .when(
+                            !matches!(modal, Modal::User) || self.settings_discard,
+                            |panel| {
+                                panel.child(
+                                div()
+                                    .h(px(60.))
+                                    .flex_shrink_0()
+                                    .px_4()
+                                    .border_t_1()
+                                    .border_color(rgb(LINE))
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .text_xs()
+                                            .text_color(rgb(AMBER))
+                                            .child(if self.settings_discard {
+                                                "放弃未应用的修改？".to_owned()
                                             } else {
-                                                self.settings_notice.clone()
-                                            }
-                                        }),
-                                )
-                                .child(
-                                    Button::new("cancel-settings")
-                                        .label(if self.settings_discard {
-                                            "放弃修改"
-                                        } else {
-                                            "取消"
-                                        })
-                                        .ghost()
-                                        .disabled(self.settings_apply.is_some())
-                                        .on_click({
-                                            let entity = view.clone();
-                                            move |_, window, cx| {
-                                                entity.update(cx, |this, cx| {
-                                                    this.settings_draft =
-                                                        this.settings_baseline.clone();
-                                                    theme::apply(
-                                                        this.preferences.theme,
-                                                        Some(window),
-                                                        cx,
-                                                    );
-                                                    this.close_modal(window, cx);
-                                                });
-                                            }
-                                        }),
-                                )
-                                .child(
-                                    Button::new("apply-settings")
-                                        .label(if self.settings_discard {
-                                            "继续编辑"
-                                        } else {
-                                            "应用"
-                                        })
-                                        .primary()
-                                        .disabled(
-                                            !self.settings_discard
-                                                && (!self.settings_dirty()
-                                                    || self.settings_apply.is_some()
-                                                    || (self.settings_needs_voice_update()
-                                                        && (self.global_gain_busy()
-                                                            || self.is_busy()
-                                                            || matches!(
-                                                                self.workspace
-                                                                    .session
-                                                                    .mode
-                                                                    .as_str(),
-                                                                "connecting"
-                                                                    | "reconnecting"
-                                                                    | "disconnecting"
-                                                            )))),
-                                        )
-                                        .on_click({
-                                            let entity = view.clone();
-                                            move |_, _, cx| {
-                                                entity.update(cx, |this, cx| {
-                                                    if this.settings_discard {
-                                                        this.settings_discard = false;
-                                                        cx.notify();
-                                                    } else {
-                                                        this.apply_settings(cx);
-                                                    }
-                                                });
-                                            }
-                                        }),
-                                ),
+                                                if self.settings_notice.is_empty()
+                                                    && self.preference_error.is_some()
+                                                {
+                                                    "偏好处于保护状态，本次修改不保存；详情见诊断"
+                                                        .into()
+                                                } else {
+                                                    self.settings_notice.clone()
+                                                }
+                                            }),
+                                    )
+                                    .child(
+                                        Button::new("cancel-settings")
+                                            .label(if self.settings_discard {
+                                                "放弃修改"
+                                            } else {
+                                                "取消"
+                                            })
+                                            .ghost()
+                                            .disabled(self.settings_apply.is_some())
+                                            .on_click({
+                                                let entity = view.clone();
+                                                move |_, window, cx| {
+                                                    entity.update(cx, |this, cx| {
+                                                        this.settings_draft =
+                                                            this.settings_baseline.clone();
+                                                        theme::apply(
+                                                            this.preferences.theme,
+                                                            Some(window),
+                                                            cx,
+                                                        );
+                                                        this.close_modal(window, cx);
+                                                    });
+                                                }
+                                            }),
+                                    )
+                                    .child(
+                                        Button::new("apply-settings")
+                                            .label(if self.settings_discard {
+                                                "继续编辑"
+                                            } else {
+                                                "应用"
+                                            })
+                                            .primary()
+                                            .disabled(
+                                                !self.settings_discard
+                                                    && (!self.settings_dirty()
+                                                        || self.settings_apply.is_some()
+                                                        || (self.settings_needs_voice_update()
+                                                            && (self.global_gain_busy()
+                                                                || self.is_busy()
+                                                                || matches!(
+                                                                    self.workspace
+                                                                        .session
+                                                                        .mode
+                                                                        .as_str(),
+                                                                    "connecting"
+                                                                        | "reconnecting"
+                                                                        | "disconnecting"
+                                                                )))),
+                                            )
+                                            .on_click({
+                                                let entity = view.clone();
+                                                move |_, _, cx| {
+                                                    entity.update(cx, |this, cx| {
+                                                        if this.settings_discard {
+                                                            this.settings_discard = false;
+                                                            cx.notify();
+                                                        } else {
+                                                            this.apply_settings(cx);
+                                                        }
+                                                    });
+                                                }
+                                            }),
+                                    ),
+                            )
+                            },
                         ),
                 )
                 .into_any_element()
@@ -7945,6 +8303,9 @@ impl ResonaApp {
 
 impl Render for ResonaApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.emoji_scope.is_some() && self.emoji_scope != self.emoji_context() {
+            self.emoji_scope = None;
+        }
         if frame_trace() {
             eprintln!("RESONA_TRACE frame");
         }

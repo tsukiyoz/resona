@@ -65,7 +65,7 @@ CLI 使用 Cobra；`--help`、`serve --help`、`owner --help` 查看命令。
 build/bin/resona-server --access-dir /path/to/access account reset-password --username alice --password-stdin
 ```
 
-输入新密码并结束 stdin；需要至少 12 字节、最多 256 字节。UID、昵称和角色保留，
+输入新密码并结束 stdin；需要至少 8 字节、最多 256 字节。UID、昵称和角色保留，
 旧账号 Token 与基于账号登录的后台会话失效。服务运行期间恢复命令拒绝获取锁。
 本版不含中央账号、三方登录和邮箱找回。见 ADR-0035。
 

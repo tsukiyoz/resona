@@ -144,7 +144,7 @@ func canonicalName(name string) (string, bool) {
 }
 
 func validPassword(password string) bool {
-	return len(password) >= 12 && len(password) <= 256 && utf8.ValidString(password) && !strings.ContainsRune(password, 0)
+	return len(password) >= 8 && len(password) <= 256 && utf8.ValidString(password) && !strings.ContainsRune(password, 0)
 }
 
 func (s *Store) hashSlot(ctx context.Context) (func(), error) {

@@ -228,10 +228,41 @@ Rust 单元和 Go 服务器互通回归覆盖以上核心路径；设备、Windo
 退出继续执行，即使本次事件不需要重绘。每批最多处理 64 个事件，避免持续积压占住
 输入处理。Windows 验收需分别覆盖主界面、设备试听、切换前后台和最小化，并在相同
 release 工作负载下采集 GPU；单元测试通过不代表实际 GPU 降幅已验证。
-# Server-local account acceptance (2026-10-22)
+## Server-local account acceptance (2026-10-22)
 
 - Guest connections remain available without registration. The account settings
   page identifies the current server and separates device proof from account UID.
+- User settings use a responsive, at most 400px wide form with consistent vertical
+  spacing. The page opens at Login; a muted Register link sits to the left of the
+  primary login button. Register replaces the same form and title, adding a
+  nickname between username and password, with Register and log in as the primary
+  action and Back to login as its secondary action. Token login remains secondary.
+  Registration includes an editable nickname, separate from the immutable ASCII
+  username. Logged-in profile and security actions stay compact; account actions
+  have their own confirmation buttons, without the unrelated preference footer.
+  Closing with other pages' pending preference edits still exposes the discard
+  confirmation, so User settings cannot trap the close/Escape flow.
+- Registration validates username, nickname and password before sending, retaining
+  inputs on local validation failure. Passwords require 8–256 UTF-8 bytes; this is
+  an explicit input error, not an invalid-login error. Successful registration
+  enters the logged-in profile without logging out or authenticating twice.
+- Audio settings retain vertical spacing inside the scroll content. Activation
+  choices wrap at narrow widths; automatic microphone activation is separated
+  from these choices. Processing groups use consistent gaps and dividers; all
+  controls still edit the draft until Apply, and Cancel restores the baseline.
+- Chinese nicknames and UTF-8 chat, including skin-tone, ZWJ and flag emoji,
+  preserve their exact text in live delivery, recent history and copying. Native
+  input methods and system character panels remain supported. A fixed emoji
+  button sits left of Send and opens a local, theme-aware selection panel.
+  Selecting an emoji replaces the selection or inserts at the cursor, focuses
+  the composer and never sends automatically. Escape and outside clicks dismiss
+  the panel. Channel/session changes, chat collapse and settings close it;
+  disabled chat and active IME composition cannot insert emoji. Existing
+  nickname and UTF-8 byte bounds remain enforced.
+- Enter submits the visible account action; Enter during IME composition only
+  confirms composition. Registration's nickname Enter submits registration,
+  whereas logged-in nickname Enter saves the profile. Inputs and mode switching
+  are disabled while submitting; closing the page or application remains usable.
 - Password/token login and registration use masked secrets, bounded waiting,
   duplicate-submit protection and explicit server-confirmed success. Account
   actions do not apply unrelated audio/appearance drafts. No passwords or tokens

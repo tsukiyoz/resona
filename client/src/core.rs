@@ -707,6 +707,7 @@ impl App {
                     token: secret("token"),
                     new_password: secret("newPassword"),
                 };
+                command.validate().map_err(str::to_owned)?;
                 self.command(&id, session::Command::Account(command))
                     .await?;
                 if action == "logout" && self.life.session(&id).is_ok() {

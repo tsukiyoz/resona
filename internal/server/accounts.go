@@ -83,6 +83,9 @@ func (s *Server) accountCommand(p *peer, f w.Frame) bool {
 			err = accounts.ErrInvalid
 			break
 		}
+		if cmd.Nickname != "" {
+			nickname = cmd.Nickname
+		}
 		a, err = store.Register(ctx, cmd.Username, cmd.Password, nickname)
 	case "password":
 		a, err = store.Password(ctx, cmd.Username, cmd.Password)

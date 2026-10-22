@@ -88,7 +88,7 @@ impl Error {
             Self::Rejected(7) => "服务器保存失败，请确认当前状态后重试",
             Self::Rejected(8) => "频道数量或 ID 已达上限",
             Self::Rejected(9) => "消息送达结果未确认，重发可能重复",
-            Self::Rejected(10) => "账号或密码无效，请检查输入（密码至少 12 字节）",
+            Self::Rejected(10) => "账号验证失败，请检查输入或重新登录",
             Self::Rejected(11) => "账号名称已被使用",
             Self::Rejected(12) => "账号服务繁忙，请稍后重试",
             Self::Rejected(_) => "服务器拒绝此操作，请检查权限和频道状态",
@@ -174,6 +174,50 @@ pub struct AccountRequest {
     pub token: Zeroizing<String>,
     pub new_password: Zeroizing<String>,
     pub nickname: String,
+}
+impl AccountRequest {
+    /// Form validation shared by the desktop and UI-independent command entry.
+    /// The server remains authoritative for credentials and account admission.
+    pub fn validate(&self) -> std::result::Result<(), &'static str> {
+        if matches!(self.action.as_str(), "register" | "password")
+            && (!(3..=32).contains(&self.username.len())
+                || !self
+                    .username
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"_.-".contains(&c)))
+        {
+            return Err("用户名需为 3–32 位英文字母、数字、下划线、点或短横线");
+        }
+        let password = match self.action.as_str() {
+            "register" => Some(self.password.as_str()),
+            "change_password" => Some(self.new_password.as_str()),
+            _ => None,
+        };
+        if let Some(password) = password {
+            if !(8..=256).contains(&password.len()) || password.contains('\0') {
+                return Err("密码需为 8–256 字节（英文字母、数字和符号各占 1 字节）");
+            }
+        }
+        if matches!(self.action.as_str(), "password" | "change_password")
+            && (self.password.is_empty()
+                || self.password.len() > 256
+                || self.password.contains('\0'))
+        {
+            return Err("请输入有效的密码，最多 256 字节");
+        }
+        if self.action == "token" && (self.token.is_empty() || self.token.len() > 256) {
+            return Err("请输入有效的登录 Token");
+        }
+        if (self.action == "update_profile"
+            || (self.action == "register" && !self.nickname.is_empty()))
+            && (self.nickname.trim().is_empty()
+                || self.nickname.chars().count() > 30
+                || self.nickname.chars().any(char::is_control))
+        {
+            return Err("昵称需为 1–30 个字符，不能包含换行等控制字符");
+        }
+        Ok(())
+    }
 }
 impl Command {
     fn frame(&self, id: u32) -> Result<Vec<u8>> {
@@ -823,6 +867,38 @@ impl Driver {
 #[cfg(test)]
 mod moderation_tests {
     use super::*;
+
+    #[test]
+    fn account_forms_report_input_rules_before_admission() {
+        let mut request = AccountRequest {
+            action: "register".into(),
+            username: "tsukiyo".into(),
+            nickname: "中文昵称".into(),
+            password: "short-7".to_string().into(),
+            ..Default::default()
+        };
+        assert!(request.validate().unwrap_err().contains("8–256 字节"));
+        request.password = "exactly8".to_string().into();
+        assert_eq!(request.validate(), Ok(()));
+        request.username = "中文用户名".into();
+        assert!(request.validate().unwrap_err().contains("用户名"));
+        request.username = "Tsukiyo_1".into();
+        request.nickname = "\n".into();
+        assert!(request.validate().unwrap_err().contains("昵称"));
+        request.nickname = "🙂".repeat(30);
+        assert_eq!(request.validate(), Ok(()));
+        request.nickname.push('🙂');
+        assert!(request.validate().is_err());
+        request.action = "password".into();
+        request.password = "wrong".to_string().into();
+        assert_eq!(request.validate(), Ok(()));
+        request.action = "change_password".into();
+        assert!(request.validate().unwrap_err().contains("8–256 字节"));
+        request.new_password = "中文ab".to_string().into();
+        assert_eq!(request.validate(), Ok(()));
+        request.action = "token".into();
+        assert!(request.validate().unwrap_err().contains("Token"));
+    }
 
     #[test]
     fn explicit_membership_denials_never_trigger_reconnect() {

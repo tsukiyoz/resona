@@ -53,12 +53,15 @@ func TestAccountAdmissionProfileReplacementAndGuestSeparation(t *testing.T) {
 	if state := s.stateLocked(a); state.ServerRole != "guest" || state.AccountUID != "" || state.CanClaimOwner {
 		t.Fatal("device received account privileges")
 	}
-	registered := call(a, w.AccountCommand{Action: "register", Username: "alice", Password: "correct horse battery staple"})
+	registered := call(a, w.AccountCommand{Action: "register", Username: "alice", Password: "correct horse battery staple", Nickname: "中文玩家"})
 	if registered.Code != w.OK || registered.AccountToken == "" || a.principal() == a.identity || a.principal() == "" {
 		t.Fatal("registration failed")
 	}
+	if a.member.Nickname != "中文玩家" {
+		t.Fatal("registration ignored the submitted nickname")
+	}
 	uid := a.principal()
-	if r := call(a, w.AccountCommand{Action: "update_profile", Nickname: "Alice updated"}); r.Code != w.OK {
+	if r := call(a, w.AccountCommand{Action: "update_profile", Nickname: "改名玩家🙂"}); r.Code != w.OK {
 		t.Fatal(r.Code)
 	}
 	b := newPeer(2, "Bob")
@@ -66,7 +69,7 @@ func TestAccountAdmissionProfileReplacementAndGuestSeparation(t *testing.T) {
 		t.Fatal("invalid login displaced account")
 	}
 	logged := call(b, w.AccountCommand{Action: "password", Username: "alice", Password: "correct horse battery staple"})
-	if logged.Code != w.OK || b.principal() != uid || b.member.Nickname != "Alice updated" || !a.removed || !a.conn.(*chatTestConnection).closed.Load() {
+	if logged.Code != w.OK || b.principal() != uid || b.member.Nickname != "改名玩家🙂" || !a.removed || !a.conn.(*chatTestConnection).closed.Load() {
 		t.Fatal("replacement/profile identity incorrect")
 	}
 	if _, err := store.accounts.Token(context.Background(), registered.AccountToken); err == nil {
