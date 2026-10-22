@@ -147,6 +147,7 @@ impl Client {
                 retry: Arc::new(Notify::new()),
                 profile: None,
                 password: Zeroizing::new(String::new()),
+                account_token: Zeroizing::new(String::new()),
                 progress_tx,
                 progress,
             }
@@ -190,6 +191,7 @@ struct Runner {
     retry: Arc<Notify>,
     profile: Option<ServerProfile>,
     password: Zeroizing<String>,
+    account_token: Zeroizing<String>,
     progress_tx: mpsc::Sender<Progress>,
     progress: mpsc::Receiver<Progress>,
 }
@@ -235,6 +237,7 @@ impl Runner {
             identity: self.identity.clone(),
             profile: self.profile.clone().unwrap(),
             password: self.password.clone(),
+            account_token: self.account_token.clone(),
             cancel: self.job_cancel.clone(),
             retry: self.retry.clone(),
             progress: self.progress_tx.clone(),
@@ -253,12 +256,14 @@ impl Runner {
                     match control {
                         Some(Control::Connect(profile,password))=>{
                             self.retire().await;self.profile=Some(profile.clone());self.password=password;
+                            self.account_token=Zeroizing::new(String::new());
                             self.state.profile=Some(profile);
                             match config::random_id(){Ok(id)=>{self.state.session_id=id;self.begin(false,None);},Err(_)=>self.fail("无法生成连接标识，请重新连接")}
                         }
                         Some(Control::Disconnect)=>{
                             self.state.generation+=1;self.state.mode=Mode::Offline;self.state.profile=None;self.state.session_id.clear();self.state.error.clear();self.state.waiting=false;self.state.slow=false;self.state.attempt=0;
                             self.state.connection=None;self.state.voice=None;self.publish();self.retire().await;self.profile=None;self.password=Zeroizing::new(String::new());
+                            self.account_token=Zeroizing::new(String::new());
                         }
                         Some(Control::Retry(id)) if id==self.state.session_id=>{
                             if self.job.is_some() && self.state.mode==Mode::Reconnecting && self.state.waiting{self.retry.notify_waiters();}
@@ -291,6 +296,7 @@ impl Runner {
                         if let Some(error)=&snapshot.closed {
                             let retry=error.retryable();let channel=snapshot.channel() as u16;
                             let deafened=snapshot.state.members.iter().find(|m|m.id==snapshot.state.self_).is_some_and(|m|m.deafened);
+                            self.account_token=self.session.as_ref().map(|s|s.handle.account_token()).unwrap_or_default();
                             self.retire().await;
                             if retry && !cancel.is_cancelled(){self.begin(true,Some((channel,deafened)));}
                             else{self.fail(error.message());}
@@ -306,6 +312,7 @@ impl Runner {
     }
     fn fail(&mut self, message: &str) {
         self.password = Zeroizing::new(String::new());
+        self.account_token = Zeroizing::new(String::new());
         self.state.connection = None;
         self.state.voice = None;
         self.state.mode = Mode::Failed;
@@ -324,6 +331,7 @@ struct Plan {
     identity: Arc<Identity>,
     profile: ServerProfile,
     password: Zeroizing<String>,
+    account_token: Zeroizing<String>,
     cancel: CancellationToken,
     retry: Arc<Notify>,
     progress: mpsc::Sender<Progress>,
@@ -339,7 +347,7 @@ impl Plan {
             r=self.progress.send(Progress{generation:self.generation,attempt,waiting,slow:self.recover && attempt>3})=>r.map_err(|_|session::Error::Cancelled),
         }
     }
-    async fn run(self) -> session::Result<Established> {
+    async fn run(mut self) -> session::Result<Established> {
         for attempt in 1.. {
             if self.recover || attempt > 1 {
                 let wake = self.retry.notified();
@@ -365,6 +373,31 @@ impl Plan {
             .await;
             match result {
                 Ok(session) => {
+                    if !self.account_token.is_empty() {
+                        let result = session
+                            .handle
+                            .command(
+                                Command::Account(session::AccountRequest {
+                                    action: "token".into(),
+                                    token: self.account_token.clone(),
+                                    ..Default::default()
+                                }),
+                                deadline,
+                                &self.cancel,
+                            )
+                            .await;
+                        if let Err(error) = result {
+                            session.close().await;
+                            if !error.retryable()
+                                && !matches!(error, session::Error::Rejected(3 | 12))
+                            {
+                                return Err(error);
+                            }
+                            continue;
+                        }
+                        // Authentication rotates the token before channel restoration can fail.
+                        self.account_token = session.handle.account_token();
+                    }
                     let mut restored = true;
                     let current_channel = session.handle.state.borrow().channel();
                     if let Some((channel, _)) = self.restore

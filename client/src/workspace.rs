@@ -193,6 +193,8 @@ impl Projection {
             current.self_id.clear();
             current.server_role.clear();
             current.identity_uid.clear();
+            current.account_uid.clear();
+            current.account_name.clear();
             current.can_claim_owner = false;
             current.can_manage_channels = false;
             current.can_reorder_channels = false;
@@ -207,6 +209,8 @@ impl Projection {
         current.self_id = state.self_.to_string();
         current.server_name = state.name.clone();
         current.identity_uid = state.identity_uid.clone();
+        current.account_uid = state.account_uid.clone();
+        current.account_name = state.account_name.clone();
         current.server_role = state.server_role.clone();
         current.can_claim_owner = state.can_claim_owner;
         current.can_manage_channels = state.can_manage_channels;
@@ -245,6 +249,8 @@ impl Projection {
                     .copied()
                     .unwrap_or((100, false));
                 User {
+                    account_uid: m.account_uid.clone(),
+                    server_role: m.server_role.clone(),
                     id: m.id.to_string(),
                     nickname: m.nickname.clone(),
                     channel_id: m.channel.to_string(),
@@ -258,6 +264,9 @@ impl Projection {
                 }
             })
             .collect();
+        if let Some(member) = state.members.iter().find(|m| m.id == state.self_) {
+            current.nickname = member.nickname.clone();
+        }
         self.workspace.messages = snapshot
             .messages
             .iter()
