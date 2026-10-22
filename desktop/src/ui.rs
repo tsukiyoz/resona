@@ -92,6 +92,8 @@ impl IconNamed for VoiceIcon {
 
 #[derive(Clone)]
 enum Pending {
+    Account(String),
+    AccountToken(String, u64),
     ChatRetry(String, String, u32),
     Update(&'static str),
     ExportDiagnostics,
@@ -260,6 +262,7 @@ enum Modal {
     Audio,
     Appearance,
     Diagnostics,
+    User,
     About,
 }
 
@@ -345,6 +348,14 @@ pub struct ResonaApp {
     channel_audio_preset: u32,
     ownership_error: String,
     claim_input: Entity<InputState>,
+    account_name: Entity<InputState>,
+    account_password: Entity<InputState>,
+    account_new_password: Entity<InputState>,
+    account_nickname: Entity<InputState>,
+    account_token: Entity<InputState>,
+    account_mode: &'static str,
+    account_notice: String,
+    account_revision: u64,
     device_menu: Option<DeviceMenu>,
     device_trigger_bounds: [Option<gpui::Bounds<gpui::Pixels>>; 2],
     remember_password: bool,
@@ -390,6 +401,25 @@ impl ResonaApp {
         let claim_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("一次性所有者认领码")
+                .masked(true)
+        });
+        let account_name =
+            cx.new(|cx| InputState::new(window, cx).placeholder("3–32 位字母、数字、_ . -"));
+        let account_password = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("密码，至少 12 字节")
+                .masked(true)
+        });
+        let account_new_password = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("新密码，至少 12 字节")
+                .masked(true)
+        });
+        let account_nickname =
+            cx.new(|cx| InputState::new(window, cx).placeholder("昵称，最多 30 字"));
+        let account_token = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("账号登录 Token")
                 .masked(true)
         });
         let chat_input = cx.new(|cx| {
@@ -493,6 +523,11 @@ impl ResonaApp {
             claim_input.clone(),
             channel_name_input.clone(),
             channel_bitrate_input.clone(),
+            account_name.clone(),
+            account_password.clone(),
+            account_new_password.clone(),
+            account_nickname.clone(),
+            account_token.clone(),
         ]
         .into_iter()
         .map(|input| {
@@ -508,6 +543,11 @@ impl ResonaApp {
                         return;
                     }
                     match this.modal.clone() {
+                        Some(Modal::User) => this.submit_account(
+                            (*input == this.account_nickname).then_some("update_profile"),
+                            window,
+                            cx,
+                        ),
                         Some(Modal::Channel { delete: false, .. })
                             if *input == this.channel_name_input
                                 || *input == this.channel_bitrate_input =>
@@ -635,6 +675,14 @@ impl ResonaApp {
             channel_audio_preset: 32000,
             ownership_error: String::new(),
             claim_input,
+            account_name,
+            account_password,
+            account_new_password,
+            account_nickname,
+            account_token,
+            account_mode: "password",
+            account_notice: String::new(),
+            account_revision: 0,
             device_menu: None,
             device_trigger_bounds: [None, None],
             remember_password: false,
@@ -779,6 +827,11 @@ impl ResonaApp {
 
     fn request_failed(&mut self, pending: Pending, error: String) {
         match pending {
+            Pending::Account(session) | Pending::AccountToken(session, _) => {
+                if session == self.workspace.session.id && matches!(self.modal, Some(Modal::User)) {
+                    self.account_notice = error;
+                }
+            }
             Pending::ChatRetry(session, channel, epoch) => {
                 if chat_retry_is_current(&self.workspace, &session, &channel, epoch) {
                     self.workspace.session.chat_state = "failed".into();
@@ -956,6 +1009,40 @@ impl ResonaApp {
             Incoming::Response { id, result } => {
                 let pending = self.pending.remove(&id);
                 match (pending, result) {
+                    (Some(Pending::Account(session)), result) => {
+                        if session == self.workspace.session.id {
+                            match result {
+                                Ok(value) => {
+                                    self.apply_workspace(value, window, cx);
+                                    if matches!(self.modal, Some(Modal::User)) {
+                                        self.account_notice = "操作已完成".into();
+                                        self.account_mode = "password";
+                                    }
+                                }
+                                Err(error) => self.account_notice = error,
+                            }
+                        }
+                    }
+                    (Some(Pending::AccountToken(session, revision)), result) => {
+                        if session == self.workspace.session.id
+                            && revision == self.account_revision
+                            && matches!(self.modal, Some(Modal::User))
+                            && !self.closing
+                        {
+                            match result {
+                                Ok(value) => {
+                                    if let Some(token) = value["token"].as_str() {
+                                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                            token.to_owned(),
+                                        ));
+                                        self.account_notice =
+                                            "登录 Token 已复制，请妥善保管".into();
+                                    }
+                                }
+                                Err(error) => self.account_notice = error,
+                            }
+                        }
+                    }
                     (Some(Pending::ChatRetry(session, channel, epoch)), result) => {
                         if self.workspace.session.id == session
                             && self.workspace.session.channel_id == channel
@@ -1415,6 +1502,16 @@ impl ResonaApp {
             Ok(workspace) => {
                 if workspace.revision < self.workspace.revision {
                     return;
+                }
+                if workspace.session.id != self.workspace.session.id
+                    || workspace.session.account_uid != self.workspace.session.account_uid
+                {
+                    self.clear_account_secrets(window, cx);
+                    self.account_revision = self.account_revision.wrapping_add(1);
+                    self.account_notice.clear();
+                    self.account_nickname.update(cx, |input, cx| {
+                        input.set_value(workspace.session.nickname.clone(), window, cx)
+                    });
                 }
                 let changed_channel = workspace.session.id != self.workspace.session.id
                     || workspace.session.channel_id != self.workspace.session.channel_id
@@ -2376,6 +2473,7 @@ impl ResonaApp {
                     | Modal::Settings
                     | Modal::Appearance
                     | Modal::Diagnostics
+                    | Modal::User
                     | Modal::About
             )
         ) {
@@ -2412,6 +2510,7 @@ impl ResonaApp {
                     | Modal::Settings
                     | Modal::Appearance
                     | Modal::Diagnostics
+                    | Modal::User
                     | Modal::About
             )
         ) && (self.microphone_test.enabled || self.microphone_test.busy)
@@ -2434,9 +2533,59 @@ impl ResonaApp {
         }
         self.password_input
             .update(cx, |input, cx| input.set_value("", window, cx));
+        self.clear_account_secrets(window, cx);
+        self.account_notice.clear();
+        self.account_revision = self.account_revision.wrapping_add(1);
         self.modal = None;
         self.connect_error.clear();
         self.focus.focus(window);
+        cx.notify();
+    }
+
+    fn clear_account_secrets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        for input in [
+            &self.account_password,
+            &self.account_new_password,
+            &self.account_token,
+        ] {
+            input.update(cx, |state, cx| state.set_value("", window, cx));
+        }
+    }
+
+    fn submit_account(
+        &mut self,
+        action: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !matches!(self.modal, Some(Modal::User))
+            || !self.workspace.connected()
+            || self
+                .pending
+                .values()
+                .any(|p| matches!(p, Pending::Account(_) | Pending::AccountToken(..)))
+        {
+            return;
+        }
+        let logged = !self.workspace.session.account_uid.is_empty();
+        let action = action.unwrap_or(if logged && self.account_mode != "change_password" {
+            "update_profile"
+        } else {
+            self.account_mode
+        });
+        let params = json!({"sessionID":self.workspace.session.id, "action":action,
+            "username": self.account_name.read(cx).value().to_string(),
+            "password": self.account_password.read(cx).unmask_value().to_string(),
+            "newPassword": self.account_new_password.read(cx).unmask_value().to_string(),
+            "token": self.account_token.read(cx).unmask_value().to_string(),
+            "nickname": self.account_nickname.read(cx).value().to_string()});
+        self.clear_account_secrets(window, cx);
+        self.account_notice.clear();
+        self.request(
+            "AccountCommand",
+            params,
+            Pending::Account(self.workspace.session.id.clone()),
+        );
         cx.notify();
     }
 
@@ -6086,6 +6235,7 @@ impl ResonaApp {
                 | Modal::Settings
                 | Modal::Appearance
                 | Modal::Diagnostics
+                | Modal::User
                 | Modal::About
         );
         let audio_page = matches!(modal, Modal::Devices | Modal::Audio);
@@ -6816,6 +6966,215 @@ impl ResonaApp {
                             })),
                     )
             }
+            Modal::User => {
+                let connected = self.workspace.connected();
+                let logged = !self.workspace.session.account_uid.is_empty();
+                let busy = self
+                    .pending
+                    .values()
+                    .any(|p| matches!(p, Pending::Account(_) | Pending::AccountToken(..)));
+                let session = &self.workspace.session;
+                let mut page = div()
+                    .id("user-settings-scroll")
+                    .w_full()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scrollbar()
+                    .p_5()
+                    .flex()
+                    .flex_col()
+                    .gap_4()
+                    .child(div().text_sm().child(if connected {
+                        session.server_name.clone()
+                    } else {
+                        "请先连接服务器".into()
+                    }));
+                if connected && !logged {
+                    page = page.child(
+                        div().flex().gap_2().children(
+                            [
+                                ("password", "账号登录"),
+                                ("register", "注册"),
+                                ("token", "Token 登录"),
+                            ]
+                            .into_iter()
+                            .map(|(mode, label)| {
+                                let entity = entity.clone();
+                                Button::new(mode)
+                                    .label(label)
+                                    .compact()
+                                    .selected(self.account_mode == mode)
+                                    .disabled(busy)
+                                    .on_click(move |_, window, cx| {
+                                        entity.update(cx, |this, cx| {
+                                            this.clear_account_secrets(window, cx);
+                                            this.account_mode = mode;
+                                            this.account_notice.clear();
+                                            cx.notify();
+                                        });
+                                    })
+                            }),
+                        ),
+                    );
+                    if self.account_mode == "token" {
+                        page = page.child(field(
+                            "登录 Token",
+                            Input::new(&self.account_token).disabled(busy).mask_toggle(),
+                        ));
+                    } else {
+                        page = page
+                            .child(field("账号", Input::new(&self.account_name).disabled(busy)))
+                            .child(field(
+                                "密码",
+                                Input::new(&self.account_password)
+                                    .disabled(busy)
+                                    .mask_toggle(),
+                            ));
+                    }
+                    let entity = entity.clone();
+                    page = page.child(
+                        Button::new("account-login")
+                            .label(if busy {
+                                "处理中…"
+                            } else if self.account_mode == "register" {
+                                "注册并登录"
+                            } else {
+                                "登录"
+                            })
+                            .disabled(busy)
+                            .on_click(move |_, window, cx| {
+                                entity.update(cx, |this, cx| this.submit_account(None, window, cx));
+                            }),
+                    );
+                } else if connected && logged {
+                    page = page
+                        .child(div().text_sm().child(format!(
+                            "{} · {}",
+                            session.account_name,
+                            match session.server_role.as_str() {
+                                "owner" => "所有者",
+                                "admin" => "管理员",
+                                _ => "用户",
+                            }
+                        )))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(MUTED))
+                                .child(format!("UID {}", session.account_uid)),
+                        )
+                        .child(field(
+                            "昵称",
+                            Input::new(&self.account_nickname).disabled(busy),
+                        ));
+                    let entity_save = entity.clone();
+                    page = page.child(
+                        Button::new("account-profile")
+                            .label("保存资料")
+                            .disabled(busy)
+                            .on_click(move |_, window, cx| {
+                                entity_save.update(cx, |this, cx| {
+                                    this.submit_account(Some("update_profile"), window, cx)
+                                });
+                            }),
+                    );
+                    if self.account_mode == "change_password" {
+                        page = page
+                            .child(field(
+                                "当前密码",
+                                Input::new(&self.account_password)
+                                    .disabled(busy)
+                                    .mask_toggle(),
+                            ))
+                            .child(field(
+                                "新密码",
+                                Input::new(&self.account_new_password)
+                                    .disabled(busy)
+                                    .mask_toggle(),
+                            ));
+                        let entity = entity.clone();
+                        page = page.child(
+                            Button::new("account-save-password")
+                                .label("确认修改密码")
+                                .disabled(busy)
+                                .on_click(move |_, window, cx| {
+                                    entity.update(cx, |this, cx| {
+                                        this.submit_account(Some("change_password"), window, cx)
+                                    });
+                                }),
+                        );
+                    }
+                    let entity_password = entity.clone();
+                    let entity_token = entity.clone();
+                    let entity_logout = entity.clone();
+                    page = page.child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap_2()
+                            .child(
+                                Button::new("account-change-password")
+                                    .label("修改密码")
+                                    .disabled(busy)
+                                    .on_click(move |_, window, cx| {
+                                        entity_password.update(cx, |this, cx| {
+                                            this.clear_account_secrets(window, cx);
+                                            this.account_mode = "change_password";
+                                            cx.notify();
+                                        });
+                                    }),
+                            )
+                            .child(
+                                Button::new("account-copy-token")
+                                    .icon(IconName::Copy)
+                                    .tooltip("复制账号登录 Token")
+                                    .disabled(busy)
+                                    .on_click(move |_, _, cx| {
+                                        entity_token.update(cx, |this, cx| {
+                                            this.request(
+                                                "GetAccountToken",
+                                                json!({"sessionID":this.workspace.session.id}),
+                                                Pending::AccountToken(
+                                                    this.workspace.session.id.clone(),
+                                                    this.account_revision,
+                                                ),
+                                            );
+                                            cx.notify();
+                                        });
+                                    }),
+                            )
+                            .child(
+                                Button::new("account-logout")
+                                    .label("退出账号并断开")
+                                    .disabled(busy)
+                                    .on_click(move |_, window, cx| {
+                                        entity_logout.update(cx, |this, cx| {
+                                            this.submit_account(Some("logout"), window, cx)
+                                        });
+                                    }),
+                            ),
+                    );
+                    if session.can_claim_owner {
+                        let entity = entity.clone();
+                        page = page.child(
+                            Button::new("account-claim-owner")
+                                .label("认领服务器所有者")
+                                .disabled(busy)
+                                .on_click(move |_, window, cx| {
+                                    entity.update(cx, |this, cx| this.open_ownership(window, cx));
+                                }),
+                        );
+                    }
+                }
+                div().w_full().flex_1().min_h_0().child(
+                    page.child(
+                        div()
+                            .text_sm()
+                            .text_color(rgb(MUTED))
+                            .child(self.account_notice.clone()),
+                    ),
+                )
+            }
             Modal::Diagnostics => {
                 let exporting = self
                     .pending
@@ -7004,6 +7363,37 @@ impl ResonaApp {
                                 .child("设置"),
                         )
                         .child(
+                            Button::new("settings-nav-user")
+                                .child(settings_nav_contents("用户", IconName::User))
+                                .compact()
+                                .justify_start()
+                                .ghost()
+                                .selected(matches!(modal, Modal::User))
+                                .w_full()
+                                .disabled(change_disabled)
+                                .on_click({
+                                    let entity = view.clone();
+                                    move |_, window, cx| {
+                                        entity.update(cx, |this, cx| {
+                                            this.clear_account_secrets(window, cx);
+                                            this.account_revision =
+                                                this.account_revision.wrapping_add(1);
+                                            this.account_nickname.update(cx, |input, cx| {
+                                                input.set_value(
+                                                    this.workspace.session.nickname.clone(),
+                                                    window,
+                                                    cx,
+                                                )
+                                            });
+                                            this.account_mode = "password";
+                                            this.account_notice.clear();
+                                            this.modal = Some(Modal::User);
+                                            cx.notify();
+                                        });
+                                    }
+                                }),
+                        )
+                        .child(
                             Button::new("settings-nav-devices")
                                 .child(settings_nav_contents("设备", IconName::Settings2))
                                 .compact()
@@ -7159,6 +7549,7 @@ impl ResonaApp {
                                     Modal::Settings => "提示音",
                                     Modal::Appearance => "外观",
                                     Modal::Diagnostics => "诊断",
+                                    Modal::User => "用户",
                                     _ => "关于",
                                 })))
                                 .when(
@@ -7575,6 +7966,7 @@ impl Render for ResonaApp {
                     | Modal::Settings
                     | Modal::Appearance
                     | Modal::Diagnostics
+                    | Modal::User
                     | Modal::About
             )
         ) && self.settings_draft.is_none()
