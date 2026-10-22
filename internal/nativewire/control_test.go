@@ -54,6 +54,8 @@ func TestControlBoundsAndTypeSafety(t *testing.T) {
 		{MessageKind, &pb.Message{Sender: 65536}, &Message{}},
 		{ChatStatusKind, &pb.ChatStatus{Channel: 65536}, &ChatStatus{}},
 		{ChatStatusKind, &pb.ChatStatus{Status: 3}, &ChatStatus{}},
+		{ChatPageKind, &pb.ChatPage{Channel: 65536, Epoch: 1, Generation: 1}, &ChatPage{}},
+		{ChatPageKind, &pb.ChatPage{Channel: 1, Epoch: 1, Generation: 1, Messages: make([]*pb.Message, 21)}, &ChatPage{}},
 		{StateKind, &pb.State{Self: 65536}, &State{}},
 		{StateKind, &pb.State{Channels: []*pb.Channel{{Id: 65536}}}, &State{}},
 		{StateKind, &pb.State{Members: []*pb.Member{{Channel: 65536}}}, &State{}},

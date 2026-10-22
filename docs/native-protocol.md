@@ -17,9 +17,11 @@ Schema 在 `internal/nativewire/pb/control.proto`，用 `make generate` 生成 G
 | 9 | 所有者认领 |
 | 10 / 11 / 12 | 创建 / 编辑 / 删除频道 |
 | 13 | 原子替换 List+Watch 关注范围 |
-| 14 | 重建当前频道历史/实时消息订阅 |
+| 14 | 重建当前频道消息订阅，或按 before 排他游标取旧页 |
 | 15 | 频道消息加载、就绪或失败通知 |
 | 16 | 调整已有频道的显示顺序 |
+| 17 | 当前服务器账号操作 |
+| 18 | 旧消息页（最多 20 条/48 KiB） |
 
 Hello 的 Ed25519 签名绑定 Noise 握手和登录参数，验证成功后才加入成员。服务器角色为 owner/admin/member；owner 和 admin 可管理频道，Casbin 校验控制操作。后台按身份封禁并拒绝重新连接；踢出、封禁和人数已满分别返回关闭码 3、4、5，客户端显式提示且不自动重连。频道数量与并发成员上限均为 64，服务端限制命令与发言速率。管理后台见 server.md、ADR-0034。
 
@@ -43,9 +45,15 @@ StorageFailed 是明确拒绝；DeliveryUnknown 表示保存未确认，客户�
 Message 包含频道、临时 sender、昵称、正文、流序号、原始纳秒时间戳、持久作者 UID、
 客户端 ID、接收者本人标识、接收者频道 epoch 及历史标识。本人依持久 UID 判定，
 序号用于显示排序/去重，客户端 ID 用于合并本人待发记录，epoch 拒绝跨频道迟到消息。
-ChatStatus 包含频道、epoch、订阅 generation 和状态 0/1/2（加载/就绪/失败）。
-先排入 Welcome 或移动 State，再通知加载；同一 consumer 连续发送保留历史和实时消息。
-换频道及退出取消旧订阅，重新进入重新补齐受限历史；详见 ADR-0031。
+ChatStatus 包含频道、epoch、订阅 generation、状态 0/1/2（加载/就绪/失败），
+以及初始页的 before（最早序号）和 has_more。先排入 Welcome 或移动 State，再通知
+加载；首次最多发送最新 20 条/48 KiB 的 Message，接着发送就绪状态，实时 consumer
+从共同边界+1 继续。ChatSync 的 before=0 仍重建订阅；before>0 必须提供当前频道、
+epoch 和 generation。成功只返回相同 request 的 ChatPage，包含原 before、按序消息、
+next_before 和 has_more；失败返回 Reply。分页不改变 ChatStatus 或重建 consumer。
+客户端同时核对 request、scope 和 before，过期或跨范围结果不得改变当前列表。
+此为控制消息增量扩展，Noise 包头/加密格式不变，验收使用配套新客户端和服务端。
+换频道及退出取消旧订阅，重新进入从最新一页开始；详见 ADR-0031。
 聊天发送和订阅回复超时不直接关闭健康语音连接，实际控制写失败仍关闭传输。
 
 ## 语音包

@@ -42,6 +42,7 @@ const (
 	ChatStatusKind
 	ReorderChannelKind
 	AccountKind
+	ChatPageKind
 )
 
 var ErrPacket = errors.New("invalid Resona packet")
@@ -125,11 +126,14 @@ func ChannelBitrate(b uint32) uint32 {
 }
 
 type Command struct {
-	MessageID string
-	Channel   uint16
-	Text      string
-	Muted     bool
-	Deafened  bool
+	Before     uint64
+	Epoch      uint32
+	Generation uint64
+	MessageID  string
+	Channel    uint16
+	Text       string
+	Muted      bool
+	Deafened   bool
 }
 type Reply struct {
 	Code         uint8
@@ -175,6 +179,19 @@ type ChatStatus struct {
 	Epoch      uint32
 	Generation uint64
 	Status     uint8
+	Before     uint64
+	HasMore    bool
+}
+
+// ChatPage is a maximum 20-message, 48-KiB history response.
+type ChatPage struct {
+	Channel    uint16
+	Epoch      uint32
+	Generation uint64
+	Before     uint64
+	Messages   []Message
+	NextBefore uint64
+	HasMore    bool
 }
 
 var unmarshal = proto.UnmarshalOptions{RecursionLimit: 8, DiscardUnknown: true}

@@ -201,6 +201,10 @@ impl Projection {
             current.can_configure_channel_audio = false;
             current.chat_state.clear();
             current.chat_epoch = 0;
+            current.chat_generation = 0;
+            current.chat_before = 0;
+            current.chat_has_more = false;
+            current.chat_history_limited = false;
             return;
         };
         let state = &snapshot.state;
@@ -219,6 +223,10 @@ impl Projection {
         current.member_sync_state = "ready".into();
         current.member_sync_error.clear();
         current.chat_epoch = snapshot.chat_status.epoch;
+        current.chat_generation = snapshot.chat_status.generation;
+        current.chat_before = snapshot.chat_status.before;
+        current.chat_has_more = snapshot.chat_status.has_more;
+        current.chat_history_limited = snapshot.history_limited;
         current.chat_state = match snapshot.chat_status.status {
             1 => "ready",
             2 => "failed",
@@ -522,6 +530,7 @@ mod tests {
                 ..Default::default()
             },
             closed: None,
+            history_limited: false,
             events: Arc::new(VecDeque::new()),
         };
         let mut p = Projection::new(Vec::new());

@@ -543,6 +543,104 @@ async fn channel_order_is_authoritative_and_does_not_change_default_or_voice_rou
 }
 
 #[tokio::test]
+async fn channel_history_pages_merge_with_live_and_cancel_on_reentry() {
+    use resona_client::session::{Command as AppCommand, Error as AppError};
+    let (_peer, address, key) = start_peer(&["-server"]);
+    let a = app_session(address, key, "history-author").await;
+    let cancel = CancellationToken::new();
+    for i in 1..=35 {
+        a.handle
+            .command(
+                AppCommand::Chat {
+                    channel: 1,
+                    text: format!("message-{i}"),
+                    id: format!("history-{i:08}"),
+                },
+                Instant::now() + Duration::from_secs(3),
+                &cancel,
+            )
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let mut b = app_session(address, key, "history-reader").await;
+    wait_state(&mut b.handle, |s| {
+        s.chat_status.status == 1 && s.chat_status.epoch != 0
+    })
+    .await;
+    let status = b.handle.state.borrow().chat_status;
+    assert!(status.has_more);
+    assert_eq!(b.handle.state.borrow().messages.len(), 20);
+    assert_eq!(
+        b.handle.state.borrow().messages.front().unwrap().text,
+        "message-16"
+    );
+    let older = AppCommand::ChatHistory {
+        channel: 1,
+        epoch: status.epoch,
+        generation: status.generation,
+        before: status.before,
+    };
+    let live = AppCommand::Chat {
+        channel: 1,
+        text: "live-36".into(),
+        id: "history-00000036".into(),
+    };
+    let (page, send) = tokio::join!(
+        b.handle.command(
+            older.clone(),
+            Instant::now() + Duration::from_secs(3),
+            &cancel
+        ),
+        a.handle
+            .command(live, Instant::now() + Duration::from_secs(3), &cancel)
+    );
+    page.unwrap();
+    send.unwrap();
+    wait_state(&mut b.handle, |s| s.messages.len() == 36).await;
+    {
+        let snapshot = b.handle.state.borrow();
+        assert!(!snapshot.chat_status.has_more);
+        assert!(
+            snapshot
+                .messages
+                .iter()
+                .zip(snapshot.messages.iter().skip(1))
+                .all(|(a, b)| a.sequence < b.sequence)
+        );
+        assert_eq!(snapshot.messages.front().unwrap().text, "message-1");
+        assert_eq!(snapshot.messages.back().unwrap().text, "live-36");
+        assert!(!snapshot.messages.back().unwrap().history);
+    }
+    for channel in [2, 1] {
+        b.handle
+            .command(
+                AppCommand::Move(channel),
+                Instant::now() + Duration::from_secs(3),
+                &cancel,
+            )
+            .await
+            .unwrap();
+        wait_state(&mut b.handle, |s| {
+            s.channel() == u32::from(channel)
+                && s.chat_status.status == 1
+                && s.chat_status.epoch == s.state.epoch
+        })
+        .await;
+    }
+    assert_eq!(b.handle.state.borrow().messages.len(), 20);
+    assert_eq!(
+        b.handle
+            .command(older, Instant::now() + Duration::from_secs(3), &cancel)
+            .await,
+        Err(AppError::Cancelled)
+    );
+    assert_eq!(b.handle.state.borrow().messages.len(), 20);
+    a.close().await;
+    b.close().await;
+}
+
+#[tokio::test]
 async fn application_session_watches_moves_chats_and_routes_voice() {
     use resona_client::session::Command as AppCommand;
     let (_peer, address, key) = start_peer(&["-server"]);

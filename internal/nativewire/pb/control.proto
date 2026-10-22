@@ -29,6 +29,7 @@ enum Kind {
   KIND_CHAT_STATUS = 15;
   KIND_REORDER_CHANNEL = 16;
   KIND_ACCOUNT = 17;
+  KIND_CHAT_PAGE = 18;
 }
 // Sent only over the authenticated reliable control stream. No secret is part
 // of State, resource events, chat messages, or diagnostic exports.
@@ -100,6 +101,9 @@ message Command {
   bool muted = 3;
   bool deafened = 4;
   string message_id = 5;
+  uint64 before = 6; // ChatSync: exclusive history cursor; 0 restarts initial sync.
+  uint32 epoch = 7;
+  uint64 generation = 8;
 }
 message Reply {
   uint32 code = 1; // Application range: 0..255; unknown codes mean failure.
@@ -124,4 +128,17 @@ message ChatStatus {
   uint32 epoch = 2;
   uint64 generation = 3;
   uint32 status = 4;
+  uint64 before = 5;
+  bool has_more = 6;
+}
+// A bounded older page, independent of live chat delivery. Request identifies
+// the command, epoch/generation identify the channel entry and subscription.
+message ChatPage {
+  uint32 channel = 1;
+  uint32 epoch = 2;
+  uint64 generation = 3;
+  uint64 before = 4;
+  repeated Message messages = 5;
+  uint64 next_before = 6;
+  bool has_more = 7;
 }

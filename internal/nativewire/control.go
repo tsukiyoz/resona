@@ -70,7 +70,7 @@ func marshalBody(kind uint8, value any) (proto.Message, error) {
 		return s, nil
 	case Command:
 		if kind == MoveKind || kind == ChatKind || kind == VoiceStateKind || kind == ChatSyncKind {
-			return &pb.Command{Channel: uint32(v.Channel), Text: v.Text, Muted: v.Muted, Deafened: v.Deafened, MessageId: v.MessageID}, nil
+			return &pb.Command{Channel: uint32(v.Channel), Text: v.Text, Muted: v.Muted, Deafened: v.Deafened, MessageId: v.MessageID, Before: v.Before, Epoch: v.Epoch, Generation: v.Generation}, nil
 		}
 	case Reply:
 		if kind == ReplyKind {
@@ -82,7 +82,16 @@ func marshalBody(kind uint8, value any) (proto.Message, error) {
 		}
 	case ChatStatus:
 		if kind == ChatStatusKind {
-			return &pb.ChatStatus{Channel: uint32(v.Channel), Epoch: v.Epoch, Generation: v.Generation, Status: uint32(v.Status)}, nil
+			return &pb.ChatStatus{Channel: uint32(v.Channel), Epoch: v.Epoch, Generation: v.Generation, Status: uint32(v.Status), Before: v.Before, HasMore: v.HasMore}, nil
+		}
+	case ChatPage:
+		if kind == ChatPageKind && len(v.Messages) <= 20 {
+			page := &pb.ChatPage{Channel: uint32(v.Channel), Epoch: v.Epoch, Generation: v.Generation, Before: v.Before, NextBefore: v.NextBefore, HasMore: v.HasMore}
+			for _, msg := range v.Messages {
+				body, _ := marshalBody(MessageKind, msg)
+				page.Messages = append(page.Messages, body.(*pb.Message))
+			}
+			return page, nil
 		}
 	}
 	return nil, ErrPacket
@@ -188,7 +197,7 @@ func decodeBody(f Frame, value any) error {
 		if v.Channel > math.MaxUint16 {
 			return ErrPacket
 		}
-		*out = Command{Channel: uint16(v.Channel), Text: v.Text, Muted: v.Muted, Deafened: v.Deafened, MessageID: v.MessageId}
+		*out = Command{Channel: uint16(v.Channel), Text: v.Text, Muted: v.Muted, Deafened: v.Deafened, MessageID: v.MessageId, Before: v.Before, Epoch: v.Epoch, Generation: v.Generation}
 	case *Reply:
 		if out == nil || f.Kind != ReplyKind {
 			return ErrPacket
@@ -227,7 +236,26 @@ func decodeBody(f Frame, value any) error {
 		if v.Channel == 0 || v.Channel > math.MaxUint16 || v.Epoch == 0 || v.Generation == 0 || v.Status > 2 {
 			return ErrPacket
 		}
-		*out = ChatStatus{Channel: uint16(v.Channel), Epoch: v.Epoch, Generation: v.Generation, Status: uint8(v.Status)}
+		*out = ChatStatus{Channel: uint16(v.Channel), Epoch: v.Epoch, Generation: v.Generation, Status: uint8(v.Status), Before: v.Before, HasMore: v.HasMore}
+	case *ChatPage:
+		if out == nil || f.Kind != ChatPageKind {
+			return ErrPacket
+		}
+		var v pb.ChatPage
+		if err := unmarshal.Unmarshal(f.Body, &v); err != nil {
+			return err
+		}
+		if v.Channel == 0 || v.Channel > math.MaxUint16 || v.Epoch == 0 || v.Generation == 0 || len(v.Messages) > 20 {
+			return ErrPacket
+		}
+		page := ChatPage{Channel: uint16(v.Channel), Epoch: v.Epoch, Generation: v.Generation, Before: v.Before, NextBefore: v.NextBefore, HasMore: v.HasMore}
+		for _, msg := range v.Messages {
+			if msg == nil || msg.Channel != v.Channel || msg.Sender > math.MaxUint16 {
+				return ErrPacket
+			}
+			page.Messages = append(page.Messages, Message{Channel: uint16(msg.Channel), Sender: uint16(msg.Sender), Nickname: msg.Nickname, Text: msg.Text, Sequence: msg.Sequence, Timestamp: msg.Timestamp, AuthorUID: msg.AuthorUid, ClientID: msg.ClientId, Self: msg.Self, Epoch: msg.Epoch, History: msg.History})
+		}
+		*out = page
 	case *State:
 		if out == nil || (f.Kind != StateKind && f.Kind != WelcomeKind) || !boundedState(f.Body) {
 			return ErrPacket

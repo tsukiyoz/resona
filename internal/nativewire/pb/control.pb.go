@@ -42,6 +42,7 @@ const (
 	Kind_KIND_CHAT_STATUS     Kind = 15
 	Kind_KIND_REORDER_CHANNEL Kind = 16
 	Kind_KIND_ACCOUNT         Kind = 17
+	Kind_KIND_CHAT_PAGE       Kind = 18
 )
 
 // Enum value maps for Kind.
@@ -65,6 +66,7 @@ var (
 		15: "KIND_CHAT_STATUS",
 		16: "KIND_REORDER_CHANNEL",
 		17: "KIND_ACCOUNT",
+		18: "KIND_CHAT_PAGE",
 	}
 	Kind_value = map[string]int32{
 		"KIND_UNSPECIFIED":     0,
@@ -85,6 +87,7 @@ var (
 		"KIND_CHAT_STATUS":     15,
 		"KIND_REORDER_CHANNEL": 16,
 		"KIND_ACCOUNT":         17,
+		"KIND_CHAT_PAGE":       18,
 	}
 )
 
@@ -1019,6 +1022,9 @@ type Command struct {
 	Muted         bool                   `protobuf:"varint,3,opt,name=muted,proto3" json:"muted,omitempty"`
 	Deafened      bool                   `protobuf:"varint,4,opt,name=deafened,proto3" json:"deafened,omitempty"`
 	MessageId     string                 `protobuf:"bytes,5,opt,name=message_id,json=messageId,proto3" json:"message_id,omitempty"`
+	Before        uint64                 `protobuf:"varint,6,opt,name=before,proto3" json:"before,omitempty"` // ChatSync: exclusive history cursor; 0 restarts initial sync.
+	Epoch         uint32                 `protobuf:"varint,7,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	Generation    uint64                 `protobuf:"varint,8,opt,name=generation,proto3" json:"generation,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1086,6 +1092,27 @@ func (x *Command) GetMessageId() string {
 		return x.MessageId
 	}
 	return ""
+}
+
+func (x *Command) GetBefore() uint64 {
+	if x != nil {
+		return x.Before
+	}
+	return 0
+}
+
+func (x *Command) GetEpoch() uint32 {
+	if x != nil {
+		return x.Epoch
+	}
+	return 0
+}
+
+func (x *Command) GetGeneration() uint64 {
+	if x != nil {
+		return x.Generation
+	}
+	return 0
 }
 
 type Reply struct {
@@ -1271,6 +1298,8 @@ type ChatStatus struct {
 	Epoch         uint32                 `protobuf:"varint,2,opt,name=epoch,proto3" json:"epoch,omitempty"`
 	Generation    uint64                 `protobuf:"varint,3,opt,name=generation,proto3" json:"generation,omitempty"`
 	Status        uint32                 `protobuf:"varint,4,opt,name=status,proto3" json:"status,omitempty"`
+	Before        uint64                 `protobuf:"varint,5,opt,name=before,proto3" json:"before,omitempty"`
+	HasMore       bool                   `protobuf:"varint,6,opt,name=has_more,json=hasMore,proto3" json:"has_more,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1331,6 +1360,114 @@ func (x *ChatStatus) GetStatus() uint32 {
 		return x.Status
 	}
 	return 0
+}
+
+func (x *ChatStatus) GetBefore() uint64 {
+	if x != nil {
+		return x.Before
+	}
+	return 0
+}
+
+func (x *ChatStatus) GetHasMore() bool {
+	if x != nil {
+		return x.HasMore
+	}
+	return false
+}
+
+// A bounded older page, independent of live chat delivery. Request identifies
+// the command, epoch/generation identify the channel entry and subscription.
+type ChatPage struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Channel       uint32                 `protobuf:"varint,1,opt,name=channel,proto3" json:"channel,omitempty"`
+	Epoch         uint32                 `protobuf:"varint,2,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	Generation    uint64                 `protobuf:"varint,3,opt,name=generation,proto3" json:"generation,omitempty"`
+	Before        uint64                 `protobuf:"varint,4,opt,name=before,proto3" json:"before,omitempty"`
+	Messages      []*Message             `protobuf:"bytes,5,rep,name=messages,proto3" json:"messages,omitempty"`
+	NextBefore    uint64                 `protobuf:"varint,6,opt,name=next_before,json=nextBefore,proto3" json:"next_before,omitempty"`
+	HasMore       bool                   `protobuf:"varint,7,opt,name=has_more,json=hasMore,proto3" json:"has_more,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ChatPage) Reset() {
+	*x = ChatPage{}
+	mi := &file_control_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ChatPage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ChatPage) ProtoMessage() {}
+
+func (x *ChatPage) ProtoReflect() protoreflect.Message {
+	mi := &file_control_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ChatPage.ProtoReflect.Descriptor instead.
+func (*ChatPage) Descriptor() ([]byte, []int) {
+	return file_control_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *ChatPage) GetChannel() uint32 {
+	if x != nil {
+		return x.Channel
+	}
+	return 0
+}
+
+func (x *ChatPage) GetEpoch() uint32 {
+	if x != nil {
+		return x.Epoch
+	}
+	return 0
+}
+
+func (x *ChatPage) GetGeneration() uint64 {
+	if x != nil {
+		return x.Generation
+	}
+	return 0
+}
+
+func (x *ChatPage) GetBefore() uint64 {
+	if x != nil {
+		return x.Before
+	}
+	return 0
+}
+
+func (x *ChatPage) GetMessages() []*Message {
+	if x != nil {
+		return x.Messages
+	}
+	return nil
+}
+
+func (x *ChatPage) GetNextBefore() uint64 {
+	if x != nil {
+		return x.NextBefore
+	}
+	return 0
+}
+
+func (x *ChatPage) GetHasMore() bool {
+	if x != nil {
+		return x.HasMore
+	}
+	return false
 }
 
 var File_control_proto protoreflect.FileDescriptor
@@ -1415,14 +1552,19 @@ const file_control_proto_rawDesc = "" +
 	"\x14can_reorder_channels\x18\x10 \x01(\bR\x12canReorderChannels\x12\x1f\n" +
 	"\vaccount_uid\x18\x11 \x01(\tR\n" +
 	"accountUid\x12!\n" +
-	"\faccount_name\x18\x12 \x01(\tR\vaccountName\"\x88\x01\n" +
+	"\faccount_name\x18\x12 \x01(\tR\vaccountName\"\xd6\x01\n" +
 	"\aCommand\x12\x18\n" +
 	"\achannel\x18\x01 \x01(\rR\achannel\x12\x12\n" +
 	"\x04text\x18\x02 \x01(\tR\x04text\x12\x14\n" +
 	"\x05muted\x18\x03 \x01(\bR\x05muted\x12\x1a\n" +
 	"\bdeafened\x18\x04 \x01(\bR\bdeafened\x12\x1d\n" +
 	"\n" +
-	"message_id\x18\x05 \x01(\tR\tmessageId\"@\n" +
+	"message_id\x18\x05 \x01(\tR\tmessageId\x12\x16\n" +
+	"\x06before\x18\x06 \x01(\x04R\x06before\x12\x14\n" +
+	"\x05epoch\x18\a \x01(\rR\x05epoch\x12\x1e\n" +
+	"\n" +
+	"generation\x18\b \x01(\x04R\n" +
+	"generation\"@\n" +
 	"\x05Reply\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\rR\x04code\x12#\n" +
 	"\raccount_token\x18\x02 \x01(\tR\faccountToken\"\xa5\x02\n" +
@@ -1439,7 +1581,7 @@ const file_control_proto_rawDesc = "" +
 	"\x04self\x18\t \x01(\bR\x04self\x12\x14\n" +
 	"\x05epoch\x18\n" +
 	" \x01(\rR\x05epoch\x12\x18\n" +
-	"\ahistory\x18\v \x01(\bR\ahistory\"t\n" +
+	"\ahistory\x18\v \x01(\bR\ahistory\"\xa7\x01\n" +
 	"\n" +
 	"ChatStatus\x12\x18\n" +
 	"\achannel\x18\x01 \x01(\rR\achannel\x12\x14\n" +
@@ -1447,7 +1589,20 @@ const file_control_proto_rawDesc = "" +
 	"\n" +
 	"generation\x18\x03 \x01(\x04R\n" +
 	"generation\x12\x16\n" +
-	"\x06status\x18\x04 \x01(\rR\x06status*\xf5\x02\n" +
+	"\x06status\x18\x04 \x01(\rR\x06status\x12\x16\n" +
+	"\x06before\x18\x05 \x01(\x04R\x06before\x12\x19\n" +
+	"\bhas_more\x18\x06 \x01(\bR\ahasMore\"\xe6\x01\n" +
+	"\bChatPage\x12\x18\n" +
+	"\achannel\x18\x01 \x01(\rR\achannel\x12\x14\n" +
+	"\x05epoch\x18\x02 \x01(\rR\x05epoch\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x03 \x01(\x04R\n" +
+	"generation\x12\x16\n" +
+	"\x06before\x18\x04 \x01(\x04R\x06before\x126\n" +
+	"\bmessages\x18\x05 \x03(\v2\x1a.resona.control.v1.MessageR\bmessages\x12\x1f\n" +
+	"\vnext_before\x18\x06 \x01(\x04R\n" +
+	"nextBefore\x12\x19\n" +
+	"\bhas_more\x18\a \x01(\bR\ahasMore*\x89\x03\n" +
 	"\x04Kind\x12\x14\n" +
 	"\x10KIND_UNSPECIFIED\x10\x00\x12\x0e\n" +
 	"\n" +
@@ -1470,7 +1625,8 @@ const file_control_proto_rawDesc = "" +
 	"\x0eKIND_CHAT_SYNC\x10\x0e\x12\x14\n" +
 	"\x10KIND_CHAT_STATUS\x10\x0f\x12\x18\n" +
 	"\x14KIND_REORDER_CHANNEL\x10\x10\x12\x10\n" +
-	"\fKIND_ACCOUNT\x10\x11B3Z1github.com/tsukiyoz/resona/internal/nativewire/pbb\x06proto3"
+	"\fKIND_ACCOUNT\x10\x11\x12\x12\n" +
+	"\x0eKIND_CHAT_PAGE\x10\x12B3Z1github.com/tsukiyoz/resona/internal/nativewire/pbb\x06proto3"
 
 var (
 	file_control_proto_rawDescOnce sync.Once
@@ -1485,7 +1641,7 @@ func file_control_proto_rawDescGZIP() []byte {
 }
 
 var file_control_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_control_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_control_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_control_proto_goTypes = []any{
 	(Kind)(0),              // 0: resona.control.v1.Kind
 	(*Frame)(nil),          // 1: resona.control.v1.Frame
@@ -1504,16 +1660,18 @@ var file_control_proto_goTypes = []any{
 	(*Reply)(nil),          // 14: resona.control.v1.Reply
 	(*Message)(nil),        // 15: resona.control.v1.Message
 	(*ChatStatus)(nil),     // 16: resona.control.v1.ChatStatus
+	(*ChatPage)(nil),       // 17: resona.control.v1.ChatPage
 }
 var file_control_proto_depIdxs = []int32{
 	0,  // 0: resona.control.v1.Frame.kind:type_name -> resona.control.v1.Kind
 	10, // 1: resona.control.v1.State.channels:type_name -> resona.control.v1.Channel
 	11, // 2: resona.control.v1.State.members:type_name -> resona.control.v1.Member
-	3,  // [3:3] is the sub-list for method output_type
-	3,  // [3:3] is the sub-list for method input_type
-	3,  // [3:3] is the sub-list for extension type_name
-	3,  // [3:3] is the sub-list for extension extendee
-	0,  // [0:3] is the sub-list for field type_name
+	15, // 3: resona.control.v1.ChatPage.messages:type_name -> resona.control.v1.Message
+	4,  // [4:4] is the sub-list for method output_type
+	4,  // [4:4] is the sub-list for method input_type
+	4,  // [4:4] is the sub-list for extension type_name
+	4,  // [4:4] is the sub-list for extension extendee
+	0,  // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_control_proto_init() }
@@ -1527,7 +1685,7 @@ func file_control_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_control_proto_rawDesc), len(file_control_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   16,
+			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

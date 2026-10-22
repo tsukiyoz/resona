@@ -98,6 +98,7 @@ enum Pending {
     Account(String, u64),
     AccountToken(String, u64),
     ChatRetry(String, String, u32),
+    ChatHistory(String, String, u32, u64),
     Update(&'static str),
     ExportDiagnostics,
     CoreInfo,
@@ -288,7 +289,9 @@ pub struct ResonaApp {
     emoji_focus: FocusHandle,
     chat_unread: bool,
     chat_follow_bottom: bool,
-    chat_scroll: gpui::ScrollHandle,
+    chat_scroll: gpui::ListState,
+    chat_history_error: String,
+    chat_scroll_drag: Option<(String, String, u32, u64)>,
     logos: [Arc<Image>; 2],
     core: Option<CoreClient>,
     workspace: Workspace,
@@ -618,7 +621,9 @@ impl ResonaApp {
             emoji_focus: cx.focus_handle(),
             chat_unread: false,
             chat_follow_bottom: true,
-            chat_scroll: gpui::ScrollHandle::new(),
+            chat_scroll: gpui::ListState::new(0, gpui::ListAlignment::Bottom, px(80.)),
+            chat_history_error: String::new(),
+            chat_scroll_drag: None,
             logos: [crate::app_icon::DARK, crate::app_icon::LIGHT]
                 .map(|bytes| Arc::new(Image::from_bytes(ImageFormat::Png, bytes.to_vec()))),
             core: None,
@@ -847,6 +852,11 @@ impl ResonaApp {
                     self.error = error;
                 }
             }
+            Pending::ChatHistory(session, channel, epoch, generation) => {
+                if self.history_scope_matches(&session, &channel, epoch, generation) {
+                    self.chat_history_error = format!("更早消息加载失败：{error}");
+                }
+            }
             Pending::Update(_) => self.update_notice = error,
             Pending::ExportDiagnostics => self.diagnostic_error = format!("导出诊断失败：{error}"),
             Pending::CoreInfo => self.build_info_error = format!("无法读取应用构建信息：{error}"),
@@ -1066,6 +1076,11 @@ impl ResonaApp {
                                     error,
                                 );
                             }
+                        }
+                    }
+                    (Some(pending @ Pending::ChatHistory(..)), result) => {
+                        if let Err(error) = result {
+                            self.request_failed(pending, error);
                         }
                     }
                     (Some(Pending::ResourceInterest(generation)), result) => {
@@ -1536,16 +1551,29 @@ impl ResonaApp {
                     self.emoji_scope = None;
                     self.chat_unread = false;
                     self.chat_follow_bottom = true;
-                    self.chat_scroll = gpui::ScrollHandle::new();
+                    self.chat_scroll.reset(workspace.messages.len());
+                    self.chat_history_error.clear();
                     self.submitted_drafts.clear();
-                } else if workspace.session.chat_state == "ready"
+                } else {
+                    update_chat_list(
+                        &self.chat_scroll,
+                        &self.workspace.messages,
+                        &workspace.messages,
+                        self.chat_follow_bottom,
+                    );
+                    if workspace.session.chat_generation != self.workspace.session.chat_generation {
+                        self.chat_history_error.clear();
+                    }
+                }
+                if !changed_channel
+                    && workspace.session.chat_state == "ready"
                     && self.workspace.session.chat_state == "loading"
                     && self.chat_follow_bottom
                 {
-                    self.chat_scroll.scroll_to_bottom();
+                    self.scroll_chat_to_bottom();
                 } else if new_message && workspace.messages.last().is_some_and(|m| !m.history) {
                     if !self.chat_collapsed && self.chat_follow_bottom {
-                        self.chat_scroll.scroll_to_bottom();
+                        self.scroll_chat_to_bottom();
                     } else {
                         self.chat_unread = true;
                     }
@@ -4443,13 +4471,109 @@ impl ResonaApp {
             .into_any_element()
     }
 
+    fn history_scope_matches(
+        &self,
+        session: &str,
+        channel: &str,
+        epoch: u32,
+        generation: u64,
+    ) -> bool {
+        self.workspace.connected()
+            && self.workspace.session.id == session
+            && self.workspace.session.channel_id == channel
+            && self.workspace.session.chat_epoch == epoch
+            && self.workspace.session.chat_generation == generation
+    }
+    fn scroll_chat_to_bottom(&self) {
+        self.chat_scroll.scroll_to(gpui::ListOffset {
+            item_ix: self.chat_scroll.item_count(),
+            offset_in_item: px(0.),
+        });
+    }
+    fn chat_history_context(&self) -> Option<(String, String, u32, u64)> {
+        (!self.closing
+            && self.modal.is_none()
+            && self.device_menu.is_none()
+            && !self.chat_collapsed
+            && !self.resources_blocked()
+            && self.workspace.connected()
+            && self.workspace.session.switching_channel_id.is_empty()
+            && visible_text_channel(&self.workspace, &self.selected_server).is_some())
+        .then(|| {
+            let session = &self.workspace.session;
+            (
+                session.id.clone(),
+                session.channel_id.clone(),
+                session.chat_epoch,
+                session.chat_generation,
+            )
+        })
+    }
+    fn load_chat_history(&mut self, cx: &mut Context<Self>) {
+        let session = &self.workspace.session;
+        if self.chat_history_context().is_none()
+            || session.chat_state != "ready"
+            || !session.chat_has_more
+            || session.chat_before == 0
+            || session.chat_history_limited
+            || self.pending.values().any(|p| {
+                matches!(p, Pending::ChatHistory(id,ch,epoch,generation)
+                if self.history_scope_matches(id,ch,*epoch,*generation))
+            })
+        {
+            return;
+        }
+        let pending = Pending::ChatHistory(
+            session.id.clone(),
+            session.channel_id.clone(),
+            session.chat_epoch,
+            session.chat_generation,
+        );
+        let params = json!({"sessionID": session.id, "channelID": session.channel_id, "epoch": session.chat_epoch,
+            "generation": session.chat_generation, "before": session.chat_before});
+        self.chat_history_error.clear();
+        self.chat_follow_bottom = false;
+        self.request("LoadChannelHistory", params, pending);
+        cx.notify();
+    }
     fn render_chat(&self, channel: &crate::model::Channel, view: &Entity<Self>) -> AnyElement {
         let can_send = self.chat_input_available();
         let toggle = view.clone();
         let latest = view.clone();
         let send = view.clone();
         let drag = view.clone();
-        let scrolled = view.clone();
+        let scrolled = view.downgrade();
+        let history = view.clone();
+        let items = view.clone();
+        let history_pending = self.pending.values().any(|p| {
+            matches!(p, Pending::ChatHistory(id,ch,epoch,generation)
+            if self.history_scope_matches(id,ch,*epoch,*generation))
+        });
+        let scroll_scope = self.chat_history_context();
+        self.chat_scroll.set_scroll_handler(move |_, window, _| {
+            let view = scrolled.clone();
+            let scope = scroll_scope.clone();
+            window.on_next_frame(move |_, cx| {
+                let _ = view.update(cx, |this, cx| {
+                    if scope.is_none() || this.chat_history_context() != scope {
+                        return;
+                    }
+                    this.chat_follow_bottom =
+                        f32::from(this.chat_scroll.max_offset_for_scrollbar().height)
+                            + f32::from(this.chat_scroll.scroll_px_offset_for_scrollbar().y)
+                            <= 4.;
+                    if this.chat_follow_bottom && this.chat_unread {
+                        this.chat_unread = false;
+                        cx.notify();
+                    }
+                    if this.chat_scroll.logical_scroll_top().item_ix <= 1
+                        && this.chat_history_error.is_empty()
+                    {
+                        this.load_chat_history(cx);
+                    }
+                });
+            });
+        });
         let retry_chat = view.clone();
         div()
             .w_full()
@@ -4530,7 +4654,7 @@ impl ResonaApp {
                                         this.chat_collapsed = false;
                                         this.chat_unread = false;
                                         this.chat_follow_bottom = true;
-                                        this.chat_scroll.scroll_to_bottom();
+                                        this.scroll_chat_to_bottom();
                                         cx.notify();
                                     });
                                 }),
@@ -4545,29 +4669,21 @@ impl ResonaApp {
                             .flex_1()
                             .min_h_0()
                             .px_3()
-                            .overflow_y_scroll()
-                            .track_scroll(&self.chat_scroll)
+                            .flex()
+                            .flex_col()
+                            .overflow_hidden()
                             .relative()
-                            .vertical_scrollbar(&self.chat_scroll)
-                            .on_scroll_wheel(move |_, window, cx| {
-                                let view = scrolled.clone();
-                                view.update(cx, |this, _| this.chat_follow_bottom = false);
-                                window.on_next_frame(move |_, cx| {
-                                    view.update(cx, |this, cx| {
-                                        this.chat_follow_bottom =
-                                            f32::from(this.chat_scroll.max_offset().height)
-                                                + f32::from(this.chat_scroll.offset().y)
-                                                <= 4.;
-                                        if this.chat_unread
-                                            && !this.chat_collapsed
-                                            && this.chat_follow_bottom
-                                        {
-                                            this.chat_unread = false;
-                                            cx.notify();
-                                        }
-                                    });
-                                });
-                            })
+                            .when(self.workspace.session.chat_state == "ready", |panel| panel.child(
+                                div().h(px(28.)).flex_shrink_0().flex().items_center().gap_2().overflow_hidden().text_xs().text_color(rgb(MUTED))
+                                    .when(history_pending, |row| row.child("正在加载更早消息…"))
+                                    .when(!history_pending && self.workspace.session.chat_history_limited, |row| row.child("已达本地浏览上限，重新进入频道可查看最新消息"))
+                                    .when(!history_pending && !self.workspace.session.chat_history_limited && !self.chat_history_error.is_empty(), |row|
+                                        row.child(div().flex_1().min_w_0().truncate().child(self.chat_history_error.clone())).child(Button::new("retry-chat-history").label("重试").ghost().h(px(22.)).text_xs()
+                                            .on_click({ let history=history.clone(); move |_,_,cx| history.update(cx,|this,cx|this.load_chat_history(cx)) })))
+                                    .when(!history_pending && !self.workspace.session.chat_history_limited && self.chat_history_error.is_empty() && self.workspace.session.chat_has_more, |row|
+                                        row.child(Button::new("load-chat-history").label("加载更早消息").ghost().h(px(22.)).text_xs()
+                                            .on_click(move |_,_,cx| history.update(cx,|this,cx|this.load_chat_history(cx)))))
+                            ))
                             .when(self.workspace.session.chat_state == "loading", |list| {
                                 list.child(
                                     div()
@@ -4626,12 +4742,12 @@ impl ResonaApp {
                                         .child("暂无频道消息"),
                                 )
                             })
-                            .children(
-                                self.workspace
-                                    .messages
-                                    .iter()
-                                    .filter(|m| m.channel_id == self.workspace.session.channel_id)
-                                    .map(|message| {
+                            .child(
+                                div().flex_1().min_h_0().relative().child(
+                                gpui::list(self.chat_scroll.clone(), move |index, _, cx| {
+                                        let this = items.read(cx);
+                                        let Some(message) = this.workspace.messages.get(index) else { return div().into_any_element(); };
+                                        let view = items.clone();
                                         let retry = view.clone();
                                         let retry_id = message.id.clone();
                                         let copy_text = message.text.clone();
@@ -4668,8 +4784,8 @@ impl ResonaApp {
                                                     .text_xs()
                                                     .text_color(rgb(
                                                         if message.author_id
-                                                            == self.workspace.session.self_id
-                                                            || message.author_id == self.workspace.session.identity_uid
+                                                            == this.workspace.session.self_id
+                                                            || message.author_id == this.workspace.session.identity_uid
                                                         {
                                                             MINT
                                                         } else {
@@ -4765,7 +4881,9 @@ impl ResonaApp {
                                         div()
                                             .id(SharedString::from(format!("text-{}", message.id)))
                                             .child(row)
-                                    }),
+                                            .into_any_element()
+                                    }).size_full()
+                                ).vertical_scrollbar(&self.chat_scroll),
                             ),
                     )
                     .child(
@@ -8363,77 +8481,103 @@ impl Render for ResonaApp {
                 format!("{name} 的收听设置未应用：{error}")
             })
             .unwrap_or_else(|| self.error.clone());
-        let content = div()
-            .id("resona-root")
-            .relative()
-            .w_full()
-            .flex_1()
-            .min_h_0()
-            .min_w_0()
-            .overflow_hidden()
-            .track_focus(&self.focus)
-            .on_mouse_move(
-                cx.listener(|this, event: &gpui::MouseMoveEvent, window, cx| {
-                    if let Some((start_y, start_height)) = this.composer_drag {
-                        if event.pressed_button != Some(gpui::MouseButton::Left)
-                            || visible_text_channel(&this.workspace, &this.selected_server)
-                                .is_none()
-                        {
-                            this.composer_drag = None;
-                            return;
+        let content =
+            div()
+                .id("resona-root")
+                .relative()
+                .w_full()
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .overflow_hidden()
+                .track_focus(&self.focus)
+                .on_mouse_move(
+                    cx.listener(|this, event: &gpui::MouseMoveEvent, window, cx| {
+                        if let Some((start_y, start_height)) = this.composer_drag {
+                            if event.pressed_button != Some(gpui::MouseButton::Left)
+                                || visible_text_channel(&this.workspace, &this.selected_server)
+                                    .is_none()
+                            {
+                                this.composer_drag = None;
+                                return;
+                            }
+                            this.composer_height = composer_height(
+                                start_height + start_y - f32::from(event.position.y),
+                                f32::from(window.viewport_size().height),
+                            );
+                            cx.notify();
                         }
-                        this.composer_height = composer_height(
-                            start_height + start_y - f32::from(event.position.y),
-                            f32::from(window.viewport_size().height),
-                        );
-                        cx.notify();
+                    }),
+                )
+                .on_mouse_up(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.composer_drag = None;
+                        this.chat_follow_bottom =
+                            f32::from(this.chat_scroll.max_offset_for_scrollbar().height)
+                                + f32::from(this.chat_scroll.scroll_px_offset_for_scrollbar().y)
+                                <= 4.;
+                        if this.chat_scroll_drag.take().is_some_and(|scope| {
+                            this.chat_history_context().as_ref() == Some(&scope)
+                        }) && this.chat_scroll.logical_scroll_top().item_ix <= 1
+                            && this.chat_history_error.is_empty()
+                        {
+                            this.load_chat_history(cx);
+                        }
+                    }),
+                )
+                .capture_any_mouse_down(cx.listener(|this, event: &gpui::MouseDownEvent, _, _| {
+                    let bounds = this.chat_scroll.viewport_bounds();
+                    this.chat_scroll_drag = (event.button == gpui::MouseButton::Left
+                        && bounds.contains(&event.position)
+                        && event.position.x >= bounds.right() - px(14.))
+                    .then(|| this.chat_history_context())
+                    .flatten();
+                }))
+                .on_mouse_up_out(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.composer_drag = None;
+                        if this.chat_scroll_drag.take().is_some_and(|scope| {
+                            this.chat_history_context().as_ref() == Some(&scope)
+                        }) && this.chat_scroll.logical_scroll_top().item_ix <= 1
+                            && this.chat_history_error.is_empty()
+                        {
+                            this.load_chat_history(cx);
+                        }
+                    }),
+                )
+                .on_action(cx.listener(Self::dismiss_modal))
+                .on_action(cx.listener(|this, _: &Quit, _, cx| this.begin_shutdown(cx)))
+                .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                    if event.keystroke.key == "escape" && this.composer_drag.take().is_some() {
+                        cx.stop_propagation();
+                        return;
                     }
-                }),
-            )
-            .on_mouse_up(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _, _, _| {
-                    this.composer_drag = None;
-                    this.chat_follow_bottom = f32::from(this.chat_scroll.max_offset().height)
-                        + f32::from(this.chat_scroll.offset().y)
-                        <= 4.;
-                }),
-            )
-            .on_mouse_up_out(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _, _, _| this.composer_drag = None),
-            )
-            .on_action(cx.listener(Self::dismiss_modal))
-            .on_action(cx.listener(|this, _: &Quit, _, cx| this.begin_shutdown(cx)))
-            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                if event.keystroke.key == "escape" && this.composer_drag.take().is_some() {
-                    cx.stop_propagation();
-                    return;
-                }
-                if event.keystroke.key == "f8" && this.hotkey.is_none() {
-                    if !event.is_held {
-                        this.handle_ptt_key(true, cx);
+                    if event.keystroke.key == "f8" && this.hotkey.is_none() {
+                        if !event.is_held {
+                            this.handle_ptt_key(true, cx);
+                        }
+                        cx.stop_propagation();
                     }
-                    cx.stop_propagation();
-                }
-            }))
-            .capture_key_up(cx.listener(|this, event: &gpui::KeyUpEvent, _, cx| {
-                if event.keystroke.key == "f8" && this.hotkey.is_none() {
-                    this.handle_ptt_key(false, cx);
-                    cx.stop_propagation();
-                }
-            }))
-            .font_family(if cfg!(target_os = "windows") {
-                "Segoe UI"
-            } else {
-                ".SystemUIFont"
-            })
-            .text_color(rgb(TEXT))
-            .bg(rgb(BG))
-            .flex()
-            .flex_col()
-            .when(self.preference_error.is_some(), |root| {
-                root.child(
+                }))
+                .capture_key_up(cx.listener(|this, event: &gpui::KeyUpEvent, _, cx| {
+                    if event.keystroke.key == "f8" && this.hotkey.is_none() {
+                        this.handle_ptt_key(false, cx);
+                        cx.stop_propagation();
+                    }
+                }))
+                .font_family(if cfg!(target_os = "windows") {
+                    "Segoe UI"
+                } else {
+                    ".SystemUIFont"
+                })
+                .text_color(rgb(TEXT))
+                .bg(rgb(BG))
+                .flex()
+                .flex_col()
+                .when(self.preference_error.is_some(), |root| {
+                    root.child(
                     div()
                         .w_full()
                         .flex_shrink_0()
@@ -8447,94 +8591,96 @@ impl Render for ResonaApp {
                             "偏好未加载或未保存，本次修改不保存；请在设置 → 诊断查看并修复后重启。",
                         ),
                 )
-            })
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .w_full()
-                    .flex()
-                    .child(self.render_rail(&view))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .relative()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_h_0()
-                                    .w_full()
-                                    .flex()
-                                    .child(self.render_sidebar(&view, self.channel_drag.is_some()))
-                                    .when(self.detail_selection.is_some(), |body| {
-                                        body.child(self.render_details(&view))
-                                    }),
-                            )
-                            .when_some(
-                                visible_text_channel(&self.workspace, &self.selected_server),
-                                |body, channel| body.child(self.render_chat(channel, &view)),
-                            )
-                            .when_some(self.render_server_stage(&view), |body, stage| {
-                                body.child(stage)
-                            }),
-                    ),
-            )
-            .child(self.render_voicebar(&view))
-            .when(!display_error.is_empty() && self.modal.is_none(), |root| {
-                let entity = view.clone();
-                root.child(
+                })
+                .child(
                     div()
-                        .absolute()
-                        .left(px(self.navigation_width() + 16.))
-                        .right(px(16.))
-                        .top(px(64.))
-                        .p_3()
-                        .rounded(px(5.))
-                        .border_1()
-                        .border_color(rgb(0x724146))
-                        .bg(rgb(0x3b2528))
-                        .shadow_md()
+                        .flex_1()
+                        .min_h_0()
+                        .w_full()
                         .flex()
-                        .items_center()
-                        .gap_3()
+                        .child(self.render_rail(&view))
                         .child(
                             div()
                                 .flex_1()
-                                .text_xs()
-                                .text_color(rgb(RED))
-                                .child(display_error.clone()),
-                        )
-                        .child(
-                            Button::new("dismiss-error")
-                                .icon(IconName::Close)
-                                .ghost()
-                                .tooltip("关闭")
-                                .on_click(move |_, _, cx| {
-                                    entity.update(cx, |this, cx| {
-                                        this.error.clear();
-                                        this.playback_error = None;
-                                        cx.notify();
-                                    })
+                                .min_w_0()
+                                .relative()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_h_0()
+                                        .w_full()
+                                        .flex()
+                                        .child(
+                                            self.render_sidebar(&view, self.channel_drag.is_some()),
+                                        )
+                                        .when(self.detail_selection.is_some(), |body| {
+                                            body.child(self.render_details(&view))
+                                        }),
+                                )
+                                .when_some(
+                                    visible_text_channel(&self.workspace, &self.selected_server),
+                                    |body, channel| body.child(self.render_chat(channel, &view)),
+                                )
+                                .when_some(self.render_server_stage(&view), |body, stage| {
+                                    body.child(stage)
                                 }),
                         ),
                 )
-            })
-            .children(self.render_modal(&view))
-            .when(self.closing, |root| {
-                root.child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .bg(rgba(0x101214ed))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(div().text_sm().child("正在断开并退出")),
-                )
-            });
+                .child(self.render_voicebar(&view))
+                .when(!display_error.is_empty() && self.modal.is_none(), |root| {
+                    let entity = view.clone();
+                    root.child(
+                        div()
+                            .absolute()
+                            .left(px(self.navigation_width() + 16.))
+                            .right(px(16.))
+                            .top(px(64.))
+                            .p_3()
+                            .rounded(px(5.))
+                            .border_1()
+                            .border_color(rgb(0x724146))
+                            .bg(rgb(0x3b2528))
+                            .shadow_md()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_xs()
+                                    .text_color(rgb(RED))
+                                    .child(display_error.clone()),
+                            )
+                            .child(
+                                Button::new("dismiss-error")
+                                    .icon(IconName::Close)
+                                    .ghost()
+                                    .tooltip("关闭")
+                                    .on_click(move |_, _, cx| {
+                                        entity.update(cx, |this, cx| {
+                                            this.error.clear();
+                                            this.playback_error = None;
+                                            cx.notify();
+                                        })
+                                    }),
+                            ),
+                    )
+                })
+                .children(self.render_modal(&view))
+                .when(self.closing, |root| {
+                    root.child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .bg(rgba(0x101214ed))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(div().text_sm().child("正在断开并退出")),
+                    )
+                });
         div()
             .w(window.viewport_size().width)
             .h(window.viewport_size().height)
@@ -8557,6 +8703,47 @@ fn notification_applies(workspace: &Workspace, notification: &crate::model::Noti
         }
         _ => false,
     }
+}
+
+fn update_chat_list(
+    list: &gpui::ListState,
+    old: &[crate::model::Message],
+    new: &[crate::model::Message],
+    follow_bottom: bool,
+) {
+    let top = list.logical_scroll_top();
+    let anchor = old.get(top.item_ix).map(|m| &m.id);
+    let prefix = old
+        .iter()
+        .zip(new)
+        .take_while(|(a, b)| same_chat_row(a, b))
+        .count();
+    let suffix = old[prefix..]
+        .iter()
+        .rev()
+        .zip(new[prefix..].iter().rev())
+        .take_while(|(a, b)| same_chat_row(a, b))
+        .count();
+    if prefix != old.len() || prefix != new.len() {
+        list.splice(prefix..old.len() - suffix, new.len() - prefix - suffix);
+        if !follow_bottom
+            && let Some(index) = anchor.and_then(|id| new.iter().position(|m| &m.id == id))
+        {
+            list.scroll_to(gpui::ListOffset {
+                item_ix: index,
+                offset_in_item: top.offset_in_item,
+            });
+        }
+    }
+}
+
+fn same_chat_row(a: &crate::model::Message, b: &crate::model::Message) -> bool {
+    a.id == b.id
+        && a.text == b.text
+        && a.author == b.author
+        && a.created_at == b.created_at
+        && a.status == b.status
+        && a.error == b.error
 }
 
 fn chat_retry_is_current(workspace: &Workspace, session: &str, channel: &str, epoch: u32) -> bool {
@@ -9157,6 +9344,32 @@ fn ordered_channels(channels: &[crate::model::Channel]) -> Vec<(crate::model::Ch
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn history_prepend_and_live_append_keep_the_visible_message_and_pixel_offset() {
+        let message = |id: usize| crate::model::Message {
+            id: format!("message-{id}"),
+            ..Default::default()
+        };
+        let old: Vec<_> = (20..40).map(message).collect();
+        let list = gpui::ListState::new(old.len(), gpui::ListAlignment::Bottom, gpui::px(80.));
+        list.scroll_to(gpui::ListOffset {
+            item_ix: 3,
+            offset_in_item: gpui::px(7.),
+        });
+        let mut new: Vec<_> = (0..41).map(message).collect();
+        super::update_chat_list(&list, &old, &new, false);
+        assert_eq!(list.item_count(), 41);
+        assert_eq!(list.logical_scroll_top().item_ix, 23);
+        assert_eq!(list.logical_scroll_top().offset_in_item, gpui::px(7.));
+        let before = new.clone();
+        new[23].status = "failed".into();
+        new[23].error = "server rejected".into();
+        super::update_chat_list(&list, &before, &new, false);
+        assert_eq!(list.logical_scroll_top().item_ix, 23);
+        assert_eq!(list.logical_scroll_top().offset_in_item, gpui::px(7.));
+        super::update_chat_list(&list, &new, &[], false);
+        assert_eq!(list.item_count(), 0);
+    }
     #[test]
     fn hidden_meter_updates_are_stored_without_repainting() {
         use super::Modal;
