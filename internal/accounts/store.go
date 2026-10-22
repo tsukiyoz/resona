@@ -78,8 +78,8 @@ func Open(directory string) (_ *Store, err error) {
 	if err != nil {
 		return nil, err
 	}
-	u := url.URL{Scheme: "file", Path: path}
-	db, err := sql.Open("sqlite", u.String()+"?_pragma=busy_timeout(2000)&_pragma=foreign_keys(1)")
+	uri := sqliteURI(path)
+	db, err := sql.Open("sqlite", uri+"?_pragma=busy_timeout(2000)&_pragma=foreign_keys(1)")
 	if err != nil {
 		return nil, err
 	}
@@ -126,6 +126,19 @@ COMMIT;`)
 	}
 	s.dummy = passwordHash(rand.Text())
 	return s, nil
+}
+
+// sqliteURI renders an absolute path as a file URI that SQLite parses as a
+// plain path. The two-slash form (file:C:\...) makes SQLite read the drive
+// letter as the URI authority and reject the database on Windows, so the path
+// is slash-separated with an explicit leading slash:
+// file:///C:/Users/name/accounts.sqlite.
+func sqliteURI(absolute string) string {
+	slashed := filepath.ToSlash(absolute)
+	if !strings.HasPrefix(slashed, "/") {
+		slashed = "/" + slashed
+	}
+	return (&url.URL{Scheme: "file", Path: slashed}).String()
 }
 
 func (s *Store) Close() error { return s.db.Close() }
