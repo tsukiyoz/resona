@@ -20,13 +20,13 @@ import (
 
 	"github.com/thesyncim/gopus"
 	"github.com/tsukiyoz/resona/internal/audio"
-	"github.com/tsukiyoz/resona/internal/audio/speexdsp"
 	"github.com/tsukiyoz/resona/internal/audio/webrtc"
 	"github.com/tsukiyoz/resona/internal/client"
 	w "github.com/tsukiyoz/resona/internal/nativewire"
 	"github.com/tsukiyoz/resona/internal/noiseudp"
 	"github.com/tsukiyoz/resona/internal/protocol/native"
 	"github.com/tsukiyoz/resona/internal/server"
+	"github.com/tsukiyoz/resona/native/speexdsp"
 )
 
 func readPCM(path string) ([]float32, error) {

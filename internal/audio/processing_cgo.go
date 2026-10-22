@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/tsukiyoz/resona/internal/audio/speexdsp"
 	"github.com/tsukiyoz/resona/internal/audio/webrtc"
+	"github.com/tsukiyoz/resona/native/speexdsp"
 )
 
 const speexAvailable = true
