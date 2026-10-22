@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/tsukiyoz/resona/internal/accounts"
 	w "github.com/tsukiyoz/resona/internal/nativewire"
 )
 
@@ -20,6 +21,7 @@ func channelTestServer(t *testing.T) (*Server, *peer, string) {
 		t.Fatal(err)
 	}
 	p := &peer{identity: strings.Repeat("a", 64)}
+	p.account = accounts.Proof{Account: accounts.Account{UID: p.identity}}
 	if err = store.Claim(p.identity, token); err != nil {
 		t.Fatal(err)
 	}

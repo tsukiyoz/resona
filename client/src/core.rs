@@ -674,6 +674,62 @@ impl App {
                     .map_err(str::to_owned)?;
                 Ok(self.workspace())
             }
+            "AccountCommand" => {
+                let id = string("sessionID");
+                let action = string("action");
+                let username = string("username");
+                let nickname = string("nickname");
+                if ![
+                    "register",
+                    "password",
+                    "token",
+                    "change_password",
+                    "update_profile",
+                    "logout",
+                ]
+                .contains(&action.as_str())
+                {
+                    return Err("未知用户操作".into());
+                }
+                let mut secret = |key: &str| {
+                    Zeroizing::new(
+                        params
+                            .get_mut(key)
+                            .and_then(|v| v.take().as_str().map(str::to_owned))
+                            .unwrap_or_default(),
+                    )
+                };
+                let command = session::AccountRequest {
+                    action: action.clone(),
+                    username,
+                    nickname,
+                    password: secret("password"),
+                    token: secret("token"),
+                    new_password: secret("newPassword"),
+                };
+                command.validate().map_err(str::to_owned)?;
+                self.command(&id, session::Command::Account(command))
+                    .await?;
+                if action == "logout" && self.life.session(&id).is_ok() {
+                    let _lock = self.connection_operation.lock().await;
+                    if self.life.session(&id).is_ok() {
+                        self.stop_voice_and_disconnect().await?;
+                    }
+                }
+                self.refresh(true);
+                Ok(self.workspace())
+            }
+            "GetAccountToken" => {
+                let handle = self
+                    .life
+                    .session(&string("sessionID"))
+                    .map_err(|e| e.message())?;
+                let secret = handle.account_token();
+                if secret.is_empty() {
+                    return Err("请先登录账号".into());
+                }
+                Ok(json!({"token": secret.as_str()}))
+            }
             "SelectChannel" => {
                 let id = channel(&string("id"))?;
                 let session = {

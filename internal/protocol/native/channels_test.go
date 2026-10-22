@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/tsukiyoz/resona/internal/client"
+	w "github.com/tsukiyoz/resona/internal/nativewire"
 	"github.com/tsukiyoz/resona/internal/server"
 )
 
@@ -36,6 +37,9 @@ func TestChannelManagementSyncPermissionsAndRestart(t *testing.T) {
 		a, oa := connect(p)
 		b, ob := connectTest(t, p)
 		ctx := context.Background()
+		if err = a.command(ctx, w.AccountKind, w.AccountCommand{Action: "register", Username: "owner", Password: "test-account-password"}); err != nil {
+			t.Fatal(err)
+		}
 		if err = a.ClaimOwner(ctx, token); err != nil {
 			t.Fatal(err)
 		}
@@ -107,6 +111,9 @@ func TestChannelManagementSyncPermissionsAndRestart(t *testing.T) {
 		cfg.Store = openTestResources(t, dir)
 		p, _, _ = startServerConfigured(t, cfg)
 		a, oa = connect(p)
+		if err = a.command(ctx, w.AccountKind, w.AccountCommand{Action: "password", Username: "owner", Password: "test-account-password"}); err != nil {
+			t.Fatal(err)
+		}
 		if !oa.snapshot().CanManageChannels || len(oa.snapshot().Channels) != 2 {
 			t.Fatal("restart lost state")
 		}

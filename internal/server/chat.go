@@ -29,6 +29,7 @@ type ChatConfig struct {
 }
 
 type chatStore struct {
+	directory       string
 	server          *natsserver.Server
 	conn            *nats.Conn
 	js              jetstream.JetStream
@@ -72,6 +73,7 @@ func openChatConfigured(cfg ChatConfig, preserveExisting bool) (_ *chatStore, er
 	if err = os.MkdirAll(cfg.Directory, 0o700); err != nil {
 		return nil, err
 	}
+	c.directory = cfg.Directory
 	c.server, err = natsserver.NewServer(&natsserver.Options{
 		DontListen: true, NoSigs: true, NoLog: true, NoSystemAccount: true,
 		JetStream: true, StoreDir: cfg.Directory, JetStreamMaxMemory: 8 << 20,
@@ -235,12 +237,13 @@ func (s *Server) chatLoop(p *peer) {
 		}
 		s.mu.Lock()
 		channel, epoch, generation := p.member.Channel, p.epoch, p.chatGeneration
+		author := p.authorUID()
 		ctx, cancel := context.WithCancel(p.conn.Context())
 		p.chatCancel = cancel
 		s.mu.Unlock()
 		send := func(kind uint8, value any) error {
 			s.mu.Lock()
-			current := s.peers[p.member.ID] == p && p.epoch == epoch && p.chatGeneration == generation
+			current := !p.removed && s.peers[p.member.ID] == p && p.epoch == epoch && p.chatGeneration == generation
 			s.mu.Unlock()
 			if !current || ctx.Err() != nil {
 				return context.Canceled
@@ -262,7 +265,7 @@ func (s *Server) chatLoop(p *peer) {
 			}
 		}
 		err := s.chat.read(ctx, channel, func(msg w.Message) error {
-			msg.Epoch, msg.Self = epoch, msg.AuthorUID == p.identity
+			msg.Epoch, msg.Self = epoch, msg.AuthorUID == author
 			return send(w.MessageKind, msg)
 		}, func() error {
 			return send(w.ChatStatusKind, w.ChatStatus{Channel: channel, Epoch: epoch, Generation: generation, Status: 1})
@@ -283,14 +286,16 @@ func (s *Server) chatLoop(p *peer) {
 func (s *Server) chatCommand(p *peer, f w.Frame, cmd w.Command) {
 	s.mu.Lock()
 	code := uint8(w.OK)
-	if !p.commandBucket.take(10, 20) {
+	if p.removed {
+		code = w.PermissionDenied
+	} else if !p.commandBucket.take(10, 20) {
 		code = w.RateLimited
 	} else if cmd.Channel != p.member.Channel {
 		code = w.WrongChannel
 	} else if !utf8.ValidString(cmd.Text) || len(cmd.Text) > 8192 || strings.TrimSpace(cmd.Text) == "" || strings.ContainsRune(cmd.Text, 0) || !validMessageID(cmd.MessageID) {
 		code = w.Rejected
 	}
-	msg := w.Message{Channel: p.member.Channel, Sender: p.member.ID, Nickname: p.member.Nickname, Text: cmd.Text, AuthorUID: p.identity, ClientID: cmd.MessageID}
+	msg := w.Message{Channel: p.member.Channel, Sender: p.member.ID, Nickname: p.member.Nickname, Text: cmd.Text, AuthorUID: p.authorUID(), ClientID: cmd.MessageID}
 	s.mu.Unlock()
 	if code == w.OK {
 		ctx, cancel := context.WithTimeout(p.conn.Context(), 2*time.Second)

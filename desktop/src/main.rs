@@ -26,6 +26,7 @@ impl AssetSource for Assets {
             "headphones.svg" => Some(include_bytes!("../assets/headphones.svg")),
             "headphones-off.svg" => Some(include_bytes!("../assets/headphones-off.svg")),
             "volume-2.svg" => Some(include_bytes!("../assets/volume-2.svg")),
+            "smile.svg" => Some(include_bytes!("../assets/smile.svg")),
             _ => None,
         };
         if let Some(asset) = asset {
@@ -42,6 +43,7 @@ impl AssetSource for Assets {
             "mic-off.svg",
             "headphones.svg",
             "headphones-off.svg",
+            "smile.svg",
             "volume-2.svg",
         ] {
             if asset.starts_with(path) {
@@ -74,6 +76,7 @@ fn main() -> Result<()> {
     Application::new().with_assets(Assets).run(|cx| {
         gpui_component::init(cx);
         cx.bind_keys([
+            KeyBinding::new("escape", ui::DismissEmoji, Some("ResonaEmoji")),
             KeyBinding::new("escape", ui::DismissModal, None),
             KeyBinding::new("cmd-q", ui::Quit, None),
             KeyBinding::new("ctrl-q", ui::Quit, None),

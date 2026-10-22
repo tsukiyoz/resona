@@ -59,7 +59,7 @@ func (s *Server) disconnectBanned() {
 	s.mu.Lock()
 	var closing []*peer
 	for _, p := range s.peers {
-		if s.config.Store.Banned(p.identity) && !p.removed {
+		if (s.config.Store.Banned(p.identity) || s.config.Store.Banned(p.principal())) && !p.removed {
 			p.removed = true
 			p.member.Muted = true
 			p.member.Deafened = true
@@ -98,7 +98,7 @@ func (s *Server) ModerateMember(ctx context.Context, actor string, id uint16, in
 		s.mu.Unlock()
 		return ErrNotFound
 	}
-	if !authorized(r, actor, "members", "write", roleOf(r, p.identity)) {
+	if !authorized(r, actor, "members", "write", roleOf(r, p.principal())) {
 		s.mu.Unlock()
 		return ErrPermission
 	}
@@ -157,6 +157,10 @@ func (a *AdminConsole) role(wr http.ResponseWriter, r *http.Request) {
 	}
 	if v.Revision == 0 {
 		adminFailure(wr, ErrInvalid)
+		return
+	}
+	if _, err := a.server.config.Store.accounts.Account(r.Context(), r.PathValue("identity")); err != nil {
+		adminFailure(wr, ErrNotFound)
 		return
 	}
 	err := a.server.config.Store.SetRole(r.Context(), session.Identity, r.PathValue("identity"), v.Role, v.Revision)

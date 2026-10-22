@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tsukiyoz/resona/internal/accounts"
 	w "github.com/tsukiyoz/resona/internal/nativewire"
 )
 
@@ -34,10 +35,12 @@ func TestModerationChecksTargetSessionAndRole(t *testing.T) {
 		t.Fatal("move corrupted route/voice state")
 	}
 	p.identity = owner.identity
+	p.account = owner.account
 	if err := s.ModerateMember(ctx, admin, 1, p.member.Instance, "kick", 0, rev); !errors.Is(err, ErrPermission) {
 		t.Fatal("admin moderated owner", err)
 	}
 	p.identity = member
+	p.account = accounts.Proof{}
 	if err := s.ModerateMember(ctx, admin, 1, p.member.Instance, "kick", 0, rev); err != nil {
 		t.Fatal(err)
 	}

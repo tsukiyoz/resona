@@ -12,6 +12,10 @@ import (
 // ordinary copyable values, without protobuf runtime state or mutable pointers.
 func marshalBody(kind uint8, value any) (proto.Message, error) {
 	switch v := value.(type) {
+	case AccountCommand:
+		if kind == AccountKind {
+			return &pb.AccountCommand{Action: v.Action, Username: v.Username, Password: v.Password, Token: v.Token, NewPassword: v.NewPassword, Nickname: v.Nickname}, nil
+		}
 	case WatchResources:
 		if kind == WatchResourcesKind {
 			return &pb.WatchResources{AllChannels: v.AllChannels, AllMembers: v.AllMembers}, nil
@@ -49,6 +53,7 @@ func marshalBody(kind uint8, value any) (proto.Message, error) {
 		s.CanReorderChannels = v.CanReorderChannels
 		s.CanConfigureChannelAudio = v.CanConfigureChannelAudio
 		s.CanWatchResources, s.Revision = v.CanWatchResources, v.Revision
+		s.AccountUid, s.AccountName = v.AccountUID, v.AccountName
 		s.AllChannels, s.AllMembers, s.DefaultChannel = v.AllChannels, v.AllMembers, uint32(v.DefaultChannel)
 		// One backing allocation per collection instead of one per member. These
 		// fresh messages are initialized before publication and never copied later.
@@ -59,7 +64,7 @@ func marshalBody(kind uint8, value any) (proto.Message, error) {
 			s.Channels[i] = &channels[i]
 		}
 		for i, m := range v.Members {
-			members[i] = pb.Member{Id: uint32(m.ID), Channel: uint32(m.Channel), Nickname: m.Nickname, Instance: m.Instance, Muted: m.Muted, Deafened: m.Deafened, Epoch: m.Epoch}
+			members[i] = pb.Member{Id: uint32(m.ID), Channel: uint32(m.Channel), Nickname: m.Nickname, Instance: m.Instance, Muted: m.Muted, Deafened: m.Deafened, Epoch: m.Epoch, AccountUid: m.AccountUID, ServerRole: m.ServerRole}
 			s.Members[i] = &members[i]
 		}
 		return s, nil
@@ -69,7 +74,7 @@ func marshalBody(kind uint8, value any) (proto.Message, error) {
 		}
 	case Reply:
 		if kind == ReplyKind {
-			return &pb.Reply{Code: uint32(v.Code)}, nil
+			return &pb.Reply{Code: uint32(v.Code), AccountToken: v.AccountToken}, nil
 		}
 	case Message:
 		if kind == MessageKind {
@@ -85,6 +90,18 @@ func marshalBody(kind uint8, value any) (proto.Message, error) {
 
 func decodeBody(f Frame, value any) error {
 	switch out := value.(type) {
+	case *AccountCommand:
+		if out == nil || f.Kind != AccountKind {
+			return ErrPacket
+		}
+		var v pb.AccountCommand
+		if err := unmarshal.Unmarshal(f.Body, &v); err != nil {
+			return err
+		}
+		if len(v.Action) > 32 || len(v.Username) > 32 || len(v.Password) > 256 || len(v.Token) > 256 || len(v.NewPassword) > 256 || len(v.Nickname) > 120 {
+			return ErrPacket
+		}
+		*out = AccountCommand{Action: v.Action, Username: v.Username, Password: v.Password, Token: v.Token, NewPassword: v.NewPassword, Nickname: v.Nickname}
 	case *WatchResources:
 		if out == nil || f.Kind != WatchResourcesKind {
 			return ErrPacket
@@ -183,7 +200,10 @@ func decodeBody(f Frame, value any) error {
 		if v.Code > math.MaxUint8 {
 			return ErrPacket
 		}
-		*out = Reply{Code: uint8(v.Code)}
+		if len(v.AccountToken) > 256 {
+			return ErrPacket
+		}
+		*out = Reply{Code: uint8(v.Code), AccountToken: v.AccountToken}
 	case *Message:
 		if out == nil || f.Kind != MessageKind {
 			return ErrPacket
@@ -224,6 +244,7 @@ func decodeBody(f Frame, value any) error {
 		s.CanReorderChannels = v.CanReorderChannels
 		s.CanConfigureChannelAudio = v.CanConfigureChannelAudio
 		s.CanWatchResources, s.Revision = v.CanWatchResources, v.Revision
+		s.AccountUID, s.AccountName = v.AccountUid, v.AccountName
 		s.AllChannels, s.AllMembers, s.DefaultChannel = v.AllChannels, v.AllMembers, uint16(v.DefaultChannel)
 		for i, c := range v.Channels {
 			if c == nil || c.Id > math.MaxUint16 {
@@ -235,7 +256,7 @@ func decodeBody(f Frame, value any) error {
 			if m == nil || m.Id > math.MaxUint16 || m.Channel > math.MaxUint16 {
 				return ErrPacket
 			}
-			s.Members[i] = Member{ID: uint16(m.Id), Channel: uint16(m.Channel), Nickname: m.Nickname, Instance: m.Instance, Muted: m.Muted, Deafened: m.Deafened, Epoch: m.Epoch}
+			s.Members[i] = Member{ID: uint16(m.Id), Channel: uint16(m.Channel), Nickname: m.Nickname, Instance: m.Instance, Muted: m.Muted, Deafened: m.Deafened, Epoch: m.Epoch, AccountUID: m.AccountUid, ServerRole: m.ServerRole}
 		}
 		*out = s
 	default:

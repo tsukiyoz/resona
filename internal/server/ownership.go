@@ -16,12 +16,6 @@ type claimSecret struct {
 	Expires time.Time `json:"expires"`
 }
 
-// ownerRecord is retained only for importing pre-KV installations.
-type ownerRecord struct {
-	Version  int    `json:"version"`
-	Identity string `json:"identity"`
-}
-
 func validIdentity(id string) bool {
 	data, err := hex.DecodeString(id)
 	return err == nil && len(data) == 32 && id == hex.EncodeToString(data)

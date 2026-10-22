@@ -20,6 +20,8 @@ const (
 	AuthenticationFailed = 2
 	MemberKicked         = 3
 	MemberBanned         = 4
+	AccountReplaced      = 6
+	AccountRevoked       = 7
 )
 
 const (
@@ -39,6 +41,7 @@ const (
 	ChatSyncKind
 	ChatStatusKind
 	ReorderChannelKind
+	AccountKind
 )
 
 var ErrPacket = errors.New("invalid Resona packet")
@@ -81,13 +84,15 @@ type (
 )
 
 type Member struct {
-	ID       uint16
-	Channel  uint16
-	Nickname string
-	Instance string
-	Muted    bool
-	Deafened bool
-	Epoch    uint32
+	ID         uint16
+	Channel    uint16
+	Nickname   string
+	Instance   string
+	Muted      bool
+	Deafened   bool
+	Epoch      uint32
+	AccountUID string
+	ServerRole string
 }
 type State struct {
 	CanWatchResources        bool
@@ -100,6 +105,8 @@ type State struct {
 	Channels                 []Channel
 	Members                  []Member
 	IdentityUID              string
+	AccountUID               string
+	AccountName              string
 	ServerRole               string
 	CanClaimOwner            bool
 	CanManageChannels        bool
@@ -125,7 +132,12 @@ type Command struct {
 	Deafened  bool
 }
 type Reply struct {
-	Code uint8
+	Code         uint8
+	AccountToken string
+}
+
+type AccountCommand struct {
+	Action, Username, Password, Token, NewPassword, Nickname string
 }
 
 const (
@@ -139,6 +151,9 @@ const (
 	StorageFailed
 	ChannelLimit
 	DeliveryUnknown
+	AccountInvalid
+	AccountNameTaken
+	AccountBusy
 )
 
 type Message struct {

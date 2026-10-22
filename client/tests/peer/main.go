@@ -27,7 +27,15 @@ func main() {
 	slow := flag.Bool("slow-command-acks", false, "drop the first two post-login control ACKs")
 	vectors := flag.Bool("vectors", false, "print fixed-key Go rekey reference vectors")
 	codec := flag.Bool("codec", false, "local Opus cross-language reference")
+	recovery := flag.Bool("account-recovery", false, "rotate recovery credentials, then interrupt the first channel restore")
 	flag.Parse()
+	if *recovery {
+		if err := accountRecovery(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if *codec {
 		if err := codecReference(); err != nil {
 			fmt.Fprintln(os.Stderr, err)

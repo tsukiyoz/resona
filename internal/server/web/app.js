@@ -1,6 +1,6 @@
 const $ = (selector) => document.querySelector(selector);
 const base = "/api/admin/v1";
-const roleNames = { owner: "所有者", admin: "管理员", member: "成员" };
+const roleNames = { owner: "所有者", admin: "管理员", member: "用户", guest: "游客" };
 const esc = (value) =>
   String(value ?? "").replace(
     /[&<>"']/g,
@@ -129,6 +129,7 @@ function reset(message = "") {
   $("#workspace").hidden = true;
   $("#login-screen").hidden = false;
   $("#token").value = "";
+  $("#account-password").value = "";
   $("#login-error").textContent = message;
   $("#login-form button").disabled = loggingOut;
   $("#login-form button").textContent = "登录";
@@ -258,7 +259,7 @@ function canModerate(member) {
   return (
     snapshot.capabilities.members &&
     member.role !== "owner" &&
-    (snapshot.role === "owner" || member.role === "member")
+    (snapshot.role === "owner" || member.role === "member" || member.role === "guest")
   );
 }
 
@@ -276,18 +277,18 @@ function renderMembers() {
 }
 
 function renderAccess() {
-  const identities = [
-    { identity: snapshot.owner, role: "owner" },
-    ...(snapshot.admins || []).map((identity) => ({ identity, role: "admin" })),
-  ];
-  let html = `<div class="section-heading"><h3>管理身份</h3>${snapshot.capabilities.roles ? `<button data-action="add-admin">${icon("plus")}添加管理员</button>` : ""}</div>`;
+  const identities = (snapshot.accounts || []).map(account => ({
+    ...account, identity: account.uid,
+    role: account.uid === snapshot.owner ? "owner" : (snapshot.admins || []).includes(account.uid) ? "admin" : "member"
+  }));
+  let html = `<div class="section-heading"><h3>服务器用户</h3></div>`;
   html += table(
-    ["身份", "角色", ""],
+    ["昵称 / UID", "角色", ""],
     identities
       .filter((v) => v.identity)
       .map(
         (v) =>
-          `<tr><td class="identity">${esc(v.identity)}</td><td>${roleNames[v.role]}</td><td class="actions">${snapshot.capabilities.roles && v.role === "admin" ? command("撤销管理员", "revoke-admin", v.identity, true) : ""}</td></tr>`,
+          `<tr><td><strong>${esc(v.nickname)}</strong><div>${esc(v.username)}</div><div class="identity">${esc(v.identity)}</div></td><td>${roleNames[v.role]}</td><td class="actions">${snapshot.capabilities.roles && v.role === "admin" ? command("撤销管理员", "revoke-admin", v.identity, true) : snapshot.capabilities.roles && v.role === "member" ? command("设为管理员", "grant-admin", v.identity) : ""}</td></tr>`,
       )
       .join(""),
     "暂无管理身份",
@@ -580,6 +581,11 @@ async function action(name, id) {
         }),
       "管理员已添加",
     );
+  } else if (name === "grant-admin") {
+    const account = (snapshot.accounts || []).find(v => v.uid === id);
+    if (!account) return;
+    confirmAction("设为管理员", `授予「${account.nickname}」管理员权限？`, "roles",
+      (_, revision) => api(`/roles/${id}`, "PUT", {revision, role: "admin"}), "管理员已添加");
   } else if (name === "revoke-admin") {
     confirmAction(
       "撤销管理员",
@@ -635,6 +641,17 @@ document.addEventListener("click", (event) => {
   }
 });
 
+$("#login-method").addEventListener("change", () => {
+  const password = $("#login-method").value === "password";
+  $("#password-login").hidden = !password;
+  $("#token-login").hidden = password;
+  $("#username").required = password;
+  $("#account-password").required = password;
+  $("#token").required = !password;
+  $("#account-password").value = $("#token").value = "";
+  $("#login-error").textContent = "";
+});
+
 $("#login-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   if (loggingIn || loggingOut) return;
@@ -645,8 +662,12 @@ $("#login-form").addEventListener("submit", async (event) => {
   button.textContent = "登录中…";
   $("#login-error").textContent = "";
   try {
-    session = await api("/login", "POST", { token: $("#token").value });
+    const credentials = $("#login-method").value === "password"
+      ? {username: $("#username").value, password: $("#account-password").value}
+      : {token: $("#token").value};
+    session = await api("/login", "POST", credentials);
     $("#token").value = "";
+    $("#account-password").value = "";
     await enter();
   } catch (error) {
     if (current === generation) {

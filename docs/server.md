@@ -24,8 +24,10 @@ CLI 使用 Cobra；`--help`、`serve --help`、`owner --help` 查看命令。
 聊天淘汰不会删除管理资源。监听地址、连接密码和 Noise 私钥仍由启动参数、
 环境与私钥文件管理，不发给订阅者。
 
-第一次创建 KV 时严格导入已有 `channels.json`、`owner.json` 和未消费的
-`claim.json`，原文件不改写。以后 KV 是唯一事实来源，旧 JSON 不再生效；损坏、
+第一次创建 KV 时只导入已有 `channels.json`，原文件不改写。
+旧设备的 owner/admin、管理凭据、认领码及封禁在本次账号体系升级中清空一次，
+不迁移到账号；旧 `owner.json` 和 `claim.json` 不再读取。
+以后 KV 是管理资源的事实来源，旧 JSON 不再生效；损坏、
 未知格式、被删除的 KV 状态拒绝启动，不自动重新认领。升级前停服备份；降级须
 恢复对应旧版本的数据备份，不能直接依赖保留的旧 JSON（它们可能已过时）。
 
@@ -36,6 +38,37 @@ CLI 使用 Cobra；`--help`、`serve --help`、`owner --help` 查看命令。
 原生频道命令与可选 HTTP 后台复用业务授权和校验；网页也不能绕过规则直接写 KV。
 任意 selector、逐对象 delta 和多节点管理尚未实现。见 ADR-0033、ADR-0034。
 
+## 游客与用户
+
+所有设备先以游客连接。设备密钥仅验证连接，不代表账号或管理权限。
+进入服务器后在 **设置 → 用户** 注册、使用账号密码或 Token 登录。
+账号仅属于当前服务器；每个账号有独立随机 UID，跨设备登录后 UID 不变。
+登录会恢复服务器保存的昵称，修改资料后推送到在线客户端与管理后台；
+游客昵称只用于当前连接。当前注册上限为 10000 个账号。
+
+账号、昵称、Argon2id 加盐密码摘要和 Token 摘要保存为
+`--chat-dir/accounts.sqlite`（默认 `--access-dir/chat/accounts.sqlite`）。
+采用 WAL/FULL，权限 0600；角色分配仍保存在 KV，账号密码不进入 KV 或资源事件。
+备份时停止服务，保存整个 chat 目录（包括 SQLite/WAL 和 JetStream），
+不要只复制 SQLite 主文件。数据库损坏或未来 schema 不会自动重建覆盖。
+
+同 UID 的新语音登录替换旧连接。每次登录轮换账号 Token，旧 Token 立即失效，
+包括已经断网的旧设备；Token 默认 30 天有效。复制出的 Token 也会在下一次原生
+登录后失效，应当按密码保管。客户端仅在当前连接内存中持有它，用于同目标断线
+恢复；主动断开、换服务器、重启应用后需重新登录，不写普通偏好。
+临时繁忙的恢复认证按现有退避重试，失效/被替换明确失败，不静默退为游客。
+退出账号撤销 Token 并断开，重新连接为游客；改密码撤销旧凭据。
+
+忘记密码时，停止服务并对同一数据目录执行（新密码从 stdin 输入，不作命令参数）：
+
+```sh
+build/bin/resona-server --access-dir /path/to/access account reset-password --username alice --password-stdin
+```
+
+输入新密码并结束 stdin；需要至少 8 字节、最多 256 字节。UID、昵称和角色保留，
+旧账号 Token 与基于账号登录的后台会话失效。服务运行期间恢复命令拒绝获取锁。
+本版不含中央账号、三方登录和邮箱找回。见 ADR-0035。
+
 ## 管理后台
 
 后台静态页面编入同一个 Go 二进制，不需要 Node、独立 Web 服务或对外 NATS 端口。
@@ -45,8 +78,11 @@ CLI 使用 Cobra；`--help`、`serve --help`、`owner --help` 查看命令。
 build/bin/resona-server serve --admin-listen 127.0.0.1:9989
 ```
 
-浏览器访问 `http://127.0.0.1:9989/admin/`。后台凭据与语音连接密码完全独立。
-先在客户端认领 owner，再停止服务，使用**同一数据目录**生成凭据后重启：
+浏览器访问 `http://127.0.0.1:9989/admin/`。默认用账号密码登录，也支持 Token。
+用户先在客户端注册，再用新认领码认领 owner；普通注册不会获得管理权限。
+后台按 UID + 昵称列出注册用户（包括离线用户），owner 可委派 admin。
+网页登录不会挤掉语音连接。账号密码与服务器连接密码完全独立。
+还可停止服务，使用**同一数据目录**生成独立管理 Token 后重启：
 
 ```sh
 build/bin/resona-server --access-dir /path/to/access admin token --label laptop --expires 720h
@@ -65,7 +101,7 @@ build/bin/resona-server --access-dir /path/to/access admin token --label laptop 
 | 管理其他 admin | 可以 | 不可以 | 不可以 |
 | 委派角色、登录凭据、在线设置 | 可以 | 不可以 | 不可以 |
 
-owner 不能被踢出、封禁或替换；owner 身份仍由原生认领流程建立。
+owner 不能被管理员踢出或封禁，所有权不可转移；同 UID 新登录仍替换旧设备连接。
 在线成员操作同时核对 ID 和会话实例，持久角色/封禁按 UID 生效，不依赖昵称。
 Casbin RBAC 策略目前固定在代码中，KV 保存角色分配；尚不开放任意策略编辑。
 

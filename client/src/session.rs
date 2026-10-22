@@ -11,7 +11,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU16, Ordering},
     },
     time::Duration,
@@ -21,6 +21,7 @@ use tokio::{
     task::JoinHandle,
     time::{Instant, sleep_until, timeout_at},
 };
+use zeroize::{Zeroize, Zeroizing};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -64,6 +65,12 @@ impl Error {
                 "你的身份已被服务器封禁，请联系管理员"
             }
             Self::Transport(noise::Error::RemoteClosed(5)) => "服务器人数已满，请稍后手动重试",
+            Self::Transport(noise::Error::RemoteClosed(6)) => {
+                "账号已在另一台设备登录，请手动重新连接"
+            }
+            Self::Transport(noise::Error::RemoteClosed(7)) => {
+                "账号登录已过期或凭据已更改，请重新登录"
+            }
             Self::AuthenticationRejected | Self::Transport(noise::Error::RemoteClosed(2)) => {
                 "服务器拒绝连接，请检查服务器密码"
             }
@@ -81,6 +88,9 @@ impl Error {
             Self::Rejected(7) => "服务器保存失败，请确认当前状态后重试",
             Self::Rejected(8) => "频道数量或 ID 已达上限",
             Self::Rejected(9) => "消息送达结果未确认，重发可能重复",
+            Self::Rejected(10) => "账号验证失败，请检查输入或重新登录",
+            Self::Rejected(11) => "账号名称已被使用",
+            Self::Rejected(12) => "账号服务繁忙，请稍后重试",
             Self::Rejected(_) => "服务器拒绝此操作，请检查权限和频道状态",
             _ => "服务器连接已关闭，请检查网络后重试",
         }
@@ -122,6 +132,7 @@ impl Snapshot {
 
 #[derive(Clone)]
 pub enum Command {
+    Account(AccountRequest),
     Move(u16),
     Chat {
         channel: u16,
@@ -155,10 +166,85 @@ pub enum Command {
         before: u16,
     },
 }
+#[derive(Clone, Default)]
+pub struct AccountRequest {
+    pub action: String,
+    pub username: String,
+    pub password: Zeroizing<String>,
+    pub token: Zeroizing<String>,
+    pub new_password: Zeroizing<String>,
+    pub nickname: String,
+}
+impl AccountRequest {
+    /// Form validation shared by the desktop and UI-independent command entry.
+    /// The server remains authoritative for credentials and account admission.
+    pub fn validate(&self) -> std::result::Result<(), &'static str> {
+        if matches!(self.action.as_str(), "register" | "password")
+            && (!(3..=32).contains(&self.username.len())
+                || !self
+                    .username
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"_.-".contains(&c)))
+        {
+            return Err("用户名需为 3–32 位英文字母、数字、下划线、点或短横线");
+        }
+        let password = match self.action.as_str() {
+            "register" => Some(self.password.as_str()),
+            "change_password" => Some(self.new_password.as_str()),
+            _ => None,
+        };
+        if let Some(password) = password {
+            if !(8..=256).contains(&password.len()) || password.contains('\0') {
+                return Err("密码需为 8–256 字节（英文字母、数字和符号各占 1 字节）");
+            }
+        }
+        if matches!(self.action.as_str(), "password" | "change_password")
+            && (self.password.is_empty()
+                || self.password.len() > 256
+                || self.password.contains('\0'))
+        {
+            return Err("请输入有效的密码，最多 256 字节");
+        }
+        if self.action == "token" && (self.token.is_empty() || self.token.len() > 256) {
+            return Err("请输入有效的登录 Token");
+        }
+        if (self.action == "update_profile"
+            || (self.action == "register" && !self.nickname.is_empty()))
+            && (self.nickname.trim().is_empty()
+                || self.nickname.chars().count() > 30
+                || self.nickname.chars().any(char::is_control))
+        {
+            return Err("昵称需为 1–30 个字符，不能包含换行等控制字符");
+        }
+        Ok(())
+    }
+}
 impl Command {
     fn frame(&self, id: u32) -> Result<Vec<u8>> {
         use pb::Kind;
         let data = match self {
+            Self::Account(a)
+                if a.action.len() <= 32
+                    && a.username.len() <= 32
+                    && a.password.len() <= 256
+                    && a.token.len() <= 256
+                    && a.new_password.len() <= 256
+                    && a.nickname.len() <= 120 =>
+            {
+                let mut command = pb::AccountCommand {
+                    action: a.action.clone(),
+                    username: a.username.clone(),
+                    password: a.password.to_string(),
+                    token: a.token.to_string(),
+                    new_password: a.new_password.to_string(),
+                    nickname: a.nickname.clone(),
+                };
+                let frame = wire::pack(Kind::Account, id, &command);
+                command.password.zeroize();
+                command.token.zeroize();
+                command.new_password.zeroize();
+                frame
+            }
             Self::Move(channel) | Self::ChatSync(channel) if *channel != 0 => wire::pack(
                 if matches!(self, Self::Move(_)) {
                     Kind::Move
@@ -298,13 +384,23 @@ struct Pending {
     soft: bool,
     request: Request,
     code: Option<u32>,
+    token: Zeroizing<String>,
 }
 #[derive(Clone)]
 pub struct Handle {
     requests: mpsc::Sender<Request>,
     pub state: watch::Receiver<Snapshot>,
+    credential: Arc<Mutex<Zeroizing<String>>>,
 }
 impl Handle {
+    /// Explicit credential export for account UI and connection recovery. This
+    /// secret is deliberately absent from every public state projection.
+    pub fn account_token(&self) -> Zeroizing<String> {
+        self.credential
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
     pub async fn command(
         &self,
         command: Command,
@@ -482,6 +578,8 @@ impl Session {
         let (voice_out, voice_rx) = mpsc::channel(8);
         let cancel = CancellationToken::new();
         let worker_cancel = cancel.clone();
+        let credential = Arc::new(Mutex::new(Zeroizing::new(String::new())));
+        let driver_credential = credential.clone();
         let voice_tx = VoiceSender {
             sender: conn.voice_tx.clone(),
             state: state_rx.clone(),
@@ -496,6 +594,7 @@ impl Session {
                 pending: None,
                 writer: None,
                 next: 0,
+                credential: driver_credential,
             };
             let result = driver.run(&mut conn, &worker_cancel).await;
             driver.writer.take();
@@ -510,6 +609,7 @@ impl Session {
             handle: Handle {
                 requests: request_tx,
                 state: state_rx,
+                credential,
             },
             voice_tx,
             voice_rx,
@@ -533,6 +633,7 @@ struct Driver {
     pending: Option<Pending>,
     writer: Option<Pin<Box<dyn Future<Output = noise::Result<()>> + Send>>>,
     next: u32,
+    credential: Arc<Mutex<Zeroizing<String>>>,
 }
 impl Driver {
     fn publish(&self) {
@@ -589,7 +690,7 @@ impl Driver {
                     // Poll retransmission alongside receive work, so control ACK
                     // loss cannot stop draining incoming voice and resource events.
                     self.writer=Some(Box::pin(async move {sender.write(&data,deadline,&token).await}));
-                    self.pending=Some(Pending{id,soft:request.command.soft(),request,code:None});
+                    self.pending=Some(Pending{id,soft:request.command.soft(),request,code:None,token:Zeroizing::new(String::new())});
                 }
             }
         }
@@ -598,6 +699,16 @@ impl Driver {
         if self.writer.is_none() && self.pending.as_ref().is_some_and(|p| p.code.is_some()) {
             let p = self.pending.take().unwrap();
             let code = p.code.unwrap();
+            if code == 0
+                && let Command::Account(a) = &p.request.command
+            {
+                let mut credential = self.credential.lock().unwrap_or_else(|e| e.into_inner());
+                if a.action == "logout" {
+                    credential.zeroize();
+                } else if !p.token.is_empty() {
+                    *credential = p.token;
+                }
+            }
             let _ = p.request.reply.send(if code == 0 {
                 Ok(())
             } else {
@@ -654,12 +765,15 @@ impl Driver {
                 self.publish();
             }
             pb::Kind::Reply => {
-                let r = pb::Reply::decode(f.body.as_slice()).map_err(|_| Error::InvalidState)?;
-                if r.code > 255 {
+                let mut r =
+                    pb::Reply::decode(f.body.as_slice()).map_err(|_| Error::InvalidState)?;
+                if r.code > 255 || r.account_token.len() > 256 {
                     return Err(Error::InvalidState);
                 }
                 if self.pending.as_ref().is_some_and(|p| p.id == f.request) {
                     self.pending.as_mut().unwrap().code = Some(r.code);
+                    self.pending.as_mut().unwrap().token =
+                        Zeroizing::new(std::mem::take(&mut r.account_token));
                     self.finish_reply();
                 }
             }
@@ -753,6 +867,38 @@ impl Driver {
 #[cfg(test)]
 mod moderation_tests {
     use super::*;
+
+    #[test]
+    fn account_forms_report_input_rules_before_admission() {
+        let mut request = AccountRequest {
+            action: "register".into(),
+            username: "tsukiyo".into(),
+            nickname: "中文昵称".into(),
+            password: "short-7".to_string().into(),
+            ..Default::default()
+        };
+        assert!(request.validate().unwrap_err().contains("8–256 字节"));
+        request.password = "exactly8".to_string().into();
+        assert_eq!(request.validate(), Ok(()));
+        request.username = "中文用户名".into();
+        assert!(request.validate().unwrap_err().contains("用户名"));
+        request.username = "Tsukiyo_1".into();
+        request.nickname = "\n".into();
+        assert!(request.validate().unwrap_err().contains("昵称"));
+        request.nickname = "🙂".repeat(30);
+        assert_eq!(request.validate(), Ok(()));
+        request.nickname.push('🙂');
+        assert!(request.validate().is_err());
+        request.action = "password".into();
+        request.password = "wrong".to_string().into();
+        assert_eq!(request.validate(), Ok(()));
+        request.action = "change_password".into();
+        assert!(request.validate().unwrap_err().contains("8–256 字节"));
+        request.new_password = "中文ab".to_string().into();
+        assert_eq!(request.validate(), Ok(()));
+        request.action = "token".into();
+        assert!(request.validate().unwrap_err().contains("Token"));
+    }
 
     #[test]
     fn explicit_membership_denials_never_trigger_reconnect() {

@@ -132,6 +132,9 @@ pub fn identity_uid(public: &[u8; 32]) -> String {
 /// Validate application ranges before narrowing generated u32 fields. Admission
 /// additionally requires a Welcome frame and the expected authenticated UID.
 pub fn valid_state(state: &pb::State, expected_uid: &str) -> bool {
+    let account_uid = |uid: &str| {
+        uid.is_empty() || (uid.len() == 64 && uid.bytes().all(|b| b.is_ascii_hexdigit()))
+    };
     if state.self_ == 0
         || state.self_ > u16::MAX.into()
         || state.epoch == 0
@@ -139,6 +142,10 @@ pub fn valid_state(state: &pb::State, expected_uid: &str) -> bool {
         || state.channels.is_empty()
         || state.channels.len() > 64
         || state.members.len() > 64
+        || !account_uid(&state.account_uid)
+        || state.account_name.len() > 32
+        || (!state.account_uid.is_empty()
+            && !matches!(state.server_role.as_str(), "member" | "admin" | "owner"))
     {
         return false;
     }
@@ -162,6 +169,8 @@ pub fn valid_state(state: &pb::State, expected_uid: &str) -> bool {
             || member.instance.is_empty()
             || !channels.contains(&member.channel)
             || members.contains(&member.id)
+            || !account_uid(&member.account_uid)
+            || (member.id == state.self_ && member.account_uid != state.account_uid)
         {
             return false;
         }

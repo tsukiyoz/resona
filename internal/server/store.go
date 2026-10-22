@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/tsukiyoz/resona/internal/accounts"
 	"github.com/tsukiyoz/resona/internal/nativeidentity"
 	w "github.com/tsukiyoz/resona/internal/nativewire"
 )
@@ -21,20 +22,22 @@ const resourceKey = "state"
 // resourceRecord is one CAS transaction: claiming an owner consumes its claim,
 // and channel creation advances the non-reusable ID allocator in the same write.
 type resourceRecord struct {
-	Version     int               `json:"version"`
-	Channels    channelRecord     `json:"channels"`
-	Owner       string            `json:"owner,omitempty"`
-	Claim       claimSecret       `json:"claim"`
-	Admins      []string          `json:"admins,omitempty"`
-	Credentials []AdminCredential `json:"credentials,omitempty"`
-	Bans        []Ban             `json:"bans,omitempty"`
-	Settings    *ServerSettings   `json:"settings,omitempty"`
+	Version           int               `json:"version"`
+	Channels          channelRecord     `json:"channels"`
+	Owner             string            `json:"owner,omitempty"`
+	Claim             claimSecret       `json:"claim"`
+	Admins            []string          `json:"admins,omitempty"`
+	Credentials       []AdminCredential `json:"credentials,omitempty"`
+	Bans              []Ban             `json:"bans,omitempty"`
+	Settings          *ServerSettings   `json:"settings,omitempty"`
+	AccountIdentities bool              `json:"account_identities,omitempty"`
 }
 
 // Store owns one embedded broker shared by chat and durable management state.
 // Readers take only a short memory lock; persistence never holds that lock.
 // Callers must hold LockAccess while opening/using a persistent store directory.
 type Store struct {
+	accounts   *accounts.Store
 	chat       *chatStore
 	kv         jetstream.KeyValue
 	updateGate chan struct{}
@@ -108,10 +111,40 @@ func OpenStore(cfg ChatConfig, legacyDir string, seed []w.Channel) (_ *Store, er
 	if err != nil {
 		return nil, err
 	}
+	s.accounts, err = accounts.Open(c.directory)
+	if err != nil {
+		return nil, err
+	}
+	// This experimental release intentionally drops device-bound privileges.
+	// Every device starts as guest; only newly registered account UIDs get roles.
+	if !record.AccountIdentities {
+		record.Owner = ""
+		record.Admins = nil
+		record.Credentials = nil
+		record.Claim = claimSecret{}
+		record.Bans = nil
+		record.AccountIdentities = true
+		data, e := json.Marshal(record)
+		if e != nil {
+			return nil, e
+		}
+		rev, e := s.kv.Update(ctx, resourceKey, data, entry.Revision())
+		if e != nil {
+			return nil, e
+		}
+		s.record, s.revision = record, rev
+	}
 	return s, nil
 }
 
-func (s *Store) Close() { s.closeOnce.Do(s.chat.close) }
+func (s *Store) Close() {
+	s.closeOnce.Do(func() {
+		if s.accounts != nil {
+			_ = s.accounts.Close()
+		}
+		s.chat.close()
+	})
+}
 
 func (s *Store) snapshot() resourceRecord {
 	r, _ := s.state()
@@ -352,11 +385,7 @@ func importResources(dir string, seed []w.Channel) (resourceRecord, error) {
 			name string
 			into any
 			max  int64
-		}{{"channels.json", &r.Channels, 65536}, {"owner.json", new(ownerRecord), 1024}, {"claim.json", &r.Claim, 1024}} {
-			// A consumed legacy claim can be expired or malformed; the owner wins.
-			if file.name == "claim.json" && r.Owner != "" {
-				continue
-			}
+		}{{"channels.json", &r.Channels, 65536}} {
 			data, err := nativeidentity.ReadPrivate(filepath.Join(dir, file.name), file.max)
 			if errors.Is(err, os.ErrNotExist) {
 				continue
@@ -369,12 +398,6 @@ func importResources(dir string, seed []w.Channel) (resourceRecord, error) {
 			var extra any
 			if d.Decode(file.into) != nil || d.Decode(&extra) != io.EOF {
 				return r, errors.New("invalid legacy resource file; original preserved")
-			}
-			if owner, ok := file.into.(*ownerRecord); ok {
-				if owner.Version != 1 || !validIdentity(owner.Identity) {
-					return r, errors.New("invalid legacy owner; original preserved")
-				}
-				r.Owner = owner.Identity
 			}
 		}
 	}

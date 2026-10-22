@@ -240,6 +240,157 @@ async fn wait_state(
 }
 
 #[tokio::test]
+async fn accounts_keep_device_proofs_separate_and_revoke_replaced_recovery() {
+    use resona_client::session::{
+        AccountRequest, Command as AppCommand, Error as AppError, Handle,
+    };
+    use zeroize::Zeroizing;
+    async fn account(h: &Handle, request: AccountRequest) -> Result<(), AppError> {
+        for _ in 0..8 {
+            let result = h
+                .command(
+                    AppCommand::Account(request.clone()),
+                    Instant::now() + Duration::from_secs(4),
+                    &CancellationToken::new(),
+                )
+                .await;
+            if !matches!(result, Err(AppError::Rejected(3 | 12))) {
+                return result;
+            }
+            tokio::time::sleep(Duration::from_millis(550)).await;
+        }
+        Err(AppError::Busy)
+    }
+    let (_peer, address, key) = start_peer(&["-server"]);
+    let mut first = app_session(address, key, "Alice").await;
+    let device = first.handle.state.borrow().state.identity_uid.clone();
+    assert_eq!(first.handle.state.borrow().state.server_role, "guest");
+    assert!(!first.handle.state.borrow().state.can_claim_owner);
+    account(
+        &first.handle,
+        AccountRequest {
+            action: "register".into(),
+            username: "alice".into(),
+            password: Zeroizing::new("local-account-password".into()),
+            nickname: "中文玩家".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    wait_state(&mut first.handle, |s| !s.state.account_uid.is_empty()).await;
+    let uid = first.handle.state.borrow().state.account_uid.clone();
+    assert_ne!(uid, device);
+    assert_eq!(first.handle.state.borrow().state.identity_uid, device);
+    assert_eq!(
+        first
+            .handle
+            .state
+            .borrow()
+            .state
+            .members
+            .iter()
+            .find(|m| m.id == first.handle.state.borrow().state.self_)
+            .unwrap()
+            .nickname,
+        "中文玩家"
+    );
+    let old = first.handle.account_token();
+    assert!(!old.is_empty());
+    account(
+        &first.handle,
+        AccountRequest {
+            action: "update_profile".into(),
+            nickname: "改名玩家🙂".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let mut second = app_session(address, key, "Guest nickname").await;
+    assert!(matches!(
+        account(
+            &second.handle,
+            AccountRequest {
+                action: "password".into(),
+                username: "alice".into(),
+                password: Zeroizing::new("wrong password".into()),
+                ..Default::default()
+            }
+        )
+        .await,
+        Err(AppError::Rejected(10))
+    ));
+    assert!(first.handle.state.borrow().closed.is_none());
+    account(
+        &second.handle,
+        AccountRequest {
+            action: "token".into(),
+            token: old.clone(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    wait_state(&mut first.handle, |s| s.closed.is_some()).await;
+    assert!(matches!(
+        first.handle.state.borrow().closed,
+        Some(AppError::Transport(Error::RemoteClosed(6)))
+    ));
+    wait_state(&mut second.handle, |s| s.state.account_uid == uid).await;
+    let state = second.handle.state.borrow().state.clone();
+    assert_eq!(
+        state
+            .members
+            .iter()
+            .find(|m| m.id == state.self_)
+            .unwrap()
+            .nickname,
+        "改名玩家🙂"
+    );
+    let third = app_session(address, key, "Another guest").await;
+    assert!(matches!(
+        account(
+            &third.handle,
+            AccountRequest {
+                action: "token".into(),
+                token: old,
+                ..Default::default()
+            }
+        )
+        .await,
+        Err(AppError::Rejected(10))
+    ));
+    let before = second.handle.account_token();
+    account(
+        &second.handle,
+        AccountRequest {
+            action: "change_password".into(),
+            password: Zeroizing::new("local-account-password".into()),
+            new_password: Zeroizing::new("a different long password".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_ne!(*before, *second.handle.account_token());
+    account(
+        &second.handle,
+        AccountRequest {
+            action: "logout".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(second.handle.account_token().is_empty());
+    assert!(second.handle.state.borrow().state.account_uid.is_empty());
+    third.close().await;
+    second.close().await;
+    first.close().await;
+}
+
+#[tokio::test]
 async fn channel_order_is_authoritative_and_does_not_change_default_or_voice_route() {
     use resona_client::session::{Command as AppCommand, Error as AppError};
     let (peer, address, key) = start_peer(&["-server"]);
@@ -260,6 +411,20 @@ async fn channel_order_is_authoritative_and_does_not_change_default_or_voice_rou
             .await
             .unwrap();
     }
+    owner
+        .handle
+        .command(
+            AppCommand::Account(resona_client::session::AccountRequest {
+                action: "register".into(),
+                username: "owner".into(),
+                password: zeroize::Zeroizing::new("local-owner-password".into()),
+                ..Default::default()
+            }),
+            Instant::now() + Duration::from_secs(3),
+            &cancel,
+        )
+        .await
+        .unwrap();
     owner
         .handle
         .command(
@@ -338,7 +503,7 @@ async fn channel_order_is_authoritative_and_does_not_change_default_or_voice_rou
 async fn application_session_watches_moves_chats_and_routes_voice() {
     use resona_client::session::Command as AppCommand;
     let (_peer, address, key) = start_peer(&["-server"]);
-    let mut a = app_session(address, key, "alpha").await;
+    let mut a = app_session(address, key, "中文玩家🙂").await;
     let mut b = app_session(address, key, "beta").await;
     let cancel = CancellationToken::new();
     wait_state(&mut a.handle, |s| {
@@ -379,7 +544,7 @@ async fn application_session_watches_moves_chats_and_routes_voice() {
         .command(
             AppCommand::Chat {
                 channel: 1,
-                text: "test message".into(),
+                text: "中文消息🙂 👍🏽 👩‍💻 🇨🇳 e\u{301}".into(),
                 id: "session-chat-1".into(),
             },
             Instant::now() + Duration::from_secs(3),
@@ -395,6 +560,36 @@ async fn application_session_watches_moves_chats_and_routes_voice() {
         s.messages.iter().any(|m| m.client_id == "session-chat-1")
     })
     .await;
+    let message = b
+        .handle
+        .state
+        .borrow()
+        .messages
+        .iter()
+        .find(|m| m.client_id == "session-chat-1")
+        .unwrap()
+        .clone();
+    assert_eq!(message.nickname, "中文玩家🙂");
+    assert_eq!(message.text, "中文消息🙂 👍🏽 👩‍💻 🇨🇳 e\u{301}");
+    // A late subscriber receives the same UTF-8 through persisted channel history.
+    let mut late_reader = app_session(address, key, "旁观者").await;
+    wait_state(&mut late_reader.handle, |s| {
+        s.messages.iter().any(|m| m.client_id == "session-chat-1")
+    })
+    .await;
+    assert_eq!(
+        late_reader
+            .handle
+            .state
+            .borrow()
+            .messages
+            .iter()
+            .find(|m| m.client_id == "session-chat-1")
+            .unwrap()
+            .text,
+        message.text
+    );
+    late_reader.close().await;
     a.handle
         .command(
             AppCommand::Move(2),
@@ -615,6 +810,81 @@ async fn resource_observer_changes_scope_and_clears_on_disconnect() {
     .unwrap();
     assert!(status.borrow().session_id.is_empty());
     observer.close().await;
+    client.close().await;
+}
+
+#[tokio::test]
+async fn recovery_reuses_rotated_token_after_channel_restore_interruption() {
+    use resona_client::{
+        config::{Identity, ServerProfile},
+        lifecycle::{Client, Mode},
+        session::{AccountRequest, Command as AppCommand},
+    };
+    let (_peer, address, key) = start_peer(&["-account-recovery"]);
+    let dir = tempfile::tempdir().unwrap();
+    let client = Client::start(std::sync::Arc::new(
+        Identity::load_or_create(&dir.path().join("identity")).unwrap(),
+    ));
+    let mut handle = client.handle.clone();
+    handle
+        .connect(
+            ServerProfile {
+                protocol: "resona-noise".into(),
+                id: "recovery".into(),
+                name: "fault fixture".into(),
+                nickname: "alice".into(),
+                address: address.to_string(),
+                server_public_key: key.iter().map(|b| format!("{b:02x}")).collect(),
+                ..Default::default()
+            },
+            zeroize::Zeroizing::new(String::new()),
+        )
+        .await
+        .unwrap();
+    wait_lifecycle(&mut handle, Mode::Connected).await;
+    let first = handle.state.borrow().session_id.clone();
+    let session = handle.session(&first).unwrap();
+    session
+        .command(
+            AppCommand::Account(AccountRequest {
+                action: "register".into(),
+                username: "alice".into(),
+                password: zeroize::Zeroizing::new("fixture-only-password".into()),
+                ..Default::default()
+            }),
+            Instant::now() + Duration::from_secs(3),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(&*session.account_token(), "fixture-token-1");
+    assert_eq!(session.state.borrow().channel(), 2);
+    let _ = session
+        .command(
+            AppCommand::VoiceState {
+                muted: true,
+                deafened: false,
+            },
+            Instant::now() + Duration::from_secs(3),
+            &CancellationToken::new(),
+        )
+        .await;
+    timeout(Duration::from_secs(12), async {
+        loop {
+            let view = handle.state.borrow_and_update().clone();
+            assert_ne!(view.mode, Mode::Failed, "{}", view.error);
+            if view.mode == Mode::Connected && view.session_id != first {
+                let session = view.connection.unwrap();
+                assert_eq!(session.state.borrow().channel(), 2);
+                assert_eq!(session.state.borrow().state.account_name, "alice");
+                assert_eq!(&*session.account_token(), "fixture-token-3");
+                break;
+            }
+            handle.state.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("account recovery did not survive the interrupted restore");
     client.close().await;
 }
 

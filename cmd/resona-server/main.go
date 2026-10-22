@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -65,6 +66,8 @@ func newCommand() (*cobra.Command, error) {
 	adminIdentity := ""
 	adminLabel := "Web administration"
 	adminTTL := 30 * 24 * time.Hour
+	resetUsername := ""
+	passwordStdin := false
 	// Keep existing service units and container entrypoints working.
 	initKey := flags.Bool("init-key", false, "create a Noise identity and exit; never overwrite")
 	initOwner := flags.Bool("init-owner", false, "offline: create a one-time owner claim")
@@ -126,7 +129,7 @@ func newCommand() (*cobra.Command, error) {
 			*chatDir = filepath.Join(*accessDir, "chat")
 		}
 		var noiseKey []byte
-		if !*initOwner && !*resetOwner && mode != "admin-token" {
+		if !*initOwner && !*resetOwner && mode != "admin-token" && mode != "account-reset" {
 			noiseKey, err = os.ReadFile(*noiseKeyPath)
 			if err != nil {
 				return fmt.Errorf("load Noise identity (run identity init first): %w", err)
@@ -140,6 +143,23 @@ func newCommand() (*cobra.Command, error) {
 			return err
 		}
 		defer store.Close()
+		if mode == "account-reset" {
+			if !passwordStdin {
+				return errors.New("password reset requires --password-stdin")
+			}
+			data, err := io.ReadAll(io.LimitReader(cmd.InOrStdin(), 259))
+			if err != nil {
+				return err
+			}
+			defer clear(data)
+			password := strings.TrimSuffix(strings.TrimSuffix(string(data), "\n"), "\r")
+			uid, err := store.ResetAccountPassword(cmd.Context(), resetUsername, password)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Password reset; UID %s\n", uid)
+			return nil
+		}
 		if mode == "admin-token" {
 			owner := store.OwnerIdentity()
 			identity := adminIdentity
@@ -195,7 +215,13 @@ func newCommand() (*cobra.Command, error) {
 	credential.Flags().StringVar(&adminLabel, "label", adminLabel, "credential label")
 	credential.Flags().DurationVar(&adminTTL, "expires", adminTTL, "credential lifetime (1h-2160h)")
 	admin.AddCommand(credential)
-	root.AddCommand(serve, identity, owner, admin, &cobra.Command{
+	account := &cobra.Command{Use: "account", Short: "Offline account recovery (stop the server first)"}
+	resetPassword := &cobra.Command{Use: "reset-password", Short: "Reset a registered account password from stdin and revoke sessions", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error { return execute(cmd, "account-reset") }}
+	resetPassword.Flags().StringVar(&resetUsername, "username", "", "registered account name")
+	resetPassword.Flags().BoolVar(&passwordStdin, "password-stdin", false, "read the new password from stdin")
+	_ = resetPassword.MarkFlagRequired("username")
+	account.AddCommand(resetPassword)
+	root.AddCommand(serve, identity, owner, admin, account, &cobra.Command{
 		Use: "version", Short: "Print build information", Args: cobra.NoArgs,
 		Run: func(cmd *cobra.Command, _ []string) {
 			fmt.Fprintln(cmd.OutOrStdout(), "resona-server", version.Current())
