@@ -18,6 +18,8 @@ const (
 	ClientVoiceHeader    = 7
 	ServerVoiceHeader    = 13
 	AuthenticationFailed = 2
+	MemberKicked         = 3
+	MemberBanned         = 4
 )
 
 const (

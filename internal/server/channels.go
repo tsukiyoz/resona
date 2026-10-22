@@ -57,27 +57,35 @@ func (s *Server) ReorderChannel(ctx context.Context, identity string, id, before
 }
 
 func (s *Server) mutateChannel(parent context.Context, identity string, kind uint8, id, beforeID uint16, name, description string, audioBitrate ...uint32) uint8 {
+	code, _ := s.mutateChannelAt(parent, identity, 0, kind, id, beforeID, name, description, audioBitrate...)
+	return code
+}
+
+func (s *Server) mutateChannelAt(parent context.Context, identity string, revision uint64, kind uint8, id, beforeID uint16, name, description string, audioBitrate ...uint32) (uint8, error) {
 	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
 	defer cancel()
 	s.channelMu.Lock()
 	defer s.channelMu.Unlock()
 	if ctx.Err() != nil {
-		return w.StorageFailed
+		return w.StorageFailed, ctx.Err()
 	}
-	role, _ := s.config.Store.Status(identity)
-	if role != "owner" {
-		return w.PermissionDenied
+	if !s.config.Store.Allowed(identity, "channels", "write", "*") {
+		return w.PermissionDenied, ErrPermission
 	}
 	var bitrate uint32
 	if len(audioBitrate) != 0 {
 		bitrate = audioBitrate[0]
 	}
 	if !w.ValidChannelBitrate(bitrate) {
-		return w.Rejected
+		return w.Rejected, ErrInvalid
 	}
 	name = strings.TrimSpace(name)
 	code := uint8(w.OK)
-	err := s.config.Store.updateContext(ctx, func(r *resourceRecord) error {
+	err := s.config.Store.updateAtContext(ctx, revision, func(r *resourceRecord) error {
+		if !authorized(*r, identity, "channels", "write", "*") {
+			code = w.PermissionDenied
+			return ErrPermission
+		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		channels := append([]w.Channel(nil), r.Channels.Channels...)
@@ -173,12 +181,12 @@ func (s *Server) mutateChannel(parent context.Context, identity string, kind uin
 		s.broadcastLocked(nil)
 	}
 	if code != w.OK {
-		return code
+		return code, err
 	}
 	if err != nil {
-		return w.StorageFailed
+		return w.StorageFailed, err
 	}
-	return w.OK
+	return w.OK, nil
 }
 
 func (s *Server) channelCommand(p *peer, f w.Frame) bool {

@@ -60,6 +60,11 @@ func newCommand() (*cobra.Command, error) {
 	chatMessages := flags.Int64("chat-max-messages", 200, "maximum retained messages per channel")
 	chatBytes := flags.Int64("chat-max-bytes", 64<<20, "maximum retained chat stream bytes across channels")
 	chatAge := flags.Duration("chat-max-age", 7*24*time.Hour, "maximum retained chat message age")
+	adminListen := flags.String("admin-listen", "", "optional HTTP management bind address (e.g. 127.0.0.1:9989)")
+	adminOrigin := flags.String("admin-origin", "", "browser origin; public origins require HTTPS (default: local listen address)")
+	adminIdentity := ""
+	adminLabel := "Web administration"
+	adminTTL := 30 * 24 * time.Hour
 	// Keep existing service units and container entrypoints working.
 	initKey := flags.Bool("init-key", false, "create a Noise identity and exit; never overwrite")
 	initOwner := flags.Bool("init-owner", false, "offline: create a one-time owner claim")
@@ -121,7 +126,7 @@ func newCommand() (*cobra.Command, error) {
 			*chatDir = filepath.Join(*accessDir, "chat")
 		}
 		var noiseKey []byte
-		if !*initOwner && !*resetOwner {
+		if !*initOwner && !*resetOwner && mode != "admin-token" {
 			noiseKey, err = os.ReadFile(*noiseKeyPath)
 			if err != nil {
 				return fmt.Errorf("load Noise identity (run identity init first): %w", err)
@@ -135,6 +140,19 @@ func newCommand() (*cobra.Command, error) {
 			return err
 		}
 		defer store.Close()
+		if mode == "admin-token" {
+			owner := store.OwnerIdentity()
+			identity := adminIdentity
+			if identity == "" {
+				identity = owner
+			}
+			_, token, err := store.IssueAdminCredential(cmd.Context(), owner, identity, adminLabel, adminTTL, 0)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), token)
+			return nil
+		}
 		if *initOwner || *resetOwner {
 			token, err := store.ProvisionOwnerClaim(*resetOwner)
 			if err != nil {
@@ -150,7 +168,7 @@ func newCommand() (*cobra.Command, error) {
 		slog.Info("server listening", "address", s.Addr().String(), "version", version.Current().String())
 		pub, _ := noiseudp.PublicKey(noiseKey)
 		slog.Info("server identity", "public_key", hex.EncodeToString(pub))
-		return s.Serve(cmd.Context())
+		return s.ServeWithAdmin(cmd.Context(), *adminListen, *adminOrigin)
 	}
 	root.RunE = func(cmd *cobra.Command, _ []string) error { return execute(cmd, "serve") }
 	serve := &cobra.Command{
@@ -171,7 +189,13 @@ func newCommand() (*cobra.Command, error) {
 			Use: "reset-claim", Short: "Replace an unused claim, never an existing owner", Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, _ []string) error { return execute(cmd, "reset") },
 		})
-	root.AddCommand(serve, identity, owner, &cobra.Command{
+	admin := &cobra.Command{Use: "admin", Short: "Offline web credential provisioning (stop the server first)"}
+	credential := &cobra.Command{Use: "token", Short: "Create a web credential for an existing owner or admin; print once", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error { return execute(cmd, "admin-token") }}
+	credential.Flags().StringVar(&adminIdentity, "identity", "", "existing management UID (default: owner)")
+	credential.Flags().StringVar(&adminLabel, "label", adminLabel, "credential label")
+	credential.Flags().DurationVar(&adminTTL, "expires", adminTTL, "credential lifetime (1h-2160h)")
+	admin.AddCommand(credential)
+	root.AddCommand(serve, identity, owner, admin, &cobra.Command{
 		Use: "version", Short: "Print build information", Args: cobra.NoArgs,
 		Run: func(cmd *cobra.Command, _ []string) {
 			fmt.Fprintln(cmd.OutOrStdout(), "resona-server", version.Current())

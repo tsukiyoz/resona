@@ -21,10 +21,14 @@ const resourceKey = "state"
 // resourceRecord is one CAS transaction: claiming an owner consumes its claim,
 // and channel creation advances the non-reusable ID allocator in the same write.
 type resourceRecord struct {
-	Version  int           `json:"version"`
-	Channels channelRecord `json:"channels"`
-	Owner    string        `json:"owner,omitempty"`
-	Claim    claimSecret   `json:"claim"`
+	Version     int               `json:"version"`
+	Channels    channelRecord     `json:"channels"`
+	Owner       string            `json:"owner,omitempty"`
+	Claim       claimSecret       `json:"claim"`
+	Admins      []string          `json:"admins,omitempty"`
+	Credentials []AdminCredential `json:"credentials,omitempty"`
+	Bans        []Ban             `json:"bans,omitempty"`
+	Settings    *ServerSettings   `json:"settings,omitempty"`
 }
 
 // Store owns one embedded broker shared by chat and durable management state.
@@ -43,7 +47,10 @@ type Store struct {
 // OpenStore imports legacy access files only when KV has never been initialized.
 // Originals remain untouched. An existing invalid/deleted state fails closed.
 func OpenStore(cfg ChatConfig, legacyDir string, seed []w.Channel) (_ *Store, err error) {
-	c, err := openChat(cfg)
+	if _, err := authorization(); err != nil {
+		return nil, err
+	}
+	c, err := openChatConfigured(cfg, true)
 	if err != nil {
 		return nil, err
 	}
@@ -93,6 +100,14 @@ func OpenStore(cfg ChatConfig, legacyDir string, seed []w.Channel) (_ *Store, er
 		return nil, err
 	}
 	s.record, s.revision = record, entry.Revision()
+	if record.Settings != nil {
+		err = c.configureRetention(ctx, *record.Settings)
+	} else {
+		err = c.configureRetention(ctx, c.initialSettings)
+	}
+	if err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -108,6 +123,13 @@ func (s *Store) state() (resourceRecord, uint64) {
 	defer s.mu.RUnlock()
 	r := s.record
 	r.Channels.Channels = append([]w.Channel(nil), r.Channels.Channels...)
+	r.Admins = append([]string(nil), r.Admins...)
+	r.Credentials = append([]AdminCredential(nil), r.Credentials...)
+	r.Bans = append([]Ban(nil), r.Bans...)
+	if r.Settings != nil {
+		copy := *r.Settings
+		r.Settings = &copy
+	}
 	return r, s.revision
 }
 
@@ -128,6 +150,39 @@ func decodeResources(data []byte) (resourceRecord, error) {
 		(r.Claim != (claimSecret{}) && (r.Claim.Version != 1 || !validIdentity(r.Claim.Digest) || r.Claim.Expires.IsZero())) ||
 		(r.Owner != "" && r.Claim.Digest != "") {
 		return r, errors.New("invalid resource state; original preserved")
+	}
+	seen := make(map[string]bool, len(r.Admins))
+	if r.Settings != nil && !validSettings(*r.Settings) {
+		return r, ErrInvalid
+	}
+	if len(r.Admins) > 64 {
+		return r, ErrInvalid
+	}
+	for _, id := range r.Admins {
+		if !validIdentity(id) || id == r.Owner || seen[id] {
+			return r, ErrInvalid
+		}
+		seen[id] = true
+	}
+	if len(r.Credentials) > 64 {
+		return r, ErrInvalid
+	}
+	clear(seen)
+	for _, c := range r.Credentials {
+		if len(c.ID) != 26 || seen[c.ID] || !validIdentity(c.Identity) || !validIdentity(c.Digest) || !validName(c.Label, 64) || c.Expires.IsZero() {
+			return r, ErrInvalid
+		}
+		seen[c.ID] = true
+	}
+	if len(r.Bans) > 256 {
+		return r, ErrInvalid
+	}
+	clear(seen)
+	for _, b := range r.Bans {
+		if !validIdentity(b.Identity) || b.Identity == r.Owner || seen[b.Identity] || b.Expires.IsZero() || (b.Reason != "" && !validName(b.Reason, 200)) {
+			return r, ErrInvalid
+		}
+		seen[b.Identity] = true
 	}
 	return r, nil
 }
@@ -183,6 +238,10 @@ func (s *Store) update(fn func(*resourceRecord) error) error {
 }
 
 func (s *Store) updateContext(parent context.Context, fn func(*resourceRecord) error) error {
+	return s.updateAtContext(parent, 0, fn)
+}
+
+func (s *Store) updateAtContext(parent context.Context, revision uint64, fn func(*resourceRecord) error) error {
 	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
 	defer cancel()
 	select {
@@ -196,6 +255,9 @@ func (s *Store) updateContext(parent context.Context, fn func(*resourceRecord) e
 		if err != nil {
 			return err
 		}
+		if revision != 0 && entry.Revision() != revision {
+			return ErrConflict
+		}
 		r, err := decodeResources(entry.Value())
 		if err != nil {
 			return err
@@ -205,6 +267,13 @@ func (s *Store) updateContext(parent context.Context, fn func(*resourceRecord) e
 		}
 		// The cached immutable slice must never alias the mutation draft.
 		r.Channels.Channels = append([]w.Channel(nil), r.Channels.Channels...)
+		r.Admins = append([]string(nil), r.Admins...)
+		r.Credentials = append([]AdminCredential(nil), r.Credentials...)
+		r.Bans = append([]Ban(nil), r.Bans...)
+		if r.Settings != nil {
+			copy := *r.Settings
+			r.Settings = &copy
+		}
 		before := r
 		before.Channels.Channels = append([]w.Channel(nil), r.Channels.Channels...)
 		if err = fn(&r); err != nil {
@@ -229,7 +298,7 @@ func (s *Store) updateContext(parent context.Context, fn func(*resourceRecord) e
 		}
 		return s.install(r, revision)
 	}
-	return errors.New("resource revision conflict; retry the operation")
+	return ErrConflict
 }
 
 // watch receives the initial snapshot and subsequent revisions on one consumer,

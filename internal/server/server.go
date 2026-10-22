@@ -30,19 +30,22 @@ type Config struct {
 	MaxClients int
 }
 type Server struct {
-	chat             *chatStore
-	channelMu        sync.Mutex
-	deletingChannel  uint16
-	defaultChannel   uint16
-	resourceRevision uint64
-	listener         w.Listener
-	config           Config
-	mu               sync.Mutex
-	peers            map[uint16]*peer
-	next             uint32
-	wg               sync.WaitGroup
+	chat              *chatStore
+	channelMu         sync.Mutex
+	deletingChannel   uint16
+	defaultChannel    uint16
+	resourceRevision  uint64
+	listener          w.Listener
+	config            Config
+	mu                sync.Mutex
+	peers             map[uint16]*peer
+	next              uint32
+	wg                sync.WaitGroup
+	adminObservers    map[chan struct{}]struct{}
+	pendingMaxClients int
 }
 type peer struct {
+	removed        bool
 	chatGeneration uint64
 	chatCancel     context.CancelFunc
 	chatWake       chan struct{}
@@ -113,7 +116,15 @@ func Listen(address string, cfg Config) (*Server, error) {
 			return nil, err
 		}
 	}
-	l, err := w.ListenNoise(address, cfg.NoiseKey, cfg.MaxClients)
+	if err := cfg.Store.initializeSettings(cfg.Name, cfg.MaxClients); err != nil {
+		if owned {
+			cfg.Store.Close()
+		}
+		return nil, err
+	}
+	persisted := cfg.Store.snapshot().Settings
+	cfg.Name, cfg.MaxClients = persisted.Name, persisted.MaxClients
+	l, err := w.ListenNoise(address, cfg.NoiseKey, w.MaxMembers)
 	if err != nil {
 		if owned {
 			cfg.Store.Close()
@@ -128,7 +139,7 @@ func (s *Server) Addr() net.Addr { return s.listener.Addr() }
 // Serve owns every accepted connection and joins all relay workers on shutdown.
 func (s *Server) Serve(ctx context.Context) error {
 	ctx, cancelAll := context.WithCancel(ctx)
-	slots := make(chan struct{}, s.config.MaxClients)
+	slots := make(chan struct{}, w.MaxMembers)
 	stop := context.AfterFunc(ctx, func() { _ = s.listener.Close() })
 	defer stop()
 	watchDone := make(chan error, 1)
@@ -199,6 +210,23 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 	// Bootstrap only the current channel; the client explicitly lists what its UI needs.
 	s.mu.Lock()
 	// IDs are never reused during this server lifetime, including after disconnect.
+	limit := s.config.MaxClients
+	if settings := s.config.Store.snapshot().Settings; settings != nil {
+		limit = settings.MaxClients
+	}
+	if s.pendingMaxClients > 0 {
+		limit = min(limit, s.pendingMaxClients)
+	}
+	if len(s.peers) >= limit {
+		s.mu.Unlock()
+		_ = c.CloseWithError(5, "server full")
+		return
+	}
+	if s.config.Store.Banned(p.identity) {
+		s.mu.Unlock()
+		_ = c.CloseWithError(w.MemberBanned, "membership revoked")
+		return
+	}
 	if s.next >= 65535 {
 		s.mu.Unlock()
 		return
@@ -350,6 +378,9 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 func (s *Server) stateLocked(p *peer) w.State {
 	members := make([]w.Member, 0, len(s.peers))
 	for _, v := range s.peers {
+		if v.removed {
+			continue
+		}
 		if p.watch.AllMembers || v.member.Channel == p.member.Channel {
 			members = append(members, v.member)
 		}
@@ -365,7 +396,8 @@ func (s *Server) stateLocked(p *peer) w.State {
 			}
 		}
 	}
-	return w.State{Name: s.config.Name, Self: p.member.ID, Epoch: p.epoch, Channels: channels, Members: members, IdentityUID: p.identity, ServerRole: role, CanClaimOwner: canClaim, CanManageChannels: role == "owner", CanReorderChannels: role == "owner", CanConfigureChannelAudio: role == "owner", CanWatchResources: true, AllChannels: p.watch.AllChannels, AllMembers: p.watch.AllMembers, DefaultChannel: s.defaultChannel}
+	manage := s.config.Store.Allowed(p.identity, "channels", "write", "*")
+	return w.State{Name: s.config.Name, Self: p.member.ID, Epoch: p.epoch, Channels: channels, Members: members, IdentityUID: p.identity, ServerRole: role, CanClaimOwner: canClaim, CanManageChannels: manage, CanReorderChannels: manage, CanConfigureChannelAudio: manage, CanWatchResources: true, AllChannels: p.watch.AllChannels, AllMembers: p.watch.AllMembers, DefaultChannel: s.defaultChannel}
 }
 
 // One shared KV informer feeds the existing per-session interest projection.
@@ -375,7 +407,7 @@ func (s *Server) applyResources(r resourceRecord, revision uint64) error {
 	s.channelMu.Lock()
 	defer s.channelMu.Unlock()
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer func() { s.mu.Unlock(); s.disconnectBanned() }()
 	if revision <= s.resourceRevision {
 		return nil
 	}
@@ -385,6 +417,17 @@ func (s *Server) applyResources(r resourceRecord, revision uint64) error {
 	// A local writer can already have observed a newer revision. Project the
 	// newest cache, not the stale watch payload, even after a rejected command.
 	r, revision = s.config.Store.state()
+	if r.Settings != nil {
+		s.mu.Unlock()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		err := s.chat.configureRetention(ctx, *r.Settings)
+		cancel()
+		s.mu.Lock()
+		if err != nil {
+			return err
+		}
+		s.config.Name, s.config.MaxClients = r.Settings.Name, r.Settings.MaxClients
+	}
 	for _, p := range s.peers {
 		found := false
 		for _, ch := range r.Channels.Channels {
@@ -418,8 +461,18 @@ func (s *Server) sendStateLocked(p *peer, kind uint8, force bool) {
 
 func (s *Server) broadcastLocked(except *peer) {
 	for _, p := range s.peers {
-		if p != except {
+		if p != except && !p.removed {
 			s.sendStateLocked(p, w.StateKind, false)
+		}
+	}
+	s.signalAdminLocked()
+}
+
+func (s *Server) signalAdminLocked() {
+	for wake := range s.adminObservers {
+		select {
+		case wake <- struct{}{}:
+		default:
 		}
 	}
 }
@@ -489,7 +542,7 @@ func (s *Server) voiceLoop(p *peer) {
 			continue
 		}
 		s.mu.Lock()
-		if v.Epoch != p.epoch || p.member.Muted || !p.voiceBucket.take(60, 10) {
+		if p.removed || v.Epoch != p.epoch || p.member.Muted || !p.voiceBucket.take(60, 10) {
 			s.mu.Unlock()
 			continue
 		}
@@ -499,7 +552,7 @@ func (s *Server) voiceLoop(p *peer) {
 		count := 0
 		sender, epoch := p.member.ID, p.epoch
 		for _, other := range s.peers {
-			if other == p || other.member.Channel != p.member.Channel || other.member.Deafened {
+			if other == p || other.removed || other.member.Channel != p.member.Channel || other.member.Deafened {
 				continue
 			}
 			targets[count] = target{other.voiceOut, other.epoch}

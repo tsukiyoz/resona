@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -28,15 +29,21 @@ type ChatConfig struct {
 }
 
 type chatStore struct {
-	server    *natsserver.Server
-	conn      *nats.Conn
-	js        jetstream.JetStream
-	stream    jetstream.Stream
-	temporary string
-	closed    chan struct{}
+	server          *natsserver.Server
+	conn            *nats.Conn
+	js              jetstream.JetStream
+	stream          jetstream.Stream
+	temporary       string
+	closed          chan struct{}
+	retentionMu     sync.Mutex
+	initialSettings ServerSettings
 }
 
 func openChat(cfg ChatConfig) (_ *chatStore, err error) {
+	return openChatConfigured(cfg, false)
+}
+
+func openChatConfigured(cfg ChatConfig, preserveExisting bool) (_ *chatStore, err error) {
 	if cfg.MaxMessagesPerChannel == 0 {
 		cfg.MaxMessagesPerChannel = 200
 	}
@@ -49,7 +56,7 @@ func openChat(cfg ChatConfig) (_ *chatStore, err error) {
 	if cfg.MaxMessagesPerChannel < 1 || cfg.MaxMessagesPerChannel > 10000 || cfg.MaxBytes < 16<<10 || cfg.MaxAge < time.Second {
 		return nil, errors.New("invalid chat retention limits")
 	}
-	c := &chatStore{closed: make(chan struct{})}
+	c := &chatStore{closed: make(chan struct{}), initialSettings: ServerSettings{ChatMaxMessages: cfg.MaxMessagesPerChannel, ChatMaxBytes: cfg.MaxBytes, ChatMaxAgeSeconds: int64(cfg.MaxAge / time.Second)}}
 	if cfg.Directory == "" {
 		cfg.Directory, err = os.MkdirTemp("", "resona-chat-")
 		if err != nil {
@@ -93,6 +100,15 @@ func openChat(cfg ChatConfig) (_ *chatStore, err error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
+	if preserveExisting {
+		c.stream, err = c.js.Stream(ctx, "RESONA_CHAT")
+		if err == nil {
+			return c, nil
+		}
+		if !errors.Is(err, jetstream.ErrStreamNotFound) {
+			return nil, err
+		}
+	}
 	c.stream, err = c.js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name: "RESONA_CHAT", Subjects: []string{"resona.chat.channel.*"},
 		Storage: jetstream.FileStorage, Retention: jetstream.LimitsPolicy,

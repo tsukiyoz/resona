@@ -3,6 +3,7 @@ module github.com/tsukiyoz/resona
 go 1.26.0
 
 require (
+	github.com/casbin/casbin/v2 v2.135.0
 	github.com/flynn/noise v1.1.0
 	github.com/gen2brain/malgo v0.11.26
 	github.com/keybase/go-keychain v0.0.1
@@ -17,7 +18,10 @@ require (
 
 require (
 	github.com/antithesishq/antithesis-sdk-go v0.8.0-default-no-op // indirect
+	github.com/bmatcuk/doublestar/v4 v4.6.1 // indirect
+	github.com/casbin/govaluate v1.3.0 // indirect
 	github.com/google/go-tpm v0.9.8 // indirect
+	github.com/google/uuid v1.6.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/klauspost/compress v1.20.1 // indirect
 	github.com/minio/highwayhash v1.0.4 // indirect
