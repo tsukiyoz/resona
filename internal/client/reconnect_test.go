@@ -314,7 +314,8 @@ func TestImmediateRetryRacingTimerDoesNotWakeTheNextAttempt(t *testing.T) {
 			close(done)
 		}()
 		synctest.Wait()
-		synctest.Sleep(time.Second)
+		time.Sleep(time.Second)
+		synctest.Wait()
 		if !<-woke {
 			t.Fatal("retry timer did not wake the worker")
 		}
@@ -370,11 +371,13 @@ func TestImmediateRetryIsRejectedDuringDial(t *testing.T) {
 		}
 		close(finishDial)
 		synctest.Wait()
-		synctest.Sleep(time.Second - time.Nanosecond)
+		time.Sleep(time.Second - time.Nanosecond)
+		synctest.Wait()
 		if calls.Load() != 2 || !s.GetSessionState().ConnectionWaiting {
 			t.Fatal("a retry signal bypassed the next backoff")
 		}
-		synctest.Sleep(time.Nanosecond)
+		time.Sleep(time.Nanosecond)
+		synctest.Wait()
 		if calls.Load() != 3 {
 			t.Fatal("the next scheduled retry did not run")
 		}

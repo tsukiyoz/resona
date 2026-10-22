@@ -749,3 +749,8 @@ testing/synctest 虚拟时间及通道握手，精确覆盖定时器先到、点
 这两项测试在本机 race 模式连续 100 次通过，无需真实网络或音频设备。
 Go internal 全量、accounts/client 完整 race、make lint 和客户端 audio/all-targets
 严格 Clippy（不豁免告警）通过；跨平台构建将按新提交重新运行。
+
+首次重跑发现本机 Go 1.27 的 synctest.Sleep 不在项目 Go 1.26 标准库中；改为
+等价的 time.Sleep + synctest.Wait，仍只推进 bubble 内的虚拟时间。使用
+GOTOOLCHAIN=go1.26.0 重跑 internal 全量和两项定向 race（100 次）均通过，
+随后再次推送触发跨平台构建。
