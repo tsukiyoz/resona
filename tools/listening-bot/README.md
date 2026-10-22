@@ -1,6 +1,7 @@
 # Local listening comparison
 
-Loopback-only Noise UDP server with six real voice clients. Channels compare
+Loopback-only Go Noise UDP server with six real Rust voice clients using the
+product `client/` session, DSP factory and Opus encoder. Channels compare
 the same synthesized speech and seeded pink noise: raw, SpeexDSP ANS level 2,
 and WebRTC NS level 2. All use 32 kbps mono Opus with complexity 5. Processing
 and encoding happen before playback; a single 20 ms timer sends synchronized
@@ -13,11 +14,10 @@ On macOS, generate the fixture (requires `ffmpeg` and the Tingting system voice)
 mkdir -p build/listening
 say -v Tingting -r 190 -f tools/listening-bot/speech.txt -o build/listening/speech.aiff
 ffmpeg -y -i build/listening/speech.aiff -f lavfi -i 'anoisesrc=color=pink:amplitude=0.045:sample_rate=48000:seed=42' -filter_complex '[0:a]aresample=48000,aformat=channel_layouts=mono,volume=0.6[s];[s][1:a]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.9:level=false[a]' -map '[a]' -ar 48000 -ac 1 -f f32le build/listening/noisy.f32
-make build-apm
+make build-listening-bot
 say -v Tingting -r 240 -o build/listening/agc.aiff '这是一段用于比较收听音量的语音，请注意每次播放的响度变化，其他内容保持完全相同。'
 ffmpeg -y -i build/listening/agc.aiff -ar 48000 -ac 1 -f f32le build/listening/agc.f32
-go build -o build/listening/listening-bot ./tools/listening-bot
-RESONA_WEBRTC_PLUGIN_DIR="$PWD/build/bin" build/listening/listening-bot
+RESONA_WEBRTC_PLUGIN_DIR="$PWD/build/bin" build/bin/resona-listening-bot
 ```
 
 Add the printed address and public key in Resona, with no server password.
@@ -45,5 +45,14 @@ audio (20 ms to 120 seconds) for other locally authorized recordings.
 Fixtures and binaries in `build/listening` are ignored by Git. Integration test:
 
 ```sh
-RESONA_WEBRTC_PLUGIN_DIR="$PWD/build/bin" go test -race ./tools/listening-bot -v
+make test-listening-bot
+RESONA_TEST_NATIVE_AUDIO=1 RESONA_WEBRTC_PLUGIN_DIR="$PWD/build/bin" make test-listening-bot
 ```
+
+The default integration check exercises the raw/Speex sources and all AGC
+speakers over real loopback Noise UDP, including channel isolation and shutdown.
+The second command also requires the native library and checks the WebRTC source.
+An explicit capture of channel 04 (25 seconds, no microphone) is available with
+`RESONA_LISTENING_ADDRESS=127.0.0.1:PORT RESONA_LISTENING_KEY=KEY cargo test
+--manifest-path tools/listening-bot/Cargo.toml --test capture -- --ignored`.
+It writes per-speaker PCM only to ignored `build/listening/`.

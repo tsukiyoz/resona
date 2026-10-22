@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/rust-client.yml'
       - 'client/**'
+      - 'tools/listening-bot/**'
       - 'native/client-audio/**'
       - 'native/opus/**'
       - 'native/speexdsp/**'
@@ -20,6 +21,7 @@ on:
     paths:
       - '.github/workflows/rust-client.yml'
       - 'client/**'
+      - 'tools/listening-bot/**'
       - 'native/client-audio/**'
       - 'native/opus/**'
       - 'native/speexdsp/**'
@@ -61,6 +63,7 @@ jobs:
       - name: Check Rust formatting and lint
         run: |
           cargo fmt --manifest-path client/Cargo.toml --check
+          cargo fmt --manifest-path tools/listening-bot/Cargo.toml --check
       - name: Set up Windows pkg-config
         if: runner.os == 'Windows'
         id: msys2
@@ -84,3 +87,8 @@ jobs:
         run: cargo clippy --locked --manifest-path client/Cargo.toml --features audio --all-targets -- -D warnings
       - name: Test Rust and real Go loopback peers
         run: cargo test --locked --manifest-path client/Cargo.toml --features audio
+      - name: Test Rust listening sources against isolated Go server
+        run: |
+          CGO_ENABLED=0 go build -o "build/bin/listening-server$(go env GOEXE)" ./tools/listening-bot/server
+          cargo clippy --locked --manifest-path tools/listening-bot/Cargo.toml --all-targets -- -D warnings
+          cargo test --locked --manifest-path tools/listening-bot/Cargo.toml

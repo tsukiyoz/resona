@@ -1,0 +1,18 @@
+[package]
+name = "resona-listening-bot"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+anyhow = "1"
+resona-client = { path = "../../client", features = ["audio"] }
+tokio = { version = "1.53", features = ["rt", "macros", "time", "signal"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+serde_json = "1"
+tempfile = "=3.27.0"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

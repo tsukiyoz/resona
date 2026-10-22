@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := build
-.PHONY: help dev build build-core build-opus build-apm build-desktop build-server deploy core clean clean-all test test-client test-native test-build test-deploy generate format lint
+.PHONY: help dev build build-core build-opus build-apm build-desktop build-server build-listening-bot deploy core clean clean-all test test-client test-listening-bot test-native test-build test-deploy generate format lint
 
 HOST_OS := $(shell uname -s)
 GOEXE = $(shell go env GOEXE)
@@ -26,6 +26,7 @@ help:
 	@echo 'make build-apm      Build native WebRTC and RNNoise audio library into build/bin/'
 	@echo 'make build-desktop  Build desktop with in-process core (macOS: desktop/dist/Resona.app)'
 	@echo 'make build-server   Build the pure-Go server into build/bin/'
+	@echo 'make build-listening-bot  Build Rust listening sources and isolated Go server'
 	@echo 'make deploy         Generate a Linux server package in build/deploy/ (no upload)'
 	@echo 'make dev            Build native libraries and run the debug desktop'
 	@echo 'make clean          Remove build/bin/, build/deploy/ and desktop/dist/'
@@ -47,6 +48,7 @@ format:
 	cargo fmt --manifest-path desktop/Cargo.toml
 	cargo fmt --manifest-path client/Cargo.toml
 	cargo fmt --manifest-path native/webrtc-apm/Cargo.toml
+	cargo fmt --manifest-path tools/listening-bot/Cargo.toml
 
 lint:
 	@for module in $(GO_MODULES); do \
@@ -83,6 +85,15 @@ core: build-core
 build-server:
 	mkdir -p build/bin
 	CGO_ENABLED=0 go build -trimpath -ldflags '$(VERSION_LDFLAGS)' -o "build/bin/resona-server$(GOEXE)" ./cmd/resona-server
+
+build-listening-bot: build-opus build-apm
+	CGO_ENABLED=0 go build -trimpath -o "build/bin/listening-server$(GOEXE)" ./tools/listening-bot/server
+	$(RUST_BUILD_ENV) cargo build --locked --release --manifest-path tools/listening-bot/Cargo.toml
+	cp "tools/listening-bot/target/release/resona-listening-bot$(GOEXE)" build/bin/
+
+test-listening-bot: build-opus
+	CGO_ENABLED=0 go build -o "build/bin/listening-server$(GOEXE)" ./tools/listening-bot/server
+	$(RUST_BUILD_ENV) cargo test --locked --manifest-path tools/listening-bot/Cargo.toml
 
 deploy:
 	VERSION="$(VERSION)" BUILD_TIME="$(BUILD_TIME)" DEPLOY_ARCH="$(DEPLOY_ARCH)" sh deploy/package.sh
