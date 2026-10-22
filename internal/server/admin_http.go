@@ -48,6 +48,7 @@ func NewAdminConsole(s *Server, origin string) (*AdminConsole, error) {
 	a.mux.HandleFunc("GET "+adminBase+"/session", a.sessionInfo)
 	a.registerResources()
 	a.registerMembers()
+	a.mux.HandleFunc("PUT "+adminBase+"/settings", a.settings)
 	return a, nil
 }
 

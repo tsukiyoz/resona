@@ -28,6 +28,7 @@ type resourceRecord struct {
 	Admins      []string          `json:"admins,omitempty"`
 	Credentials []AdminCredential `json:"credentials,omitempty"`
 	Bans        []Ban             `json:"bans,omitempty"`
+	Settings    *ServerSettings   `json:"settings,omitempty"`
 }
 
 // Store owns one embedded broker shared by chat and durable management state.
@@ -49,7 +50,7 @@ func OpenStore(cfg ChatConfig, legacyDir string, seed []w.Channel) (_ *Store, er
 	if _, err := authorization(); err != nil {
 		return nil, err
 	}
-	c, err := openChat(cfg)
+	c, err := openChatConfigured(cfg, true)
 	if err != nil {
 		return nil, err
 	}
@@ -99,6 +100,14 @@ func OpenStore(cfg ChatConfig, legacyDir string, seed []w.Channel) (_ *Store, er
 		return nil, err
 	}
 	s.record, s.revision = record, entry.Revision()
+	if record.Settings != nil {
+		err = c.configureRetention(ctx, *record.Settings)
+	} else {
+		err = c.configureRetention(ctx, c.initialSettings)
+	}
+	if err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -117,6 +126,10 @@ func (s *Store) state() (resourceRecord, uint64) {
 	r.Admins = append([]string(nil), r.Admins...)
 	r.Credentials = append([]AdminCredential(nil), r.Credentials...)
 	r.Bans = append([]Ban(nil), r.Bans...)
+	if r.Settings != nil {
+		copy := *r.Settings
+		r.Settings = &copy
+	}
 	return r, s.revision
 }
 
@@ -139,6 +152,9 @@ func decodeResources(data []byte) (resourceRecord, error) {
 		return r, errors.New("invalid resource state; original preserved")
 	}
 	seen := make(map[string]bool, len(r.Admins))
+	if r.Settings != nil && !validSettings(*r.Settings) {
+		return r, ErrInvalid
+	}
 	if len(r.Admins) > 64 {
 		return r, ErrInvalid
 	}
@@ -254,6 +270,10 @@ func (s *Store) updateAtContext(parent context.Context, revision uint64, fn func
 		r.Admins = append([]string(nil), r.Admins...)
 		r.Credentials = append([]AdminCredential(nil), r.Credentials...)
 		r.Bans = append([]Ban(nil), r.Bans...)
+		if r.Settings != nil {
+			copy := *r.Settings
+			r.Settings = &copy
+		}
 		before := r
 		before.Channels.Channels = append([]w.Channel(nil), r.Channels.Channels...)
 		if err = fn(&r); err != nil {

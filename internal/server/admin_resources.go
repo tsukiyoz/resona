@@ -36,6 +36,7 @@ type AdminSnapshot struct {
 	Admins         []string          `json:"admins"`
 	Credentials    []AdminCredential `json:"credentials,omitempty"`
 	Bans           []Ban             `json:"bans"`
+	Settings       *ServerSettings   `json:"settings"`
 }
 
 func (s *Server) adminSnapshot(identity string) AdminSnapshot {
@@ -44,6 +45,11 @@ func (s *Server) adminSnapshot(identity string) AdminSnapshot {
 	r, revision := s.config.Store.state()
 	state := AdminSnapshot{Revision: revision, Identity: identity, Role: roleOf(r, identity), Name: s.config.Name, MaxClients: s.config.MaxClients, DefaultChannel: r.Channels.Default, Channels: r.Channels.Channels, Members: []AdminMember{}, Owner: r.Owner, Admins: r.Admins, Capabilities: make(map[string]bool)}
 	state.Bans = r.Bans
+	state.Settings = r.Settings
+	if r.Settings != nil {
+		state.Name = r.Settings.Name
+		state.MaxClients = r.Settings.MaxClients
+	}
 	for _, object := range []string{"channels", "members", "roles", "settings", "tokens"} {
 		state.Capabilities[object] = authorized(r, identity, object, "write", "member")
 	}

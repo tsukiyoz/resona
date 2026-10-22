@@ -63,6 +63,7 @@ impl Error {
             Self::Transport(noise::Error::RemoteClosed(4)) => {
                 "你的身份已被服务器封禁，请联系管理员"
             }
+            Self::Transport(noise::Error::RemoteClosed(5)) => "服务器人数已满，请稍后手动重试",
             Self::AuthenticationRejected | Self::Transport(noise::Error::RemoteClosed(2)) => {
                 "服务器拒绝连接，请检查服务器密码"
             }
