@@ -735,3 +735,22 @@ Go/Rust 互通、桌面 55 项测试通过。严格 Clippy 沿用既有三类风
 保留账号和连接配置；容器 running、重启次数 0、版本和后台 HTTP 200 已确认。
 管理 TCP 9989 仍只绑定回环，语音 UDP 9988 映射不变，未重置 owner。
 Windows、深色选择器实窗、原生 IME 与完整键盘遍历仍待人工验收。
+
+### 跨平台 CI 修复与重连测试稳定性
+
+修复分支将账号数据库绝对路径编码为无 authority 的 file URI，避免 Windows
+盘符被 SQLite 当作主机名；Windows 不再以 POSIX mode 位判断文件权限。账号
+密码校验按严格 Clippy 建议合并条件，未修改校验规则。
+
+重连拨号前仍在状态锁内消费竞速到达的立即重试信号；删除拨号后的冗余清理，
+因为 RetryConnection 在拨号期间拒绝请求。原 50/75/10ms 墙钟窗口测试改为
+testing/synctest 虚拟时间及通道握手，精确覆盖定时器先到、点击随后到；另以
+完整 Service 验证等待时可唤醒、拨号时拒绝、失败后的下一轮仍遵守退避时间。
+这两项测试在本机 race 模式连续 100 次通过，无需真实网络或音频设备。
+Go internal 全量、accounts/client 完整 race、make lint 和客户端 audio/all-targets
+严格 Clippy（不豁免告警）通过；跨平台构建将按新提交重新运行。
+
+首次重跑发现本机 Go 1.27 的 synctest.Sleep 不在项目 Go 1.26 标准库中；改为
+等价的 time.Sleep + synctest.Wait，仍只推进 bubble 内的虚拟时间。使用
+GOTOOLCHAIN=go1.26.0 重跑 internal 全量和两项定向 race（100 次）均通过，
+随后再次推送触发跨平台构建。

@@ -3,8 +3,10 @@ package accounts
 import (
 	"context"
 	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -106,9 +108,35 @@ func TestAccountsPasswordTokenRestartAndRevocation(t *testing.T) {
 	if _, err := s.Password(ctx, "alice", "a brand new long password"); err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Stat(filepath.Join(dir, "accounts.sqlite"))
-	if err != nil || info.Mode().Perm()&0o077 != 0 {
-		t.Fatal("account database permissions are too broad", err)
+	// Windows has no POSIX permission bits: os.Stat reports a fixed mode and the
+	// file is protected by its ACL, so the mode check only means something on
+	// Unix.
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(filepath.Join(dir, "accounts.sqlite"))
+		if err != nil || info.Mode().Perm()&0o077 != 0 {
+			t.Fatal("account database permissions are too broad", err)
+		}
+	}
+}
+
+func TestSQLiteURIDoesNotParseThePathAsAuthority(t *testing.T) {
+	// A drive letter read as a URI authority is what made Windows reject every
+	// database with "invalid uri authority: C:".
+	for _, path := range []string{
+		filepath.Join(t.TempDir(), "accounts.sqlite"),
+		filepath.Join(string(filepath.Separator), "srv", "resona", "accounts.sqlite"),
+	} {
+		uri := sqliteURI(path)
+		parsed, err := url.Parse(uri)
+		if err != nil {
+			t.Fatalf("%q -> %q: %v", path, uri, err)
+		}
+		if parsed.Host != "" {
+			t.Fatalf("%q -> %q parses %q as the URI authority", path, uri, parsed.Host)
+		}
+		if strings.Contains(uri, `\`) {
+			t.Fatalf("%q -> %q keeps backslashes in a URI", path, uri)
+		}
 	}
 }
 
