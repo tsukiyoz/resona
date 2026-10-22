@@ -732,6 +732,100 @@ async fn lost_command_acks_do_not_pause_incoming_voice() {
     source.close().await;
 }
 
+#[cfg(feature = "audio")]
+#[tokio::test]
+async fn simultaneous_opus_speakers_continue_during_jetstream_chat() {
+    use resona_client::{
+        audio::{Decoder, Encoder, FRAME},
+        session::Command as AppCommand,
+    };
+    let (_peer, address, key) = start_peer(&["-server"]);
+    let mut listener = app_session(address, key, "listener").await;
+    let left = app_session(address, key, "left").await;
+    let right = app_session(address, key, "right").await;
+    let cancel = CancellationToken::new();
+    for source in [&left, &right] {
+        source
+            .handle
+            .command(
+                AppCommand::VoiceState {
+                    muted: false,
+                    deafened: false,
+                },
+                Instant::now() + Duration::from_secs(3),
+                &cancel,
+            )
+            .await
+            .unwrap();
+    }
+    wait_state(&mut listener.handle, |s| {
+        s.state.members.len() == 3 && s.chat_status.status == 1
+    })
+    .await;
+    let mut encoder = Encoder::new(48_000).unwrap();
+    let pcm = std::array::from_fn(|i| (i as f32 * 0.08).sin() * 0.05);
+    let mut bytes = [0; 1024];
+    let n = encoder.encode(&pcm, &mut bytes).unwrap();
+    let mut senders = Vec::new();
+    for source in [&left, &right] {
+        let voice = source.voice_tx.clone();
+        let data = bytes[..n].to_vec();
+        senders.push(tokio::spawn(async move {
+            for _ in 0..100 {
+                voice.send(&data).unwrap();
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }));
+    }
+    let handle = listener.handle.clone();
+    let chat = tokio::spawn(async move {
+        for i in 0..3 {
+            handle
+                .command(
+                    AppCommand::Chat {
+                        channel: 1,
+                        text: "voice regression test".into(),
+                        id: format!("voice-chat-{i}"),
+                    },
+                    Instant::now() + Duration::from_secs(3),
+                    &CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(350)).await;
+        }
+    });
+    let mut received = std::collections::HashMap::new();
+    let mut decoders = std::collections::HashMap::new();
+    let mut out = [0.0; FRAME * 6];
+    let _ = timeout(Duration::from_secs(6), async {
+        while let Some(packet) = listener.voice_rx.recv().await {
+            let decoder = decoders
+                .entry(packet.sender)
+                .or_insert_with(|| Decoder::new().unwrap());
+            assert_eq!(decoder.decode(Some(&packet.data), &mut out).unwrap(), FRAME);
+            *received.entry(packet.sender).or_insert(0) += 1;
+            if received.len() == 2 && received.values().all(|n| *n == 100) {
+                break;
+            }
+        }
+    })
+    .await;
+    for sender in senders {
+        sender.await.unwrap();
+    }
+    chat.await.unwrap();
+    wait_state(&mut listener.handle, |s| s.messages.len() == 3).await;
+    assert_eq!(received.len(), 2);
+    assert!(
+        received.values().all(|n| *n >= 95),
+        "voice delivery: {received:?}"
+    );
+    listener.close().await;
+    left.close().await;
+    right.close().await;
+}
+
 async fn wait_lifecycle(
     handle: &mut resona_client::lifecycle::Handle,
     mode: resona_client::lifecycle::Mode,

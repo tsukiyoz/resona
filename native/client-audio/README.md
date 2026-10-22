@@ -13,6 +13,16 @@ Capture frames carry gate epochs and age, so PTT releases and stalled workers
 cannot replay old microphone input. Local monitor audio is mixed after the
 AEC reference is recorded, as in the existing Go engine.
 
+Playback refills follow the output ring's remaining sample count, not relative
+20ms timer deadlines. Each worker pass writes at most two frames, refilling below
+40ms of queued PCM (less than 60ms immediately after a refill). Device callbacks
+wake the worker; the 20ms timed wait is only a fallback for stopped callbacks.
+No high-resolution global timer, busy wait or new audio thread is required.
+
+`device_test.c` checks callback/ring behavior without opening hardware, including
+partial output periods and ring wrap. Rust engine tests additionally simulate
+one/two remote speakers with 7/16/31ms worker wakes and continuous device consumption.
+
 Native device stop/uninit remains an OS-driver call. In-process ownership must
 be tested for cancellation and slow driver operations before product cutover;
 the former helper-process kill fallback does not transfer to this adapter.

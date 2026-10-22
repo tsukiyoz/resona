@@ -56,6 +56,7 @@ impl Default for State {
 }
 trait Stream: Send {
     fn failed(&self) -> bool;
+    fn pending(&self) -> usize;
     fn epoch(&mut self, epoch: u32);
     fn capture(&mut self, out: &mut Captured) -> bool;
     fn reference(&mut self, out: &mut [f32; FRAME * 2]);
@@ -64,6 +65,9 @@ trait Stream: Send {
 impl Stream for Device {
     fn failed(&self) -> bool {
         Device::failed(self)
+    }
+    fn pending(&self) -> usize {
+        Device::pending(self)
     }
     fn epoch(&mut self, epoch: u32) {
         Device::epoch(self, epoch)
@@ -206,6 +210,9 @@ impl Engine {
             fn failed(&self) -> bool {
                 false
             }
+            fn pending(&self) -> usize {
+                FRAME * 2
+            }
             fn epoch(&mut self, _: u32) {}
             fn capture(&mut self, _: &mut Captured) -> bool {
                 false
@@ -269,7 +276,6 @@ impl Engine {
                     route_revision: u64::MAX,
                     capture_epoch: 0,
                     transmitting: false,
-                    next_mix: Instant::now(),
                     next_publish: Instant::now(),
                 }
                 .run();
@@ -329,7 +335,6 @@ struct Worker {
     route_revision: u64,
     capture_epoch: u32,
     transmitting: bool,
-    next_mix: Instant,
     next_publish: Instant,
 }
 impl Worker {
@@ -458,7 +463,6 @@ impl Worker {
             self.state.push_to_talk_pressed = false;
         }
         self.route_revision = u64::MAX;
-        self.next_mix = Instant::now();
         self.update_route()?;
         Ok(())
     }
@@ -552,6 +556,9 @@ impl Worker {
         Ok(())
     }
     fn tick(&mut self) -> Result<()> {
+        self.tick_at(Instant::now())
+    }
+    fn tick_at(&mut self, now: Instant) -> Result<()> {
         if self.shared.cancelled.load(Ordering::Acquire) {
             return Ok(());
         }
@@ -564,7 +571,6 @@ impl Worker {
         let Some(pipeline) = &mut self.pipeline else {
             return Ok(());
         };
-        let now = Instant::now();
         for _ in 0..128 {
             match self.packets.try_recv() {
                 Ok(packet) => pipeline.push(packet, now),
@@ -641,8 +647,12 @@ impl Worker {
                 }
             }
         }
-        if now >= self.next_mix {
-            self.next_mix = now + Duration::from_millis(20);
+        // Follow the sound card's sample clock. Relative timer deadlines drift
+        // on late wakes; two frames of lead absorb ordinary scheduling jitter.
+        for _ in 0..2 {
+            if device.pending() >= FRAME * 2 {
+                break;
+            }
             let mut out = [0.0; FRAME * 2];
             pipeline.render(now, &mut out)?;
             let _gate = self.shared.gate.lock().map_err(|_| "音频状态不可用")?;
@@ -691,7 +701,9 @@ impl Worker {
                 continue;
             }
             if self.device.is_some() {
-                thread::park_timeout(self.next_mix.saturating_duration_since(Instant::now()));
+                // Device callbacks drive refills; this is only a failure-check
+                // fallback if callbacks stop, not the playout clock.
+                thread::park_timeout(Duration::from_millis(20));
             } else {
                 while self.packets.try_recv().is_ok() {}
                 thread::park();
@@ -713,6 +725,157 @@ impl Worker {
 mod tests {
     use super::*;
     use std::{path::Path, sync::atomic::AtomicUsize};
+
+    #[derive(Default)]
+    struct Playback {
+        queued: usize,
+        missing: usize,
+        peak: usize,
+        voiced: usize,
+    }
+    struct ClockedStream(Arc<Mutex<Playback>>);
+    impl Stream for ClockedStream {
+        fn failed(&self) -> bool {
+            false
+        }
+        fn pending(&self) -> usize {
+            self.0.lock().unwrap().queued
+        }
+        fn epoch(&mut self, _: u32) {}
+        fn capture(&mut self, _: &mut Captured) -> bool {
+            false
+        }
+        fn reference(&mut self, out: &mut [f32; FRAME * 2]) {
+            out.fill(0.0);
+        }
+        fn write(&mut self, samples: &[f32; FRAME * 2], monitor: bool) -> Result<()> {
+            assert!(!monitor);
+            let mut playback = self.0.lock().unwrap();
+            playback.queued += FRAME;
+            playback.peak = playback.peak.max(playback.queued);
+            if samples.iter().any(|v| v.abs() > 0.001) {
+                playback.voiced += 1;
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn playback_follows_device_clock_despite_coarse_worker_wakes() {
+        use super::super::{Encoder, Peer};
+        for (speakers, wake_ms) in [1, 2]
+            .into_iter()
+            .flat_map(|speakers| [7, 16, 31].map(|wake| (speakers, wake)))
+        {
+            let now = Instant::now();
+            let playback = Arc::new(Mutex::new(Playback::default()));
+            let config = Config {
+                enabled: true,
+                muted: true,
+                ..Config::default()
+            };
+            let route = Route {
+                generation: 1,
+                epoch: 1,
+                channel: 1,
+                self_id: 1,
+                peers: (2..2 + speakers)
+                    .map(|id| {
+                        (
+                            id,
+                            Peer {
+                                instance: id.to_string(),
+                                epoch: 1,
+                                volume: 100,
+                                muted: false,
+                            },
+                        )
+                    })
+                    .collect(),
+                ..Default::default()
+            };
+            let (tx, packets) = mpsc::sync_channel(128);
+            let (_, commands) = tokio::sync::mpsc::channel(8);
+            let (state_tx, _) = watch::channel(State::default());
+            let mut worker = Worker {
+                shared: Arc::new(Shared {
+                    gate: Mutex::new(Gate {
+                        epoch: 1,
+                        pressed: false,
+                        enabled: false,
+                        route: route.clone(),
+                        sender: None,
+                        revision: 0,
+                    }),
+                    cancelled: AtomicBool::new(false),
+                    operation: AtomicU64::new(0),
+                    visible: AtomicBool::new(false),
+                }),
+                commands,
+                packets,
+                state_tx,
+                state: State::default(),
+                factory: factory(),
+                open: Box::new(|_, _| unreachable!()),
+                pipeline: Some(Pipeline::new(config, route, factory()).unwrap()),
+                device: Some(Box::new(ClockedStream(playback.clone()))),
+                monitor: false,
+                route_revision: 0,
+                capture_epoch: 1,
+                transmitting: false,
+                next_publish: now,
+            };
+            let mut encoder = Encoder::new(48_000).unwrap();
+            let pcm = std::array::from_fn(|i| (i as f32 * 0.08).sin() * 0.05);
+            let mut bytes = [0; 1024];
+            let n = encoder.encode(&pcm, &mut bytes).unwrap();
+            for ms in 0..10_000 {
+                let at = now + Duration::from_millis(ms);
+                // The sound card consumes continuously; waking a worker is not
+                // guaranteed to run it immediately (e.g. Windows timer granularity).
+                if ms > 0 {
+                    let mut output = playback.lock().unwrap();
+                    let consumed = output.queued.min(48);
+                    output.queued -= consumed;
+                    if ms > 100 {
+                        output.missing += 48 - consumed;
+                    }
+                }
+                if ms % 20 == 0 {
+                    for id in 2..2 + speakers {
+                        tx.try_send(lifecycle::VoicePacket {
+                            generation: 1,
+                            packet: session::VoicePacket {
+                                epoch: 1,
+                                sender_epoch: 1,
+                                sender: id,
+                                instance: id.to_string(),
+                                sequence: (ms / 20) as u16,
+                                end: false,
+                                data: bytes[..n].to_vec(),
+                                at,
+                            },
+                        })
+                        .unwrap();
+                    }
+                }
+                if ms % wake_ms == 0 {
+                    worker.tick_at(at).unwrap();
+                }
+            }
+            let output = playback.lock().unwrap();
+            assert_eq!(
+                output.missing, 0,
+                "{speakers} speakers / {wake_ms}ms wakes: playback underrun"
+            );
+            assert!(output.peak <= FRAME * 3, "unbounded playback latency");
+            assert!(output.voiced >= 490, "decoded speech must reach the device");
+            let counters = &worker.pipeline.as_ref().unwrap().counters;
+            assert_eq!(counters.dropped, 0);
+            assert!(counters.decoded >= u64::from(speakers) * 490);
+        }
+    }
+
     struct Fake(Arc<AtomicUsize>);
     impl Drop for Fake {
         fn drop(&mut self) {
@@ -722,6 +885,9 @@ mod tests {
     impl Stream for Fake {
         fn failed(&self) -> bool {
             false
+        }
+        fn pending(&self) -> usize {
+            FRAME * 2
         }
         fn epoch(&mut self, _: u32) {}
         fn capture(&mut self, _: &mut Captured) -> bool {
@@ -968,6 +1134,9 @@ mod tests {
     impl Stream for Counting {
         fn failed(&self) -> bool {
             false
+        }
+        fn pending(&self) -> usize {
+            0
         }
         fn epoch(&mut self, _: u32) {}
         fn capture(&mut self, _: &mut Captured) -> bool {
