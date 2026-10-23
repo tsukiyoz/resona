@@ -3,6 +3,8 @@ package server
 import (
 	"bufio"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -22,12 +24,154 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tsukiyoz/resona/internal/audio"
-	"github.com/tsukiyoz/resona/internal/client"
 	w "github.com/tsukiyoz/resona/internal/nativewire"
 	"github.com/tsukiyoz/resona/internal/noiseudp"
-	"github.com/tsukiyoz/resona/internal/protocol/native"
 )
+
+type probeProfile struct {
+	Address, ServerPublicKey string
+}
+
+// This load generator deliberately owns no audio devices, codecs, preferences
+// or UI state. It exercises the real transport with fixed synthetic payloads.
+type probeClient struct {
+	conn     w.Connection
+	epoch    atomic.Uint32
+	sequence uint16
+	wg       sync.WaitGroup
+}
+
+func openProbeClient(ctx context.Context, profile probeProfile, nickname string, room uint16, muted bool, receive func([]byte)) (*probeClient, error) {
+	key, err := hex.DecodeString(profile.ServerPublicKey)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := w.DialNoise(ctx, profile.Address, key)
+	if err != nil {
+		return nil, err
+	}
+	c := &probeClient{conn: conn}
+	ok := false
+	defer func() {
+		if !ok {
+			c.Close()
+		}
+	}()
+	stream, err := conn.OpenStreamSync(ctx)
+	if err != nil {
+		return nil, err
+	}
+	deadline, _ := ctx.Deadline()
+	if err = stream.SetDeadline(deadline); err != nil {
+		return nil, err
+	}
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	hello := w.Hello{Nickname: nickname}
+	if err = w.SignHello(conn, private, &hello); err != nil {
+		return nil, err
+	}
+	if err = w.Write(stream, w.HelloKind, 0, hello); err != nil {
+		return nil, err
+	}
+	f, err := w.Read(stream)
+	if err != nil {
+		return nil, err
+	}
+	if f.Kind != w.WelcomeKind {
+		return nil, fmt.Errorf("unexpected welcome kind %d", f.Kind)
+	}
+	var state w.State
+	if err = w.Decode(f, &state); err != nil {
+		return nil, err
+	}
+	c.epoch.Store(state.Epoch)
+	for i, command := range []struct {
+		kind uint8
+		body w.Command
+	}{
+		{w.MoveKind, w.Command{Channel: room}},
+		{w.VoiceStateKind, w.Command{Muted: muted}},
+	} {
+		request := uint32(i + 1)
+		if err = w.Write(stream, command.kind, request, command.body); err != nil {
+			return nil, err
+		}
+		for {
+			f, err = w.Read(stream)
+			if err != nil {
+				return nil, err
+			}
+			if f.Kind == w.StateKind {
+				if err = w.Decode(f, &state); err != nil {
+					return nil, err
+				}
+				c.epoch.Store(state.Epoch)
+			}
+			if f.Kind == w.ReplyKind && f.Request == request {
+				var reply w.Reply
+				if err = w.Decode(f, &reply); err != nil {
+					return nil, err
+				}
+				if reply.Code != w.OK {
+					return nil, fmt.Errorf("probe command rejected: %d", reply.Code)
+				}
+				break
+			}
+		}
+	}
+	if err = stream.SetDeadline(time.Time{}); err != nil {
+		return nil, err
+	}
+	c.wg.Add(2)
+	go func() {
+		defer c.wg.Done()
+		for {
+			f, err := w.Read(stream)
+			if err != nil {
+				return
+			}
+			if f.Kind == w.StateKind {
+				var state w.State
+				if w.Decode(f, &state) != nil {
+					return
+				}
+				c.epoch.Store(state.Epoch)
+			}
+		}
+	}()
+	go func() {
+		defer c.wg.Done()
+		for {
+			data, err := conn.ReceiveDatagram(conn.Context())
+			if err != nil {
+				return
+			}
+			voice, err := w.DecodeVoice(data, true)
+			if err == nil && voice.Epoch == c.epoch.Load() && !voice.End {
+				receive(voice.Data)
+			}
+		}
+	}()
+	ok = true
+	return c, nil
+}
+
+func (c *probeClient) Close() {
+	_ = c.conn.CloseWithError(0, "probe finished")
+	c.wg.Wait()
+}
+
+func (c *probeClient) SendVoice(payload []byte) error {
+	var packet [w.ClientVoiceHeader + 80]byte
+	binary.BigEndian.PutUint32(packet[1:5], c.epoch.Load())
+	binary.BigEndian.PutUint16(packet[5:7], c.sequence)
+	c.sequence++
+	copy(packet[w.ClientVoiceHeader:], payload)
+	return c.conn.SendDatagram(packet[:])
+}
 
 // Diagnostic-only wrappers: stamp a reserved field of synthetic payloads on
 // receipt, and measure through encryption/socket submission. Product packets
@@ -84,6 +228,11 @@ type probeConnection struct {
 	origin  time.Time
 	h       *probeHistogram
 	enabled *atomic.Bool
+}
+
+func (c probeConnection) ChannelBinding() []byte {
+	binding, _ := w.ChannelBinding(c.Connection)
+	return binding
 }
 
 func (c probeConnection) ReceiveDatagram(ctx context.Context) ([]byte, error) {
@@ -176,7 +325,7 @@ func TestGCProbeServer(t *testing.T) {
 	go func() { done <- s.Serve(ctx) }()
 	pub, _ := noiseudp.PublicKey(key)
 	enc := json.NewEncoder(os.Stdout)
-	if e = enc.Encode(client.ServerProfile{Protocol: "resona-noise", Address: s.Addr().String(), ServerPublicKey: hex.EncodeToString(pub)}); e != nil {
+	if e = enc.Encode(probeProfile{Address: s.Addr().String(), ServerPublicKey: hex.EncodeToString(pub)}); e != nil {
 		t.Fatal(e)
 	}
 	scan := bufio.NewScanner(os.Stdin)
@@ -385,56 +534,44 @@ func TestServerGCProbe(t *testing.T) {
 		}
 	})
 	dec := json.NewDecoder(bufio.NewReader(stdout))
-	var profile client.ServerProfile
+	var profile probeProfile
 	if e = dec.Decode(&profile); e != nil {
 		t.Fatal(e)
 	}
-	var remotes []client.RemoteConnection
-	var transports []audio.Transport
+	var remotes []*probeClient
+	var senders []*probeClient
 	var received atomic.Uint64
 	var stableReceived atomic.Uint64
 	var e2e probeHistogram
 	var measure atomic.Bool
 	churn := os.Getenv("RESONA_GC_CHURN") == "1"
-	connect := func(i int) (client.RemoteConnection, audio.Transport, error) {
-		p := profile
-		p.Nickname = fmt.Sprintf("gc-probe-%d", i)
+	connect := func(i int) (*probeClient, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		c, e := (native.Connector{}).Connect(ctx, p, "", func(client.RemoteState) {})
-		if e != nil {
-			return nil, nil, e
-		}
-		t.Cleanup(func() { c.Close() })
-		if room := i/(members/rooms) + 1; room != 1 {
-			if e = c.MoveChannel(ctx, strconv.Itoa(room)); e != nil {
-				c.Close()
-				return nil, nil, e
-			}
-		}
-		a := c.(audio.Transport)
-		a.SetVoiceHandler(func(p audio.Packet) {
-			if measure.Load() && len(p.Data) == 80 {
+		c, err := openProbeClient(ctx, profile, fmt.Sprintf("gc-probe-%d", i), uint16(i/(members/rooms)+1), i%(members/rooms) >= speakers, func(data []byte) {
+			if measure.Load() && len(data) == 80 {
 				received.Add(1)
 				if !churn || i != members-1 {
 					stableReceived.Add(1)
 				}
-				e2e.add(time.Duration(time.Now().UnixNano() - int64(binary.BigEndian.Uint64(p.Data[:8]))))
+				e2e.add(time.Duration(time.Now().UnixNano() - int64(binary.BigEndian.Uint64(data[:8]))))
 			}
 		})
-		if e = a.SetVoiceMuted(ctx, i%(members/rooms) >= speakers, false); e != nil {
-			c.Close()
-			return nil, nil, e
+		if err != nil {
+			return nil, err
 		}
-		return c, a, nil
+		t.Cleanup(c.Close)
+		return c, nil
 	}
 	for i := 0; i < members; i++ {
-		c, a, err := connect(i)
+		c, err := connect(i)
 		if err != nil {
 			t.Fatal(err)
 		}
 		remotes = append(remotes, c)
-		transports = append(transports, a)
+		if i%(members/rooms) < speakers {
+			senders = append(senders, c)
+		}
 		time.Sleep(120 * time.Millisecond)
 	}
 	time.Sleep(time.Second)
@@ -471,7 +608,7 @@ func TestServerGCProbe(t *testing.T) {
 						return
 					case <-time.After(150 * time.Millisecond):
 					}
-					c, _, err := connect(members - 1)
+					c, err := connect(members - 1)
 					if err != nil {
 						churnError <- err
 						return
@@ -492,13 +629,10 @@ func TestServerGCProbe(t *testing.T) {
 			t.Fatal(err)
 		default:
 		}
-		for i, a := range transports {
-			if i%(members/rooms) >= speakers {
-				continue
-			}
+		for _, a := range senders {
 			var data [80]byte
 			binary.BigEndian.PutUint64(data[:8], uint64(time.Now().UnixNano()))
-			if e = a.SendVoice(data[:], audio.CodecOpusVoice); e != nil {
+			if e = a.SendVoice(data[:]); e != nil {
 				t.Fatal(e)
 			}
 			attempts++

@@ -7,6 +7,35 @@ import (
 	"testing"
 )
 
+type boundConnection struct {
+	Connection
+	binding []byte
+}
+
+func (c boundConnection) ChannelBinding() []byte { return c.binding }
+
+func TestIdentityProofThroughInstrumentedConnection(t *testing.T) {
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := boundConnection{binding: bytes.Repeat([]byte{7}, 32)}
+	hello := Hello{Nickname: "probe"}
+	if err := SignHello(c, key, &hello); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyHello(c, hello); err != nil {
+		t.Fatal(err)
+	}
+	c.binding = bytes.Repeat([]byte{8}, 32)
+	if VerifyHello(c, hello) == nil {
+		t.Fatal("cross-connection proof accepted")
+	}
+	if _, err := ChannelBinding(struct{ Connection }{}); err == nil {
+		t.Fatal("missing binding accepted")
+	}
+}
+
 func TestIdentityProofBindsHelloAndTransport(t *testing.T) {
 	pub, key, _ := ed25519.GenerateKey(rand.Reader)
 	binding := bytes.Repeat([]byte{1}, 32)
