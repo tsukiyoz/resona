@@ -30,6 +30,16 @@ client/assets/sounds。Go server、nativewire/noiseudp/nativeidentity、发布�
   原生凭据检查由现有 Rust 测试负责，仍待新分支远端构建和实际听测。
 - build 中两份旧临时 Go 源码引用了已删除的客户端包，会被模块扫描误收录，
   已原地保留为 .go.retired；构建产物和本地测试数据不入 Git。
+- 实现依次提交 15a44e9（共享源码）、427d1fe（Rust 试听工具）、cad391e
+  （测试覆盖迁移）、dd9e821（删除旧客户端）。最终 macOS 应用和配套服务器均
+  从 dd9e821、dirty=false 构建；应用版本仍为 v0.2.2，位于
+  desktop/dist/Resona.app。release 试听工具使用原有 60.4 秒音源短跑，六个
+  机器人正常启动、两秒自动退出，未开启麦克风或连接远端。
+- tsukiyo 已部署 resona-server:v0.2.2-migration-review.20261023，运行提交为
+  dd9e821、dirty=false。上传 SHA-256 一致；停服备份 data/access 至私有目录
+  /opt/resona/backups/resona-server.HF6CnI，并保留旧容器用于回滚。运行中、
+  重启次数 0，管理页 HTTP 200、公网 RN06 认证握手成功；保持公网 UDP 9988
+  和回环 TCP 9989，不进入活动频道。没有合并、推送或发布新 tag。
 
 ## 2026-10-23 按需分页与频道音频解耦完成检查
 
