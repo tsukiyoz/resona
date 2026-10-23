@@ -1,4 +1,4 @@
-//! UI-independent Rust client foundation. Not yet the shipping desktop core.
+//! UI-independent Rust client core shared by the GPUI desktop and local tools.
 #![deny(unsafe_code)]
 
 #[cfg(feature = "audio")]

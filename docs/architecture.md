@@ -8,7 +8,8 @@
 | `client/` | UI 无关 Rust 核心：会话/重连、资源、书签/凭据、聊天、音频、诊断与签名更新 |
 | `client/src/audio` / `native/client-audio` | 设备回调环、Opus、抖动/混音、帧边界 DSP 与提示音 |
 | `native/webrtc-apm` | 可选 WebRTC/RNNoise C ABI 动态库，与客户端同进程 |
-| `internal/client` / `internal/protocol/native` / `internal/audio` | 机器人、服务器互通与基准的 Go 参考实现，不进入桌面包 |
+| `native/speexdsp` / `client/assets/sounds` | 共享 SpeexDSP 原生源码及客户端提示音，不依赖 Go 客户端目录 |
+| `tools/listening-bot` | 复用正式 Rust 会话、DSP 和 Opus 的本地试听工具；Go helper 只启动隔离服务器 |
 | `internal/updates` | Go 发布工具的签名清单与发布包身份校验 |
 | `internal/nativewire` | Protobuf 控制帧及固定语音头 |
 | `internal/noiseudp` | Noise 握手、认证数据报、可靠流、防重放与后台换钥 |
@@ -21,7 +22,8 @@
 命令/事件通道调用。普通请求与安全取消分开受理，入队意图代次防止迟到按下/连接；
 展示字段独立合并、公平送达。网络拥有单个 Tokio runtime，音频专用线程拥有设备、
 编解码、处理器和混音；回调只交换有界 PCM 并唤醒 owner。Go 产品入口和 NDJSON
-IPC 已移除，Go server、测试/基准参考及内嵌 JetStream 保留。生产聊天目录仍显式为
+IPC 已移除；2026-10-23 删除 Go 客户端、音频与专用存储等旧实现。Go server、最小
+协议测试端、独立编解码参考及内嵌 JetStream 保留。生产聊天目录仍显式为
 access-dir/chat。迁移不等于已获得内存或游戏性能收益，仍须等负载测量。
 
 音频播放按声卡输出环剩余采样补帧，由设备回调唤醒；工作线程每次最多生成两个

@@ -28,6 +28,7 @@ func main() {
 	vectors := flag.Bool("vectors", false, "print fixed-key Go rekey reference vectors")
 	codec := flag.Bool("codec", false, "local Opus cross-language reference")
 	recovery := flag.Bool("account-recovery", false, "rotate recovery credentials, then interrupt the first channel restore")
+	directory := flag.String("data-dir", "", "caller-owned temporary server storage for restart tests")
 	flag.Parse()
 	if *recovery {
 		if err := accountRecovery(); err != nil {
@@ -47,13 +48,13 @@ func main() {
 		printVectors()
 		return
 	}
-	if err := run(*loss, *blackhole, *application, *slow); err != nil {
+	if err := run(*loss, *blackhole, *application, *slow, *directory); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func run(loss, blackhole, application, slow bool) error {
+func run(loss, blackhole, application, slow bool, directory string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 	go func() { _, _ = io.Copy(io.Discard, os.Stdin); cancel() }()
@@ -63,19 +64,25 @@ func run(loss, blackhole, application, slow bool) error {
 	}
 	pub, _ := noiseudp.PublicKey(key)
 	if application {
-		dir, err := os.MkdirTemp("", "resona-interop-")
-		if err != nil {
-			return err
+		dir := directory
+		if dir == "" {
+			dir, err = os.MkdirTemp("", "resona-interop-")
+			if err != nil {
+				return err
+			}
+			defer os.RemoveAll(dir)
 		}
-		defer os.RemoveAll(dir)
 		store, err := server.OpenStore(server.ChatConfig{Directory: dir}, "", []w.Channel{{ID: 1, Name: "Lobby"}, {ID: 2, Name: "Gaming"}})
 		if err != nil {
 			return err
 		}
 		defer store.Close()
-		claim, err := store.ProvisionOwnerClaim(false)
-		if err != nil {
-			return err
+		var claim string
+		if store.OwnerIdentity() == "" {
+			claim, err = store.ProvisionOwnerClaim(true)
+			if err != nil {
+				return err
+			}
 		}
 		s, err := server.Listen("127.0.0.1:0", server.Config{Store: store, NoiseKey: key, Name: "Rust interop", Password: "local-test-only", MaxClients: 4})
 		if err != nil {

@@ -16,7 +16,7 @@ for package in packages:
             target = output / f'{package["name"]}-{package["version"]}' / source.relative_to(root)
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, target)
-for name, root in [("rnnoise", rnnoise), ("speexdsp", Path("internal/audio/speexdsp"))]:
+for name, root in [("rnnoise", rnnoise), ("speexdsp", Path("native/speexdsp"))]:
     target = output / name
     target.mkdir(exist_ok=True)
     shutil.copyfile(root / "COPYING", target / "COPYING")

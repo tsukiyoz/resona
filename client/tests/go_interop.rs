@@ -100,6 +100,199 @@ async fn app_session(
     .unwrap()
 }
 
+#[tokio::test]
+async fn account_owner_channel_crud_and_chat_survive_server_restart() {
+    use resona_client::session::{AccountRequest, Command as C, Error as E, Handle};
+    async fn command(handle: &Handle, command: C) {
+        // Administrative mutations share the server's two-per-second bucket.
+        tokio::time::sleep(Duration::from_millis(550)).await;
+        handle
+            .command(
+                command,
+                Instant::now() + Duration::from_secs(3),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().to_str().unwrap();
+    let (peer, address, key) = start_peer(&["-server", "-data-dir", path]);
+    let mut owner = app_session(address, key, "owner-before").await;
+    command(
+        &owner.handle,
+        C::Account(AccountRequest {
+            action: "register".into(),
+            username: "persist-owner".into(),
+            password: "local-persist-password".to_string().into(),
+            nickname: "中文昵称🙂".into(),
+            ..Default::default()
+        }),
+    )
+    .await;
+    let uid = owner.handle.state.borrow().state.account_uid.clone();
+    command(&owner.handle, C::ClaimOwner(peer.2.clone().unwrap())).await;
+    command(
+        &owner.handle,
+        C::Watch {
+            channels: true,
+            members: true,
+        },
+    )
+    .await;
+    command(
+        &owner.handle,
+        C::CreateChannel {
+            name: "persistent-room".into(),
+            description: "before".into(),
+            bitrate: 32_000,
+        },
+    )
+    .await;
+    wait_state(&mut owner.handle, |s| s.state.channels.len() == 3).await;
+    let channel = owner
+        .handle
+        .state
+        .borrow()
+        .state
+        .channels
+        .iter()
+        .find(|c| c.name == "persistent-room")
+        .unwrap()
+        .id as u16;
+    command(
+        &owner.handle,
+        C::UpdateChannel {
+            id: channel,
+            name: "更新频道".into(),
+            description: "after".into(),
+            bitrate: 48_000,
+        },
+    )
+    .await;
+    command(&owner.handle, C::Move(channel)).await;
+    command(
+        &owner.handle,
+        C::Chat {
+            channel,
+            text: "persisted🙂".into(),
+            id: "restart-message-0001".into(),
+        },
+    )
+    .await;
+    owner.close().await;
+    drop(peer);
+
+    let (_peer, address, key) = start_peer(&["-server", "-data-dir", path]);
+    let mut owner = app_session(address, key, "new-device").await;
+    assert!(owner.handle.state.borrow().state.account_uid.is_empty());
+    assert_eq!(
+        owner
+            .handle
+            .command(
+                C::DeleteChannel(channel),
+                Instant::now() + Duration::from_secs(3),
+                &CancellationToken::new()
+            )
+            .await,
+        Err(E::Rejected(4))
+    );
+    command(
+        &owner.handle,
+        C::Account(AccountRequest {
+            action: "password".into(),
+            username: "persist-owner".into(),
+            password: "local-persist-password".to_string().into(),
+            ..Default::default()
+        }),
+    )
+    .await;
+    assert_eq!(owner.handle.state.borrow().state.account_uid, uid);
+    assert!(owner.handle.state.borrow().state.can_manage_channels);
+    command(
+        &owner.handle,
+        C::Watch {
+            channels: true,
+            members: true,
+        },
+    )
+    .await;
+    {
+        let state = owner.handle.state.borrow();
+        let saved = state
+            .state
+            .channels
+            .iter()
+            .find(|c| c.id == u32::from(channel))
+            .unwrap();
+        assert_eq!(
+            (
+                saved.name.as_str(),
+                saved.description.as_str(),
+                saved.bitrate
+            ),
+            ("更新频道", "after", 48_000)
+        );
+    }
+    command(&owner.handle, C::Move(channel)).await;
+    wait_state(&mut owner.handle, |s| {
+        s.messages.iter().any(|m| m.text == "persisted🙂")
+    })
+    .await;
+    command(&owner.handle, C::Move(1)).await;
+    command(&owner.handle, C::DeleteChannel(channel)).await;
+    wait_state(&mut owner.handle, |s| s.state.channels.len() == 2).await;
+    owner.close().await;
+}
+
+#[tokio::test]
+async fn four_simultaneous_sources_reach_every_other_member() {
+    use resona_client::session::Command as C;
+    let (_peer, address, key) = start_peer(&["-server"]);
+    let mut sessions = Vec::new();
+    for i in 0..4 {
+        let session = app_session(address, key, &format!("speaker-{i}")).await;
+        session
+            .handle
+            .command(
+                C::VoiceState {
+                    muted: false,
+                    deafened: false,
+                },
+                Instant::now() + Duration::from_secs(3),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        sessions.push(session);
+    }
+    for session in &mut sessions {
+        wait_state(&mut session.handle, |s| s.state.members.len() == 4).await;
+    }
+    for frame in 0..8_u8 {
+        for (i, session) in sessions.iter().enumerate() {
+            session.voice_tx.send(&[i as u8, frame]).unwrap();
+        }
+        for (i, session) in sessions.iter_mut().enumerate() {
+            let mut senders = std::collections::HashSet::new();
+            for _ in 0..3 {
+                let packet = timeout(Duration::from_secs(2), session.voice_rx.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(packet.data[1], frame);
+                assert_ne!(packet.data[0], i as u8);
+                senders.insert(packet.sender);
+            }
+            assert_eq!(senders.len(), 3);
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    for session in sessions {
+        session.close().await;
+    }
+}
+
 #[cfg(feature = "audio")]
 struct EmptyCredentials(std::sync::Arc<std::sync::atomic::AtomicUsize>);
 #[cfg(feature = "audio")]

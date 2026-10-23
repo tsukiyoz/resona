@@ -138,7 +138,7 @@ try {
     Copy-Item "build\bin\resona_webrtc_apm.dll" $Package
     $Licenses = Join-Path $Package "licenses"
     New-Item -ItemType Directory -Force $Licenses | Out-Null
-    Copy-Item "$RepoDirectory\internal\audio\speexdsp\COPYING" "$Licenses\SpeexDSP.txt"
+    Copy-Item "$RepoDirectory\native\speexdsp\COPYING" "$Licenses\SpeexDSP.txt"
     Copy-Item "$RepoDirectory\desktop\vendor\gpui\LICENSE-APACHE" "$Licenses\GPUI.txt"
     Copy-Item "$RepoDirectory\build\native\opus-source\COPYING" "$Licenses\Opus.txt"
     $MiniAudio = Get-Content -Raw "$RepoDirectory\native\client-audio\miniaudio.h"

@@ -43,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         pkg_config::Config::new()
             .atleast_version("1.6.1")
             .probe("opus")?;
-        let speex = "../internal/audio/speexdsp";
+        let speex = "../native/speexdsp";
         let mut c = cc::Build::new();
         c.include(format!("{speex}/include"))
             .define("FLOATING_POINT", None)

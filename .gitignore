@@ -8,6 +8,8 @@ AGENTS.md
 /build/deploy/
 /desktop/target/
 /client/target/
+/tools/listening-bot/target/
+/test/audio3a/target/
 /native/webrtc-apm/target/
 /desktop/dist/
 /docs/ui-prototype/node_modules/

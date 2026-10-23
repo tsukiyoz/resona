@@ -1,5 +1,46 @@
 # 当前验证记录
 
+## 2026-10-23 Rust 客户端迁移收尾
+
+删除旧 Go client/audio、客户端协议适配、专用 config/credentials/diagnostics 和
+不再使用的 iconcache；SpeexDSP C 源码归 native/speexdsp，四个提示音归
+client/assets/sounds。Go server、nativewire/noiseudp/nativeidentity、发布工具与
+独立 gopus 互通/基准参考保留。没有改变协议格式、DSP 算法、偏好或版本文件。
+
+- Rust 客户端 51 项单元及 Go 1.26.0 下串行 27 项真实互通通过，包含实际原生
+  DSP、编解码双向参考、配置/身份继承、账号替换/撤销、资源观察、分页聊天、
+  注册/切频道语音隔离、丢 ACK、取消与重连。新增四个同时发言者互收及跨服务
+  重启的账号 UID、owner、频道 CRUD/权限和聊天持久化检查。
+- 原 Go 完整客户端测试随实现删除；相应行为由上述正式 Rust 客户端互通以及
+  Go server 的账号/权限/KV/聊天留存回归负责，不保留第二套客户端只为跑测试。
+- 试听机器人改用正式 Rust Session、Factory 和 Opus。三个单元、真实回环
+  音源解码/频道隔离、原生六机器人及 AGC 三档轮换/退出检查通过；明确要求
+  地址/公钥并写 PCM 的 capture 测试仍为 ignored，不读取个人麦克风或钥匙串。
+- GC 压测改为测试内最小协议端。四人单频道 50 帧收到全部 150 次转发；八人
+  双频道并发重连的 race 检查通过，稳定成员收到全部预期 750 次转发。
+  修复测量包装器未透传身份 channel binding 的问题，验证换连接仍拒绝旧证明。
+  这些短 smoke 数据不是性能对比，也不用于声称语言迁移降低了占用。
+- Go 全部 internal 测试、server/accounts/nativewire/noiseudp/nativeidentity 的
+  race 与统一 make lint 通过。Go mod tidy 移除 malgo 和 go-keychain。
+- 独立 3A 基准三个测试通过；缺失 Meson/Ninja 时使用 build/audio3a 下隔离
+  Python 环境补齐。客户端与试听工具严格 Clippy 通过；桌面仅放行既有
+  collapsible_if、items_after_test_module、field_reassign_with_default 三类警告。
+- 桌面 56 项单元、清理/签名/部署脚本检查与 macOS release 打包、深度签名
+  校验通过。Windows/Linux CI 已同步路径和 Rust 试听工具检查；Windows
+  原生凭据检查由现有 Rust 测试负责，仍待新分支远端构建和实际听测。
+- build 中两份旧临时 Go 源码引用了已删除的客户端包，会被模块扫描误收录，
+  已原地保留为 .go.retired；构建产物和本地测试数据不入 Git。
+- 实现依次提交 15a44e9（共享源码）、427d1fe（Rust 试听工具）、cad391e
+  （测试覆盖迁移）、dd9e821（删除旧客户端）。最终 macOS 应用和配套服务器均
+  从 dd9e821、dirty=false 构建；应用版本仍为 v0.2.2，位于
+  desktop/dist/Resona.app。release 试听工具使用原有 60.4 秒音源短跑，六个
+  机器人正常启动、两秒自动退出，未开启麦克风或连接远端。
+- tsukiyo 已部署 resona-server:v0.2.2-migration-review.20261023，运行提交为
+  dd9e821、dirty=false。上传 SHA-256 一致；停服备份 data/access 至私有目录
+  /opt/resona/backups/resona-server.HF6CnI，并保留旧容器用于回滚。运行中、
+  重启次数 0，管理页 HTTP 200、公网 RN06 认证握手成功；保持公网 UDP 9988
+  和回环 TCP 9989，不进入活动频道。没有合并、推送或发布新 tag。
+
 ## 2026-10-23 按需分页与频道音频解耦完成检查
 
 进入频道只取最新至多 20 条 / 48 KiB；滚轮或滚动条上翻再取旧页，不自动拉空

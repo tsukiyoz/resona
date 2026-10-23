@@ -34,7 +34,7 @@ type Listener interface {
 }
 
 func ChannelBinding(c Connection) ([]byte, error) {
-	if v, ok := c.(noiseConnection); ok {
+	if v, ok := c.(interface{ ChannelBinding() []byte }); ok {
 		return v.ChannelBinding(), nil
 	}
 	return nil, errors.New("transport has no identity binding")
