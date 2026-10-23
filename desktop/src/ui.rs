@@ -115,6 +115,7 @@ enum Pending {
     OutputGain(String),
     UserPlayback(UserPlaybackTarget),
     Workspace(&'static str),
+    DeleteServer(String),
     SaveServer(u64),
     Credential(String, u64),
     Connect(String, bool),
@@ -268,6 +269,10 @@ enum Modal {
     Diagnostics,
     User,
     About,
+}
+
+fn delete_modal_matches(modal: Option<&Modal>, server_id: &str) -> bool {
+    matches!(modal, Some(Modal::Delete { server_id: current }) if current == server_id)
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -841,6 +846,13 @@ impl ResonaApp {
 
     fn request_failed(&mut self, pending: Pending, error: String) {
         match pending {
+            Pending::DeleteServer(server_id) => {
+                if delete_modal_matches(self.modal.as_ref(), &server_id) {
+                    self.server_error = error;
+                } else {
+                    self.error = error;
+                }
+            }
             Pending::Account(session, _) | Pending::AccountToken(session, _) => {
                 if session == self.workspace.session.id && matches!(self.modal, Some(Modal::User)) {
                     self.account_notice = error;
@@ -987,6 +999,9 @@ impl ResonaApp {
                     return;
                 }
                 self.error = error.clone();
+                if matches!(self.modal, Some(Modal::Delete { .. })) {
+                    self.server_error = error.clone();
+                }
                 if let Some(core) = &self.core {
                     core.finish_shutdown();
                 }
@@ -1160,13 +1175,18 @@ impl ResonaApp {
                             }
                         }
                     }
-                    (Some(Pending::Workspace(method)), Ok(value)) => {
+                    (Some(Pending::DeleteServer(server_id)), Ok(value)) => {
                         self.apply_workspace(value, window, cx);
-                        if method == "DeleteServer" {
-                            self.modal = None;
+                        if delete_modal_matches(self.modal.as_ref(), &server_id) {
+                            self.close_modal(window, cx);
                             self.server_error.clear();
-                            self.error.clear();
                         }
+                    }
+                    (Some(Pending::Workspace(_)), Ok(value)) => {
+                        self.apply_workspace(value, window, cx);
+                    }
+                    (Some(pending @ Pending::DeleteServer(_)), Err(error)) => {
+                        self.request_failed(pending, error);
                     }
                     (Some(Pending::SaveServer(revision)), Ok(value)) => {
                         self.apply_workspace(value, window, cx);
@@ -3530,6 +3550,7 @@ impl ResonaApp {
                                         .icon(IconName::Delete)
                                         .on_click(move |_, _, cx| {
                                             delete.update(cx, |this, cx| {
+                                                this.server_error.clear();
                                                 this.modal = Some(Modal::Delete {
                                                     server_id: deleting.clone(),
                                                 });
@@ -7040,6 +7061,9 @@ impl ResonaApp {
                     )
             }
             Modal::Delete { server_id } => {
+                let deleting = self.pending.values().any(
+                    |pending| matches!(pending, Pending::DeleteServer(id) if id == &server_id),
+                );
                 let name = self
                     .workspace
                     .servers
@@ -7059,12 +7083,25 @@ impl ResonaApp {
                     .flex_col()
                     .gap_4()
                     .child(modal_title("删除服务器书签"))
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(rgb(MUTED))
-                            .child(format!("将删除“{name}”及其已保存密码。此操作无法撤销。")),
-                    )
+                    .child(div().text_sm().text_color(rgb(MUTED)).child(format!(
+                        "将删除“{name}”及其已保存密码、本地登录凭据。此操作无法撤销。"
+                    )))
+                    .when(deleting, |card| {
+                        card.child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(MUTED))
+                                .child("正在清理本地凭据并删除书签。关闭此窗口不会取消操作。"),
+                        )
+                    })
+                    .when(!self.server_error.is_empty(), |card| {
+                        card.child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(RED))
+                                .child(format!("删除未完成，书签已保留。{}", self.server_error)),
+                        )
+                    })
                     .child(
                         div()
                             .flex()
@@ -7072,7 +7109,7 @@ impl ResonaApp {
                             .gap_2()
                             .child(
                                 Button::new("cancel-delete")
-                                    .label("取消")
+                                    .label(if deleting { "关闭" } else { "取消" })
                                     .ghost()
                                     .on_click({
                                         let entity = entity.clone();
@@ -7084,15 +7121,20 @@ impl ResonaApp {
                             )
                             .child(
                                 Button::new("confirm-delete")
-                                    .label("删除")
+                                    .label(if deleting {
+                                        "正在删除…"
+                                    } else {
+                                        "删除"
+                                    })
                                     .danger()
-                                    .disabled(self.is_busy())
+                                    .disabled(self.is_busy() || self.core.is_none())
                                     .on_click(move |_, _, cx| {
                                         entity.update(cx, |this, cx| {
+                                            this.server_error.clear();
                                             this.request(
                                                 "DeleteServer",
                                                 json!({"id": server_id.clone()}),
-                                                Pending::Workspace("DeleteServer"),
+                                                Pending::DeleteServer(server_id.clone()),
                                             );
                                             cx.notify();
                                         })
@@ -9344,6 +9386,20 @@ fn ordered_channels(channels: &[crate::model::Channel]) -> Vec<(crate::model::Ch
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn late_bookmark_delete_reply_does_not_target_a_different_modal() {
+        use super::{Modal, delete_modal_matches};
+        let original = Modal::Delete {
+            server_id: "original".into(),
+        };
+        let another = Modal::Delete {
+            server_id: "another".into(),
+        };
+        assert!(delete_modal_matches(Some(&original), "original"));
+        assert!(!delete_modal_matches(Some(&another), "original"));
+        assert!(!delete_modal_matches(Some(&Modal::Settings), "original"));
+        assert!(!delete_modal_matches(None, "original"));
+    }
     #[test]
     fn history_prepend_and_live_append_keep_the_visible_message_and_pixel_offset() {
         let message = |id: usize| crate::model::Message {

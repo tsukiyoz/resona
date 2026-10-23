@@ -1195,18 +1195,21 @@ impl App {
         if let Some(receipt) = receipt {
             credentials::saved(receipt)
                 .await
-                .map_err(|_| "无法清除已保存登录")?;
+                .map_err(|error| format!("无法清除已保存登录：{error}"))?;
         }
         tokio::task::spawn_blocking(move || {
             if let Some((password, _)) = delete {
                 let mut store = store.lock().map_err(|_| "凭据存储不可用")?;
-                store.delete(&password).map_err(|_| "无法清除已保存密码")?;
+                store
+                    .delete(&password)
+                    .map_err(|error| format!("无法清除已保存密码：{error}"))?;
             }
-            config::ProfileStore::new(directory.join("servers.json")).save(&persisted)
+            config::ProfileStore::new(directory.join("servers.json"))
+                .save(&persisted)
+                .map_err(str::to_owned)
         })
         .await
-        .map_err(|_| "无法保存服务器")?
-        .map_err(str::to_owned)?;
+        .map_err(|_| "无法保存服务器")??;
         self.lock().projection.workspace.servers = next;
         self.refresh(true);
         Ok(self.workspace())
@@ -1389,6 +1392,81 @@ fn channel(value: &str) -> Result<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct DeleteBackend(Arc<Mutex<Option<&'static str>>>);
+    impl credentials::Backend for DeleteBackend {
+        fn has(&self, _: &str) -> credentials::Result<bool> {
+            Ok(false)
+        }
+        fn get(&self, _: &str) -> credentials::Result<Vec<u8>> {
+            Err(credentials::Error::NotFound)
+        }
+        fn set(&self, _: &str, _: &[u8]) -> credentials::Result<()> {
+            Ok(())
+        }
+        fn delete(&self, key: &str) -> credentials::Result<()> {
+            let kind = if key.starts_with("account-token:") {
+                "account"
+            } else {
+                "password"
+            };
+            if *self.0.lock().unwrap() == Some(kind) {
+                Err(credentials::Error::Denied)
+            } else {
+                Ok(())
+            }
+        }
+    }
+    #[tokio::test]
+    async fn bookmark_delete_preserves_profile_on_credential_failure_and_can_retry() {
+        for (kind, message) in [
+            ("account", "无法清除已保存登录"),
+            ("password", "无法清除已保存密码"),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let failure = Arc::new(Mutex::new(Some(kind)));
+            let mut options = Options::local().unwrap();
+            options.directory = directory.path().into();
+            options.silent_devices = true;
+            options.processor_library = PathBuf::from("/no-optional-library");
+            options.credentials = Some(Box::new(DeleteBackend(failure.clone())));
+            let core = Core::start(options).await.unwrap();
+            let handle = &core.handle;
+            let profile = config::ServerProfile {
+                id: "delete-fixture".into(),
+                protocol: "resona-noise".into(),
+                name: "fixture".into(),
+                nickname: "guest".into(),
+                address: "127.0.0.1:9988".into(),
+                server_public_key: "11".repeat(32),
+                ..Default::default()
+            };
+            handle
+                .request("SaveServer", json!({"profile":profile}))
+                .await
+                .unwrap();
+            let store = config::ProfileStore::new(directory.path().join("servers.json"));
+            let error = handle
+                .request("DeleteServer", json!({"id":profile.id}))
+                .await
+                .unwrap_err();
+            assert!(error.starts_with(message), "{error}");
+            assert!(error.contains("未获系统授权"));
+            assert_eq!(store.load().unwrap(), vec![profile.clone()]);
+            assert_eq!(
+                handle.view.borrow().workspace.servers,
+                vec![profile.clone()]
+            );
+            *failure.lock().unwrap() = None;
+            let result = handle
+                .request("DeleteServer", json!({"id":profile.id}))
+                .await
+                .unwrap();
+            assert!(result["servers"].as_array().unwrap().is_empty());
+            assert!(store.load().unwrap().is_empty());
+            assert!(handle.view.borrow().workspace.servers.is_empty());
+            core.close().await;
+        }
+    }
     async fn test_core() -> (tempfile::TempDir, Core) {
         let directory = tempfile::tempdir().unwrap();
         let mut options = Options::local().unwrap();
