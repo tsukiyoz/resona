@@ -47,6 +47,7 @@ const AMBER: u32 = 0xd8aa5d;
 const RED: u32 = 0xe28282;
 
 const INCOMING_BATCH: usize = 64;
+const LOADING_NOTICE_DELAY: Duration = Duration::from_millis(300);
 
 gpui::actions!(resona, [DismissModal, DismissEmoji, Quit]);
 
@@ -118,7 +119,7 @@ enum Pending {
     DeleteServer(String),
     SaveServer(u64),
     Credential(String, u64),
-    Connect(String, bool),
+    Connect(String, bool, u64),
     Voice,
     SettingsApply(String, u64),
     SettingsStatus(String, u64),
@@ -137,6 +138,35 @@ enum Pending {
         session: String,
         reference: String,
     },
+}
+
+impl Pending {
+    fn connection(&self) -> Option<(&str, u64)> {
+        match self {
+            Self::VoicePreferences {
+                connect: Some(id),
+                revision,
+                ..
+            }
+            | Self::Credential(id, revision)
+            | Self::Connect(id, _, revision) => Some((id, *revision)),
+            _ => None,
+        }
+    }
+
+    fn blocks(&self, connect_revision: u64) -> bool {
+        self.connection()
+            .is_none_or(|(_, revision)| revision == connect_revision)
+            && !matches!(
+                self,
+                Self::Notification
+                    | Self::ExportDiagnostics
+                    | Self::ResourceInterest(_)
+                    | Self::Icon { .. }
+                    | Self::PushToTalk
+                    | Self::ChannelOrder(_)
+            )
+    }
 }
 
 #[derive(Clone, PartialEq)]
@@ -232,6 +262,42 @@ impl ResourceState {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ServerPage {
+    Channels,
+    Offline,
+    Connecting,
+    Disconnecting,
+    ConnectionFailed,
+    ResourceFailed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LoadingScope(String, String, u32, u64);
+
+#[derive(Default)]
+struct LoadingNotice {
+    pending: Option<(LoadingScope, Instant)>,
+    task: Option<gpui::Task<()>>,
+}
+
+impl LoadingNotice {
+    fn update(&mut self, scope: Option<LoadingScope>, now: Instant) -> bool {
+        if self.pending.as_ref().map(|(scope, _)| scope) == scope.as_ref() {
+            return false;
+        }
+        self.task = None;
+        self.pending = scope.map(|scope| (scope, now));
+        true
+    }
+
+    fn visible(&self, now: Instant) -> bool {
+        self.pending.as_ref().is_some_and(|(_, started)| {
+            now.saturating_duration_since(*started) >= LOADING_NOTICE_DELAY
+        })
+    }
+}
+
 #[derive(Clone)]
 struct SubmittedDraft {
     key: String,
@@ -286,7 +352,7 @@ pub struct ResonaApp {
     resource_generation: u64,
     resource_state: ResourceState,
     resource_error: String,
-    resource_attempt: usize,
+    loading_notice: LoadingNotice,
     composer_height: f32,
     composer_drag: Option<(f32, f32)>,
     chat_collapsed: bool,
@@ -586,6 +652,7 @@ impl ResonaApp {
         .collect::<Vec<_>>();
         let activation_subscription = cx.observe_window_activation(window, |this, window, cx| {
             this.sync_resource_interest(window.is_window_active());
+            this.sync_loading_notices(window.is_window_active(), cx);
             if !window.is_window_active() {
                 this.composer_drag = None;
                 if this.hotkey.is_none() {
@@ -601,6 +668,7 @@ impl ResonaApp {
             if let Some(core) = this.core.clone() {
                 this.clear_hotkey(cx);
                 this.closing = true;
+                this.sync_loading_notices(false, cx);
                 let _ = cx.background_executor().block_with_timeout(
                     Duration::from_secs(7),
                     core.prepare_shutdown(
@@ -618,7 +686,7 @@ impl ResonaApp {
             resource_generation: 0,
             resource_state: ResourceState::Idle,
             resource_error: String::new(),
-            resource_attempt: 0,
+            loading_notice: Default::default(),
             composer_height: 210.,
             composer_drag: None,
             chat_collapsed: false,
@@ -969,7 +1037,6 @@ impl ResonaApp {
                         value["state"].as_str().unwrap_or("idle"),
                     );
                     self.resource_error = value["error"].as_str().unwrap_or("").into();
-                    self.resource_attempt = value["attempt"].as_u64().unwrap_or(0) as usize;
                     if self.resource_state == ResourceState::Failed {
                         self.channel_error = "资源同步失败，请关闭此窗口后重试".into();
                         self.ownership_error = self.channel_error.clone();
@@ -1212,7 +1279,7 @@ impl ResonaApp {
                                 self.request(
                                     "ConnectSavedServer",
                                     json!({"id": server_id}),
-                                    Pending::Connect(server_id, false),
+                                    Pending::Connect(server_id, false, revision),
                                 );
                             }
                             Ok(status) => {
@@ -1223,7 +1290,9 @@ impl ResonaApp {
                             Err(error) => self.error = format!("无法读取密码状态：{error}"),
                         }
                     }
-                    (Some(Pending::Connect(_server_id, keep_modal)), Ok(value)) => {
+                    (Some(Pending::Connect(_, _, revision)), _)
+                        if revision != self.connect_revision || self.closing => {}
+                    (Some(Pending::Connect(_server_id, keep_modal, _)), Ok(value)) => {
                         self.apply_workspace(value, window, cx);
                         if !keep_modal || self.workspace.connected() {
                             self.close_modal(window, cx);
@@ -1308,6 +1377,14 @@ impl ResonaApp {
                             }
                         }
                     }
+                    (
+                        Some(Pending::VoicePreferences {
+                            connect: Some(_),
+                            revision,
+                            ..
+                        }),
+                        _,
+                    ) if revision != self.connect_revision || self.closing => {}
                     (
                         Some(Pending::VoicePreferences {
                             connect,
@@ -1442,7 +1519,7 @@ impl ResonaApp {
                         self.register_submitted_draft(&value, submitted);
                         self.apply_workspace(value, window, cx);
                     }
-                    (Some(Pending::Connect(server_id, _)), Err(error)) => {
+                    (Some(Pending::Connect(server_id, _, _)), Err(error)) => {
                         self.connect_error = error;
                         if !matches!(&self.modal, Some(Modal::Password { server_id: open }) if open == &server_id)
                         {
@@ -1480,6 +1557,7 @@ impl ResonaApp {
         self.finish_settings_apply(cx);
         self.flush_queued_voice(cx);
         self.sync_hotkey(cx);
+        self.sync_loading_notices(window.is_window_active(), cx);
         if repaint {
             cx.notify();
         }
@@ -1508,6 +1586,44 @@ impl ResonaApp {
         self.workspace.connected() && self.resource_state.blocks()
     }
 
+    fn sync_loading_notices(&mut self, active: bool, cx: &mut Context<Self>) {
+        let mut scope = None;
+        if active
+            && !self.closing
+            && self.workspace.connected()
+            && self.selected_server == self.workspace.session.server_id
+        {
+            let session = &self.workspace.session;
+            if !self.resources_blocked()
+                && !self.chat_collapsed
+                && session.chat_state == "loading"
+                && visible_text_channel(&self.workspace, &self.selected_server).is_some()
+            {
+                scope = Some(LoadingScope(
+                    session.id.clone(),
+                    session.channel_id.clone(),
+                    session.chat_epoch,
+                    session.chat_generation,
+                ));
+            }
+        }
+        if !self.loading_notice.update(scope, Instant::now()) {
+            return;
+        }
+        let expected = self.loading_notice.pending.clone();
+        if expected.is_none() {
+            return;
+        }
+        self.loading_notice.task = Some(cx.spawn(async move |view, cx| {
+            cx.background_executor().timer(LOADING_NOTICE_DELAY).await;
+            let _ = view.update(cx, |this, cx| {
+                if !this.closing && this.loading_notice.pending == expected {
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
     fn retry_resources(&mut self, cx: &mut Context<Self>) {
         if self.closing
             || !self.workspace.connected()
@@ -1518,7 +1634,6 @@ impl ResonaApp {
         let (active, all) = self.resource_interest.unwrap_or((true, true));
         self.resource_generation = self.resource_generation.wrapping_add(1);
         self.resource_state = ResourceState::Syncing;
-        self.resource_attempt = 0;
         self.resource_error.clear();
         self.request("SetResourceInterest", json!({"active":active,"allChannels":all,"allMembers":all,"generation":self.resource_generation,"retry":true}), Pending::ResourceInterest(self.resource_generation));
         cx.notify();
@@ -1642,7 +1757,6 @@ impl ResonaApp {
                         ResourceState::Idle
                     };
                     self.resource_error.clear();
-                    self.resource_attempt = 0;
                 }
                 if workspace.session.id != self.workspace.session.id {
                     self.queued_voice = None;
@@ -1775,6 +1889,7 @@ impl ResonaApp {
         self.flush_preferences();
         self.clear_hotkey(cx);
         self.closing = true;
+        self.sync_loading_notices(false, cx);
         self.device_menu = None;
         self.modal = None;
         if self.core.is_none() {
@@ -2014,35 +2129,66 @@ impl ResonaApp {
             .find(|s| s.id == self.selected_server)
     }
 
+    fn server_page(&self) -> ServerPage {
+        server_page(
+            &self.workspace,
+            &self.selected_server,
+            self.resource_state,
+            self.pending.values().any(|pending| {
+                connection_request_matches(pending, &self.selected_server, self.connect_revision)
+            }),
+            self.pending
+                .values()
+                .any(|pending| matches!(pending, Pending::Workspace("DisconnectServer"))),
+        )
+    }
+
+    fn cancel_connection(&mut self, server_id: &str, cx: &mut Context<Self>) {
+        let started = (self.workspace.session.server_id == server_id
+            && matches!(
+                self.workspace.session.mode.as_str(),
+                "connecting" | "reconnecting" | "connected"
+            ))
+            || self.pending.values().any(|pending| {
+                matches!(pending, Pending::Connect(id, _, revision)
+                    if id == server_id && *revision == self.connect_revision)
+            });
+        self.connect_revision = self.connect_revision.wrapping_add(1);
+        self.connect_error.clear();
+        if started {
+            self.request(
+                "DisconnectServer",
+                json!({}),
+                Pending::Workspace("DisconnectServer"),
+            );
+        }
+        cx.notify();
+    }
+
     fn is_busy(&self) -> bool {
-        self.pending.values().any(|pending| {
-            !matches!(
-                pending,
-                Pending::Notification
-                    | Pending::ExportDiagnostics
-                    | Pending::ResourceInterest(_)
-                    | Pending::Icon { .. }
-                    | Pending::PushToTalk
-                    | Pending::ChannelOrder(_)
-            )
-        })
+        self.pending
+            .values()
+            .any(|pending| pending.blocks(self.connect_revision))
     }
 
     fn speaking_transition_pending(&self) -> bool {
         if self.settings_apply.is_some() {
             return true;
         }
-        self.pending.values().any(|pending| match pending {
-            Pending::Voice
-            | Pending::VoicePreferences { .. }
-            | Pending::Credential(_, _)
-            | Pending::Connect(_, _) => true,
-            Pending::Workspace(method) => matches!(
-                *method,
-                "SelectChannel" | "DisconnectServer" | "LeavePreview" | "OpenPreview"
-            ),
-            _ => false,
-        })
+        self.pending
+            .values()
+            .filter(|pending| pending.blocks(self.connect_revision))
+            .any(|pending| match pending {
+                Pending::Voice
+                | Pending::VoicePreferences { .. }
+                | Pending::Credential(_, _)
+                | Pending::Connect(_, _, _) => true,
+                Pending::Workspace(method) => matches!(
+                    *method,
+                    "SelectChannel" | "DisconnectServer" | "LeavePreview" | "OpenPreview"
+                ),
+                _ => false,
+            })
     }
 
     fn update_icon_cache(&mut self, workspace: &Workspace) {
@@ -2585,13 +2731,13 @@ impl ResonaApp {
                 || self
                     .pending
                     .values()
-                    .any(|pending| matches!(pending, Pending::Connect(_, _))));
+                    .any(|pending| matches!(pending, Pending::Connect(_, _, _))));
         if cancel_connect {
-            self.request(
-                "DisconnectServer",
-                json!({}),
-                Pending::Workspace("DisconnectServer"),
-            );
+            let server_id = match &self.modal {
+                Some(Modal::Password { server_id }) => server_id.clone(),
+                _ => unreachable!(),
+            };
+            self.cancel_connection(&server_id, cx);
         }
         self.password_input
             .update(cx, |input, cx| input.set_value("", window, cx));
@@ -2757,7 +2903,7 @@ impl ResonaApp {
     }
 
     fn begin_connect(&mut self, server_id: String, cx: &mut Context<Self>) {
-        if navigation_blocked(self.modal.as_ref(), self.closing) {
+        if navigation_blocked(self.modal.as_ref(), self.closing) || self.is_busy() {
             return;
         }
         if !self.check_connection_profile(&server_id) {
@@ -2837,7 +2983,7 @@ impl ResonaApp {
         self.request(
             "ConnectServerWithPassword",
             json!({"id": server_id, "password": password, "remember": remember}),
-            Pending::Connect(server_id, true),
+            Pending::Connect(server_id, true, self.connect_revision),
         );
         cx.notify();
     }
@@ -3672,6 +3818,7 @@ impl ResonaApp {
     }
 
     fn render_sidebar(&self, view: &Entity<Self>, dragging: bool) -> AnyElement {
+        let page = self.server_page();
         let preview_selected = self.selected_server == "__preview__";
         let profile = self.selected_profile().cloned();
         let showing_session = if self.workspace.session.mode == "preview" {
@@ -3698,7 +3845,9 @@ impl ResonaApp {
             .gap_1()
             .when(
                 showing_session
+                    && page == ServerPage::Channels
                     && self.workspace.connected()
+                    && !self.resources_blocked()
                     && self.workspace.session.can_manage_channels,
                 |header| {
                     let view = view.clone();
@@ -3737,7 +3886,7 @@ impl ResonaApp {
                             .truncate()
                             .child(title),
                     )
-                    .child(
+                    .when(page == ServerPage::Channels, |name| name.child(
                         div()
                             .text_size(px(10.))
                             .text_color(rgb(MUTED))
@@ -3751,11 +3900,13 @@ impl ResonaApp {
                             } else {
                                 "未连接".into()
                             }),
-                    ),
+                    )),
             )
             .when(
                 showing_session
+                    && page == ServerPage::Channels
                     && self.workspace.connected()
+                    && !self.resources_blocked()
                     && (!self.workspace.session.server_role.is_empty()
                         || self.workspace.session.can_claim_owner),
                 |header| {
@@ -3782,48 +3933,12 @@ impl ResonaApp {
             .flex()
             .flex_col()
             .child(header);
-        if can_show_session_channels(&self.workspace, &self.selected_server) {
+        if page == ServerPage::Channels {
             sidebar = sidebar.child(self.render_channels(view, dragging));
         } else {
-            let mut empty = div()
-                .flex_1()
-                .min_h_0()
-                .px_3()
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap_3()
-                .text_center()
-                .text_xs()
-                .text_color(rgb(MUTED))
-                .child(if preview_selected && self.workspace.connected() {
-                    "断开当前连接后可进入本地预览"
-                } else if profile.is_some() {
-                    "此服务器尚未连接"
-                } else {
-                    "选择或添加服务器"
-                });
-            if let Some(profile) = profile {
-                let entity = view.clone();
-                empty = empty.child(
-                    Button::new("connect-selected-server")
-                        .label(if self.workspace.connected() {
-                            "切换连接"
-                        } else {
-                            "连接服务器"
-                        })
-                        .primary()
-                        .disabled(self.is_busy())
-                        .on_click(move |_, _, cx| {
-                            entity
-                                .update(cx, |this, cx| this.begin_connect(profile.id.clone(), cx));
-                        }),
-                );
-            }
-            sidebar = sidebar.child(empty);
+            sidebar = sidebar.child(self.render_server_entry(page, view));
         }
-        if showing_session {
+        if showing_session && page == ServerPage::Channels {
             sidebar = sidebar.child(
                 div()
                     .px_3()
@@ -3842,7 +3957,7 @@ impl ResonaApp {
         let current = self.workspace.session.channel_id.clone();
         let switching = self.workspace.session.switching_channel_id.clone();
         let users = self.workspace.users.clone();
-        let transition_pending = self.speaking_transition_pending();
+        let transition_pending = self.closing || self.speaking_transition_pending();
         let rows = ordered_channels(&self.workspace.channels)
             .into_iter()
             .map(|(channel, depth)| {
@@ -3972,13 +4087,21 @@ impl ResonaApp {
                                     .items_center()
                                     .gap_2()
                                     .text_size(px(11.))
-                                    .text_color(rgb(if user.is_self { MINT } else { MUTED }))
-                                    .child(speaking_indicator(&user, speaking, "tree"))
-                                    .child(if user.is_self {
-                                        format!("{} · 我", user.nickname)
+                                    .text_color(rgb(if speaking {
+                                        TEXT
+                                    } else if user.is_self {
+                                        MINT
                                     } else {
-                                        user.nickname
-                                    })
+                                        MUTED
+                                    }))
+                                    .child(speaking_indicator(&user, &self.voice, speaking, "tree"))
+                                    .child(div().flex_1().min_w_0().truncate().child(
+                                        if user.is_self {
+                                            format!("{} · 我", user.nickname)
+                                        } else {
+                                            user.nickname
+                                        },
+                                    ))
                                     .map(|row| {
                                         if user.is_self {
                                             return row.into_any_element();
@@ -4705,7 +4828,8 @@ impl ResonaApp {
                                         row.child(Button::new("load-chat-history").label("加载更早消息").ghost().h(px(22.)).text_xs()
                                             .on_click(move |_,_,cx| history.update(cx,|this,cx|this.load_chat_history(cx)))))
                             ))
-                            .when(self.workspace.session.chat_state == "loading", |list| {
+                            .when(self.workspace.session.chat_state == "loading"
+                                && self.loading_notice.visible(Instant::now()), |list| {
                                 list.child(
                                     div()
                                         .py_2()
@@ -5005,11 +5129,16 @@ impl ResonaApp {
         } else {
             "麦克风已开启"
         };
-        let nickname = self
-            .workspace
-            .users
-            .iter()
-            .find(|u| u.is_self)
+        let local_user = self.workspace.users.iter().find(|u| u.is_self);
+        let local_speaking = local_user.is_some_and(|user| {
+            user_is_speaking(
+                &self.workspace,
+                &self.voice,
+                self.closing || self.speaking_transition_pending(),
+                user,
+            )
+        });
+        let nickname = local_user
             .map(|u| u.nickname.clone())
             .unwrap_or_else(|| "Resona".into());
         let mode = self.workspace.session.mode.as_str();
@@ -5047,7 +5176,29 @@ impl ResonaApp {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(div().text_xs().truncate().child(nickname))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .when_some(local_user, |row, user| {
+                                row.child(speaking_indicator(
+                                    user,
+                                    &self.voice,
+                                    local_speaking,
+                                    "voicebar",
+                                ))
+                            })
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_xs()
+                                    .text_color(rgb(if local_speaking { TEXT } else { MUTED }))
+                                    .truncate()
+                                    .child(nickname),
+                            ),
+                    )
                     .child(
                         div()
                             .text_size(px(11.))
@@ -5194,7 +5345,8 @@ impl ResonaApp {
                 matches!(
                     mode,
                     "connecting" | "reconnecting" | "connected" | "disconnecting" | "preview"
-                ),
+                ) && (self.selected_server != self.workspace.session.server_id
+                    || self.server_page() == ServerPage::Channels),
                 |bar| {
                     bar.child(
                         Button::new("disconnect")
@@ -8190,19 +8342,10 @@ impl ResonaApp {
     fn session_label(&self) -> String {
         match self.workspace.session.mode.as_str() {
             "preview" => "本地预览",
-            "connecting" => {
-                return format!(
-                    "正在连接 · {}/3",
-                    self.workspace.session.connection_attempt.max(1)
-                );
-            }
-            "reconnecting" if self.workspace.session.connection_retry_slow => {
-                "恢复失败 · 自动重试中"
-            }
-            "reconnecting" => "正在重连",
+            "connecting" | "reconnecting" => "未连接",
             "connected" => "在线",
             "disconnecting" => "正在断开",
-            "failed" => "连接失败",
+            "failed" => "离线",
             _ => "离线",
         }
         .into()
@@ -8236,88 +8379,93 @@ impl ResonaApp {
         self.workspace.session.server_name.clone()
     }
 
-    fn render_server_stage(&self, view: &Entity<Self>) -> Option<AnyElement> {
-        if self.selected_server != self.workspace.session.server_id {
-            return None;
-        }
-        let mode = self.workspace.session.mode.as_str();
-        let resource = self.resources_blocked();
-        if !resource && !matches!(mode, "connecting" | "reconnecting" | "failed") {
-            return None;
-        }
-        let failed_resource = resource && self.resource_state == ResourceState::Failed;
-        let failed_connection = mode == "failed";
-        let title = if resource {
-            if failed_resource {
-                "资源同步失败".into()
-            } else if self.resource_attempt == 0 {
-                "正在同步资源".into()
-            } else {
-                format!("正在同步资源 · {}/3", self.resource_attempt)
+    fn render_server_entry(&self, page: ServerPage, view: &Entity<Self>) -> AnyElement {
+        let profile = self.selected_profile().cloned();
+        let failed = matches!(
+            page,
+            ServerPage::ConnectionFailed | ServerPage::ResourceFailed
+        );
+        let waiting = matches!(page, ServerPage::Connecting | ServerPage::Disconnecting);
+        let title = match page {
+            ServerPage::ConnectionFailed => "连接失败",
+            ServerPage::ResourceFailed => "无法加载服务器信息",
+            _ if self.selected_server == "__preview__" && self.workspace.connected() => {
+                "断开当前连接后可进入本地预览"
             }
-        } else if mode == "connecting" {
-            format!(
-                "正在连接 · {}/3",
-                self.workspace.session.connection_attempt.max(1)
+            _ if profile.is_none() => "选择或添加服务器",
+            _ => "此服务器尚未连接",
+        };
+        let detail = match page {
+            ServerPage::ConnectionFailed if self.workspace.session.mode == "reconnecting" => {
+                "连接已中断，正在后台尝试恢复。你可以重新连接或取消。"
+            }
+            ServerPage::ConnectionFailed if self.workspace.session.error.is_empty() => {
+                "无法连接服务器，请检查网络和服务器设置后重试。"
+            }
+            ServerPage::ConnectionFailed => self.workspace.session.error.as_str(),
+            ServerPage::ResourceFailed => self.resource_error.as_str(),
+            _ => "",
+        };
+        let mut body = div()
+            .w_full()
+            .max_w(px(380.))
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap_3()
+            .child(
+                div()
+                    .h(px(20.))
+                    .text_sm()
+                    .text_color(rgb(if failed { RED } else { MUTED }))
+                    .child(if waiting { "" } else { title }),
             )
-        } else if mode == "reconnecting" {
-            if self.workspace.session.connection_retry_slow {
-                if self.workspace.session.connection_waiting {
-                    "连接恢复失败 · 等待自动重试".into()
-                } else {
-                    "正在恢复连接".into()
-                }
-            } else {
-                format!(
-                    "正在恢复连接 · {}/3",
-                    self.workspace.session.connection_attempt.max(1)
+            .when(!detail.is_empty(), |body| {
+                body.child(
+                    div()
+                        .w_full()
+                        .text_xs()
+                        .text_color(rgb(MUTED))
+                        .child(detail.to_owned()),
                 )
-            }
-        } else {
-            "连接失败".into()
-        };
-        let detail = if failed_connection && self.workspace.session.connection_attempt > 1 {
-            format!(
-                "已尝试 {} 次。{}",
-                self.workspace.session.connection_attempt,
-                self.status_detail()
-            )
-        } else if failed_resource {
-            self.resource_error.clone()
-        } else if resource {
-            String::new()
-        } else {
-            self.status_detail()
-        };
-        let mut controls = div().flex().flex_wrap().justify_center().gap_2();
-        if failed_resource {
+            });
+        if let Some(profile) = profile {
             let entity = view.clone();
-            controls = controls.child(
-                Button::new("retry-resources")
-                    .label("重试")
+            let resource_failed = page == ServerPage::ResourceFailed;
+            body = body.child(
+                Button::new("connect-selected-server")
+                    .w(px(148.))
+                    .h(px(32.))
+                    .label(match page {
+                        ServerPage::Connecting => "正在连接…",
+                        ServerPage::Disconnecting => "正在取消…",
+                        ServerPage::ConnectionFailed | ServerPage::ResourceFailed => "重试连接",
+                        _ if self.workspace.connected() => "切换连接",
+                        _ => "连接服务器",
+                    })
                     .primary()
+                    .disabled(waiting || self.is_busy() || self.closing)
                     .on_click(move |_, _, cx| {
-                        entity.update(cx, |this, cx| this.retry_resources(cx));
+                        entity.update(cx, |this, cx| {
+                            if resource_failed {
+                                this.retry_resources(cx);
+                            } else {
+                                this.begin_connect(profile.id.clone(), cx);
+                            }
+                        });
                     }),
             );
-        } else if failed_connection {
-            let entity = view.clone();
-            let id = self.workspace.session.server_id.clone();
-            controls = controls.child(
-                Button::new("retry-server-connection")
-                    .label("重新连接")
-                    .primary()
-                    .disabled(self.is_busy())
-                    .on_click(move |_, _, cx| {
-                        entity.update(cx, |this, cx| this.begin_connect(id.clone(), cx));
-                    }),
-            );
+        }
+        if page == ServerPage::ConnectionFailed {
+            let mut actions = div().flex().flex_wrap().justify_center().gap_2();
             if let Some(profile) = self.selected_profile().cloned() {
                 let entity = view.clone();
-                controls = controls.child(
+                actions = actions.child(
                     Button::new("edit-failed-server")
                         .label("编辑服务器")
                         .ghost()
+                        .h(px(24.))
+                        .text_xs()
                         .on_click(move |_, window, cx| {
                             entity.update(cx, |this, cx| {
                                 this.open_server_form(Some(profile.clone()), window, cx);
@@ -8327,11 +8475,13 @@ impl ResonaApp {
                 );
             }
             let entity = view.clone();
-            let id = self.workspace.session.server_id.clone();
-            controls = controls.child(
+            let id = self.selected_server.clone();
+            actions = actions.child(
                 Button::new("retry-server-password")
                     .label("重新输入密码")
                     .ghost()
+                    .h(px(24.))
+                    .text_xs()
                     .disabled(self.is_busy())
                     .on_click(move |_, window, cx| {
                         entity.update(cx, |this, cx| {
@@ -8340,100 +8490,44 @@ impl ResonaApp {
                         });
                     }),
             );
-        } else if mode == "reconnecting" {
+            body = body.child(actions);
+        }
+        if matches!(page, ServerPage::Connecting | ServerPage::ResourceFailed)
+            || (page == ServerPage::ConnectionFailed
+                && self.workspace.session.mode == "reconnecting")
+        {
             let entity = view.clone();
-            controls = controls.child(
-                Button::new("retry-connection-now")
-                    .label("立即重试")
-                    .primary()
-                    .disabled(!self.workspace.session.connection_waiting || self.is_busy())
+            let id = self.selected_server.clone();
+            body = body.child(
+                Button::new("cancel-server-connection")
+                    .label(if page == ServerPage::ResourceFailed {
+                        "退出服务器"
+                    } else {
+                        "取消连接"
+                    })
+                    .ghost()
+                    .h(px(24.))
+                    .text_xs()
                     .on_click(move |_, _, cx| {
-                        entity.update(cx, |this, cx| {
-                            this.request(
-                                "RetryConnection",
-                                json!({"sessionID":this.workspace.session.id}),
-                                Pending::Workspace("RetryConnection"),
-                            );
-                            cx.notify();
-                        });
+                        entity.update(cx, |this, cx| this.cancel_connection(&id, cx));
                     }),
             );
         }
-        let entity = view.clone();
-        controls = controls.child(
-            Button::new("exit-server-stage")
-                .label(if mode == "connecting" {
-                    "取消连接"
-                } else {
-                    "退出服务器"
-                })
-                .ghost()
-                .on_click(move |_, _, cx| {
-                    entity.update(cx, |this, cx| {
-                        this.request(
-                            "DisconnectServer",
-                            json!({}),
-                            Pending::Workspace("DisconnectServer"),
-                        );
-                        cx.notify();
-                    });
-                }),
-        );
-        Some(
-            div()
-                .id("server-stage")
-                .absolute()
-                .inset_0()
-                .occlude()
-                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_mouse_down(gpui::MouseButton::Right, |_, _, cx| cx.stop_propagation())
-                .on_click(|_, _, cx| cx.stop_propagation())
-                .flex()
-                .items_start()
-                .justify_center()
-                .p_3()
-                .child(
-                    div()
-                        .w_full()
-                        .max_w(px(380.))
-                        .bg(rgb(PANEL))
-                        .border_1()
-                        .border_color(rgb(if failed_resource || failed_connection {
-                            RED
-                        } else {
-                            LINE
-                        }))
-                        .rounded(px(6.))
-                        .p_3()
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(rgb(if failed_resource || failed_connection {
-                                    RED
-                                } else {
-                                    MUTED
-                                }))
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .text_center()
-                                .child(title),
-                        )
-                        .when(!detail.is_empty(), |body| {
-                            body.child(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(MUTED))
-                                    .text_center()
-                                    .child(detail),
-                            )
-                        })
-                        .child(controls),
-                )
-                .into_any_element(),
-        )
+        if matches!(page, ServerPage::Offline | ServerPage::Disconnecting) {
+            body = body.child(div().h(px(24.)));
+        }
+        div()
+            .id("server-entry")
+            .flex_1()
+            .min_h_0()
+            .px_3()
+            .py_3()
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_center()
+            .child(body)
+            .into_any_element()
     }
 }
 
@@ -8476,6 +8570,7 @@ impl Render for ResonaApp {
                 .update(cx, |input, cx| input.set_value(shortcut, window, cx));
         }
         self.sync_resource_interest(window.is_window_active());
+        self.sync_loading_notices(window.is_window_active(), cx);
         self.composer_height = composer_height(
             self.composer_height,
             f32::from(window.viewport_size().height),
@@ -8505,6 +8600,7 @@ impl Render for ResonaApp {
             });
         }
         let view = cx.entity().clone();
+        let page = self.server_page();
         let display_error = self
             .playback_error
             .as_ref()
@@ -8657,17 +8753,17 @@ impl Render for ResonaApp {
                                         .child(
                                             self.render_sidebar(&view, self.channel_drag.is_some()),
                                         )
-                                        .when(self.detail_selection.is_some(), |body| {
-                                            body.child(self.render_details(&view))
-                                        }),
+                                        .when(
+                                            self.detail_selection.is_some()
+                                                && page == ServerPage::Channels,
+                                            |body| body.child(self.render_details(&view)),
+                                        ),
                                 )
                                 .when_some(
-                                    visible_text_channel(&self.workspace, &self.selected_server),
+                                    visible_text_channel(&self.workspace, &self.selected_server)
+                                        .filter(|_| page == ServerPage::Channels),
                                     |body, channel| body.child(self.render_chat(channel, &view)),
-                                )
-                                .when_some(self.render_server_stage(&view), |body, stage| {
-                                    body.child(stage)
-                                }),
+                                ),
                         ),
                 )
                 .child(self.render_voicebar(&view))
@@ -8877,6 +8973,46 @@ fn can_show_session_channels(workspace: &Workspace, selected: &str) -> bool {
         return selected == "__preview__" || !workspace.servers.iter().any(|s| s.id == selected);
     }
     workspace.connected() && selected == workspace.session.server_id
+}
+
+fn connection_request_matches(pending: &Pending, server: &str, revision: u64) -> bool {
+    pending.connection() == Some((server, revision))
+}
+
+fn server_page(
+    workspace: &Workspace,
+    selected: &str,
+    resources: ResourceState,
+    preparing: bool,
+    disconnecting: bool,
+) -> ServerPage {
+    if preparing {
+        return if disconnecting {
+            ServerPage::Disconnecting
+        } else {
+            ServerPage::Connecting
+        };
+    }
+    if workspace.session.mode == "preview" && can_show_session_channels(workspace, selected) {
+        return ServerPage::Channels;
+    }
+    if selected != workspace.session.server_id {
+        return ServerPage::Offline;
+    }
+    if disconnecting || workspace.session.mode == "disconnecting" {
+        return ServerPage::Disconnecting;
+    }
+    match workspace.session.mode.as_str() {
+        "reconnecting" if workspace.session.connection_retry_slow => ServerPage::ConnectionFailed,
+        "connecting" | "reconnecting" => ServerPage::Connecting,
+        "connected" => match resources {
+            ResourceState::Failed => ServerPage::ResourceFailed,
+            ResourceState::Idle | ResourceState::Syncing => ServerPage::Connecting,
+            ResourceState::Ready | ResourceState::Refreshing => ServerPage::Channels,
+        },
+        "failed" => ServerPage::ConnectionFailed,
+        _ => ServerPage::Offline,
+    }
 }
 
 fn visible_text_channel<'a>(
@@ -9197,6 +9333,8 @@ fn user_is_speaking(
         !voice.muted && voice.local_speaking
     } else {
         !user.id.is_empty()
+            && !user.playback_muted
+            && !(user.voice_state_known && (user.input_muted || user.output_muted))
             && voice
                 .speaking_client_ids
                 .iter()
@@ -9204,15 +9342,37 @@ fn user_is_speaking(
     }
 }
 
-fn speaking_indicator(user: &User, speaking: bool, location: &'static str) -> AnyElement {
+fn speaking_indicator(
+    user: &User,
+    voice: &VoiceState,
+    speaking: bool,
+    location: &'static str,
+) -> AnyElement {
     let locally_muted = !user.is_self && user.playback_muted;
-    let tooltip: SharedString = if locally_muted {
-        "已在本机静音".into()
-    } else if speaking {
-        "正在说话".into()
+    let input_muted = if user.is_self {
+        voice.muted
     } else {
-        "未在说话".into()
+        user.voice_state_known && user.input_muted
     };
+    let output_muted = if user.is_self {
+        voice.deafened
+    } else {
+        user.voice_state_known && user.output_muted
+    };
+    let (icon, tooltip) = if locally_muted {
+        (Some("headphones-off.svg"), "已在本机静音")
+    } else if output_muted {
+        (Some("headphones-off.svg"), "收听与发送已暂停")
+    } else if input_muted {
+        (Some("mic-off.svg"), "麦克风已静音")
+    } else if speaking && user.is_self {
+        (None, "正在发送语音")
+    } else if speaking {
+        (None, "正在播放语音")
+    } else {
+        (None, "未在说话")
+    };
+    let tooltip: SharedString = tooltip.into();
     div()
         .id(SharedString::from(format!(
             "speaking-{location}-{}",
@@ -9224,24 +9384,19 @@ fn speaking_indicator(user: &User, speaking: bool, location: &'static str) -> An
         .items_center()
         .justify_center()
         .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-        .child(
+        .child(if let Some(path) = icon {
             svg()
-                .path(if locally_muted {
-                    "headphones-off.svg"
-                } else if user.is_self {
-                    "mic.svg"
-                } else {
-                    "volume-2.svg"
-                })
-                .text_color(rgb(if locally_muted {
-                    AMBER
-                } else if speaking {
-                    MINT
-                } else {
-                    0x66717c
-                }))
-                .size(px(14.)),
-        )
+                .path(path)
+                .text_color(rgb(if locally_muted { AMBER } else { MUTED }))
+                .size(px(14.))
+                .into_any_element()
+        } else {
+            div()
+                .size(px(if speaking { 12. } else { 8. }))
+                .rounded_full()
+                .bg(rgb(if speaking { ICE } else { 0x66717c }))
+                .into_any_element()
+        })
         .into_any_element()
 }
 
@@ -9386,6 +9541,132 @@ fn ordered_channels(channels: &[crate::model::Channel]) -> Vec<(crate::model::Ch
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn server_entry_only_opens_channels_after_connection_and_resources_are_ready() {
+        use super::{ResourceState as R, ServerPage as P, server_page};
+        let mut workspace = Workspace::default();
+        workspace.session.server_id = "server".into();
+        workspace.channels.push(crate::model::Channel {
+            id: "1".into(),
+            ..Default::default()
+        });
+        assert_eq!(
+            server_page(&workspace, "server", R::Idle, false, false),
+            P::Offline
+        );
+        // Audio preferences and credential reads precede the core's connecting state.
+        assert_eq!(
+            server_page(&workspace, "server", R::Idle, true, false),
+            P::Connecting
+        );
+        for mode in ["connecting", "reconnecting"] {
+            workspace.session.mode = mode.into();
+            assert_eq!(
+                server_page(&workspace, "server", R::Ready, false, false),
+                P::Connecting
+            );
+            assert_eq!(
+                server_page(&workspace, "other", R::Ready, false, false),
+                P::Offline
+            );
+        }
+        workspace.session.connection_retry_slow = true;
+        assert_eq!(
+            server_page(&workspace, "server", R::Ready, false, false),
+            P::ConnectionFailed
+        );
+        workspace.session.mode = "connected".into();
+        for state in [R::Idle, R::Syncing] {
+            assert_eq!(
+                server_page(&workspace, "server", state, false, false),
+                P::Connecting
+            );
+        }
+        assert_eq!(
+            server_page(&workspace, "server", R::Failed, false, false),
+            P::ResourceFailed
+        );
+        for state in [R::Ready, R::Refreshing] {
+            assert_eq!(
+                server_page(&workspace, "server", state, false, false),
+                P::Channels
+            );
+        }
+        // A late connected update cannot expose channels while cancellation is pending.
+        assert_eq!(
+            server_page(&workspace, "server", R::Ready, false, true),
+            P::Disconnecting
+        );
+        assert_eq!(
+            server_page(&workspace, "other", R::Ready, true, false),
+            P::Connecting
+        );
+        workspace.session.mode = "failed".into();
+        assert_eq!(
+            server_page(&workspace, "server", R::Ready, false, false),
+            P::ConnectionFailed
+        );
+        workspace.session.mode = "offline".into();
+        assert_eq!(
+            server_page(&workspace, "server", R::Idle, false, false),
+            P::Offline
+        );
+    }
+
+    #[test]
+    fn pending_connection_is_scoped_to_its_server_and_uncancelled_revision() {
+        use super::{Pending, connection_request_matches};
+        let requests = [
+            Pending::VoicePreferences {
+                connect: Some("server".into()),
+                session: "old".into(),
+                revision: 7,
+            },
+            Pending::Credential("server".into(), 7),
+            Pending::Connect("server".into(), false, 7),
+        ];
+        for request in requests {
+            assert!(connection_request_matches(&request, "server", 7));
+            assert!(request.blocks(7));
+            assert!(!connection_request_matches(&request, "other", 7));
+            assert!(!connection_request_matches(&request, "server", 8));
+            assert!(!request.blocks(8));
+        }
+        assert!(!connection_request_matches(&Pending::Voice, "server", 7));
+        assert!(Pending::Voice.blocks(8));
+        assert!(!Pending::Notification.blocks(8));
+    }
+
+    #[test]
+    fn loading_notices_are_delayed_and_end_with_their_scope() {
+        use super::{LOADING_NOTICE_DELAY, LoadingNotice, LoadingScope};
+        let now = std::time::Instant::now();
+        let scope = LoadingScope("session".into(), "A".into(), 1, 1);
+        let mut notice = LoadingNotice::default();
+        assert!(notice.update(Some(scope.clone()), now));
+        assert!(!notice.visible(now + std::time::Duration::from_millis(299)));
+        assert!(notice.visible(now + LOADING_NOTICE_DELAY));
+        assert!(!notice.update(Some(scope.clone()), now + LOADING_NOTICE_DELAY));
+
+        // Ready, failure, collapsing, deactivation and exit all remove the scope.
+        assert!(notice.update(None, now + LOADING_NOTICE_DELAY));
+        assert!(!notice.visible(now + std::time::Duration::from_secs(1)));
+        assert!(notice.update(Some(scope), now + std::time::Duration::from_secs(1)));
+        assert!(!notice.visible(now + std::time::Duration::from_secs(1)));
+        let original = notice.pending.clone();
+        let later = now + std::time::Duration::from_secs(2);
+        for scope in [
+            LoadingScope("session".into(), "B".into(), 2, 1),
+            LoadingScope("session".into(), "A".into(), 3, 1),
+            LoadingScope("session".into(), "A".into(), 3, 2),
+            LoadingScope("new-session".into(), "A".into(), 3, 2),
+        ] {
+            assert!(notice.update(Some(scope), later));
+            assert_ne!(notice.pending, original);
+            assert!(!notice.visible(later));
+        }
+    }
+
     #[test]
     fn late_bookmark_delete_reply_does_not_target_a_different_modal() {
         use super::{Modal, delete_modal_matches};
@@ -10164,6 +10445,27 @@ mod tests {
         assert!(user_is_speaking(&workspace, &voice, false, &local));
         voice.muted = true;
         assert!(!user_is_speaking(&workspace, &voice, false, &local));
+    }
+
+    #[test]
+    fn muted_members_do_not_keep_stale_activity_highlights() {
+        let (workspace, voice, _, mut remote) = speaking_context();
+
+        remote.playback_muted = true;
+        assert!(!user_is_speaking(&workspace, &voice, false, &remote));
+        remote.playback_muted = false;
+        assert!(user_is_speaking(&workspace, &voice, false, &remote));
+
+        // Remote flags are authoritative only after the server supplied them.
+        remote.input_muted = true;
+        assert!(user_is_speaking(&workspace, &voice, false, &remote));
+        remote.voice_state_known = true;
+        assert!(!user_is_speaking(&workspace, &voice, false, &remote));
+        remote.input_muted = false;
+        remote.output_muted = true;
+        assert!(!user_is_speaking(&workspace, &voice, false, &remote));
+        remote.output_muted = false;
+        assert!(user_is_speaking(&workspace, &voice, false, &remote));
     }
 
     #[test]
