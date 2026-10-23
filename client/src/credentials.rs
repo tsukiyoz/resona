@@ -128,6 +128,18 @@ pub enum Error {
     Unavailable,
     Denied,
     Invalid,
+    System(i32),
+}
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound => f.write_str("凭据不存在"),
+            Self::Unavailable => f.write_str("系统凭据存储不可用"),
+            Self::Denied => f.write_str("未获系统授权"),
+            Self::Invalid => f.write_str("凭据格式无效"),
+            Self::System(code) => write!(f, "系统钥匙串错误 {code}"),
+        }
+    }
 }
 pub type Result<T> = std::result::Result<T, Error>;
 pub trait Backend {
@@ -242,18 +254,21 @@ pub struct Native;
 #[allow(unsafe_code)]
 mod macos {
     use super::*;
-    use core_foundation::data::CFData;
+    use core_foundation::{base::TCFType, data::CFData};
     use security_framework::{
         base::Error as OsError,
         item::{
             ItemAddOptions, ItemAddValue, ItemClass, ItemSearchOptions, ItemUpdateOptions,
             ItemUpdateValue, update_item,
         },
-        os::macos::passwords::find_generic_password,
-        passwords::delete_generic_password,
+        os::macos::{keychain_item::SecKeychainItem, passwords::find_generic_password},
     };
-    use security_framework_sys::keychain::{
-        SecKeychainGetUserInteractionAllowed, SecKeychainSetUserInteractionAllowed,
+    use security_framework_sys::{
+        keychain::{
+            SecKeychainFindGenericPassword, SecKeychainGetUserInteractionAllowed,
+            SecKeychainSetUserInteractionAllowed,
+        },
+        keychain_item::SecKeychainItemDelete,
     };
     use std::sync::Mutex;
     static KEYCHAIN: Mutex<()> = Mutex::new(());
@@ -357,10 +372,34 @@ mod macos {
         }
         fn delete(&self, key: &str) -> Result<()> {
             let _lock = KEYCHAIN.lock().map_err(|_| Error::Denied)?;
-            match delete_generic_password(service(key), key) {
-                Ok(()) => Ok(()),
-                Err(e) if e.code() == -25300 => Ok(()),
-                Err(e) => Err(error(e)),
+            let service = service(key);
+            let mut item = std::ptr::null_mut();
+            // Match the legacy read path, but find only the reference, never password data.
+            let status = unsafe {
+                SecKeychainFindGenericPassword(
+                    std::ptr::null(),
+                    service.len() as u32,
+                    service.as_ptr().cast(),
+                    key.len() as u32,
+                    key.as_ptr().cast(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    &mut item,
+                )
+            };
+            if status == -25300 {
+                return Ok(());
+            }
+            if status != 0 {
+                return Err(Error::System(status));
+            }
+            if item.is_null() {
+                return Err(Error::Unavailable);
+            }
+            let item = unsafe { SecKeychainItem::wrap_under_create_rule(item) };
+            match unsafe { SecKeychainItemDelete(item.as_concrete_TypeRef()) } {
+                0 | -25300 => Ok(()),
+                status => Err(Error::System(status)),
             }
         }
     }
@@ -479,9 +518,9 @@ impl Backend for Native {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
-    fn native_windows_storage_preserves_format_across_fresh_stores() {
+    fn native_storage_preserves_format_across_fresh_stores() {
         if std::env::var("RESONA_CREDENTIAL_INTEGRATION").as_deref() != Ok("1") {
             return;
         }
@@ -513,6 +552,7 @@ mod tests {
             );
             store.delete(&key).unwrap();
             assert!(!Native.has(&key).unwrap());
+            store.delete(&key).unwrap();
         }
     }
     use std::cell::Cell;
