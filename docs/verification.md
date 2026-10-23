@@ -922,3 +922,12 @@ tsukiyo 当前服务端与 main 服务端代码一致，本轮仅改客户端，
 严格 Clippy、格式检查、更新清单签名/发布保护测试通过。尚未响应的系统授权
 仍不能保证凭据落盘；不将简验等同于 Windows 游戏负载或所有平台授权验收。
 最终 v0.2.3 macOS release 重新打包完成，Info.plist 与深度严格签名校验通过。
+
+### 试听机器人新版 Clippy 修复（2026-10-23）
+
+main 18987bc 的 Windows/macOS 打包成功，但 Rust client core 三平台流水线
+均在试听机器人严格 Clippy 阶段失败。CI Rust 1.99 新增
+chunks_exact_to_as_chunks 检查，本机 Rust 1.96 尚未报告；将两处固定大小切片
+分组改用 as_chunks，直接复制固定数组，保留输入对齐、长度和样本校验。
+本机机器人严格 Clippy、格式检查、3 项单测及 2 项真实 UDP 互通通过，
+包含原生 DSP 试听源和三个 AGC 说话人的轮播；显式导出采样测试仍按设计忽略。
