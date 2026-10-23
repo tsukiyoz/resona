@@ -2,6 +2,7 @@
 //! replayed on a replacement connection.
 use crate::{
     config::{Identity, ServerProfile},
+    credentials,
     noise::{self, CancellationToken, Connection},
     wire::{self, pb},
 };
@@ -33,6 +34,7 @@ pub enum Error {
     Busy,
     InvalidInput,
     AuthenticationRejected,
+    CredentialStorage,
 }
 pub type Result<T> = std::result::Result<T, Error>;
 impl From<noise::Error> for Error {
@@ -58,6 +60,7 @@ impl Error {
     }
     pub fn message(&self) -> &'static str {
         match self {
+            Self::CredentialStorage => "无法读取已保存登录，请允许系统凭据访问后重试",
             Self::Transport(noise::Error::RemoteClosed(3)) => {
                 "你已被管理员移出服务器，可手动重新连接"
             }
@@ -113,6 +116,7 @@ pub struct Snapshot {
     pub history_limited: bool,
     pub closed: Option<Error>,
     pub events: Arc<VecDeque<MemberEvent>>,
+    pub credential_error: String,
 }
 impl Snapshot {
     pub fn channel(&self) -> u32 {
@@ -407,13 +411,13 @@ struct Pending {
     soft: bool,
     request: Request,
     code: Option<u32>,
-    token: Zeroizing<String>,
 }
 #[derive(Clone)]
 pub struct Handle {
     requests: mpsc::Sender<Request>,
     pub state: watch::Receiver<Snapshot>,
     credential: Arc<Mutex<Zeroizing<String>>>,
+    saved: Arc<Mutex<Option<credentials::Receipt>>>,
 }
 impl Handle {
     /// Explicit credential export for account UI and connection recovery. This
@@ -431,6 +435,7 @@ impl Handle {
         cancel: &CancellationToken,
     ) -> Result<()> {
         command.frame(1)?;
+        let account = matches!(command, Command::Account(_));
         let token = CancellationToken::new();
         let _guard = CancelOnDrop(token.clone());
         let (tx, rx) = oneshot::channel();
@@ -443,7 +448,22 @@ impl Handle {
             biased;
             _=cancel.cancelled()=>Err(Error::Cancelled),
             r=timeout_at(deadline,rx)=>r.map_err(|_|Error::Timeout)?.map_err(|_|Error::Transport(noise::Error::Closed))?,
+        }?;
+        let receipt = if account {
+            self.saved.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        } else {
+            None
+        };
+        if let Some(receipt) = receipt {
+            tokio::select! {
+                biased;
+                _=cancel.cancelled()=>return Err(Error::Cancelled),
+                // Admission is already confirmed; slow OS storage must not turn
+                // it into a transport failure or start another authentication.
+                _=tokio::time::timeout(Duration::from_millis(250),credentials::saved(receipt))=>{}
+            }
         }
+        Ok(())
     }
 }
 struct CancelOnDrop(CancellationToken);
@@ -535,6 +555,16 @@ impl Session {
         cancel: &CancellationToken,
         deadline: Instant,
     ) -> Result<Self> {
+        Self::connect_persistent(profile, identity, password, cancel, deadline, None).await
+    }
+    pub(crate) async fn connect_persistent(
+        profile: &ServerProfile,
+        identity: &Identity,
+        password: &str,
+        cancel: &CancellationToken,
+        deadline: Instant,
+        account: Option<credentials::Account>,
+    ) -> Result<Self> {
         profile.validate().map_err(|_| Error::InvalidInput)?;
         let endpoint = profile.endpoint().map_err(|_| Error::InvalidInput)?;
         let key = profile.public_key().map_err(|_| Error::InvalidInput)?;
@@ -596,6 +626,7 @@ impl Session {
             chat_status: pb::ChatStatus::default(),
             history_limited: false,
             closed: None,
+            credential_error: String::new(),
         };
         let (state_tx, state_rx) = watch::channel(snapshot.clone());
         let (request_tx, requests) = mpsc::channel(8);
@@ -604,6 +635,8 @@ impl Session {
         let worker_cancel = cancel.clone();
         let credential = Arc::new(Mutex::new(Zeroizing::new(String::new())));
         let driver_credential = credential.clone();
+        let saved = Arc::new(Mutex::new(None));
+        let driver_saved = saved.clone();
         let voice_tx = VoiceSender {
             sender: conn.voice_tx.clone(),
             state: state_rx.clone(),
@@ -619,8 +652,17 @@ impl Session {
                 writer: None,
                 next: 0,
                 credential: driver_credential,
+                saved: driver_saved,
+                account,
+                credential_write: None,
             };
             let result = driver.run(&mut conn, &worker_cancel).await;
+            if matches!(result, Error::Transport(noise::Error::RemoteClosed(6 | 7)))
+                && let Some(account) = driver.account.clone()
+                && account.save(Zeroizing::new(String::new())).is_err()
+            {
+                driver.saved_credential(Err(credentials::Error::Unavailable));
+            }
             driver.writer.take();
             driver.snapshot.closed = Some(result.clone());
             driver.publish();
@@ -634,6 +676,7 @@ impl Session {
                 requests: request_tx,
                 state: state_rx,
                 credential,
+                saved,
             },
             voice_tx,
             voice_rx,
@@ -658,6 +701,9 @@ struct Driver {
     writer: Option<Pin<Box<dyn Future<Output = noise::Result<()>> + Send>>>,
     next: u32,
     credential: Arc<Mutex<Zeroizing<String>>>,
+    saved: Arc<Mutex<Option<credentials::Receipt>>>,
+    account: Option<credentials::Account>,
+    credential_write: Option<Pin<Box<dyn Future<Output = credentials::Result<()>> + Send>>>,
 }
 fn valid_message(m: &pb::Message, snapshot: &Snapshot) -> bool {
     m.channel == snapshot.channel()
@@ -762,6 +808,9 @@ impl Driver {
                     if let Err(e)=result{return e.into();}
                     self.finish_reply();
                 }
+                result=async {match self.credential_write.as_mut(){Some(w)=>w.await,None=>std::future::pending().await}}=>{
+                    self.credential_write.take();self.saved_credential(result);self.publish();self.finish_reply();
+                }
                 frame=reader.read(&mut conn.control_rx,Instant::now()+Duration::from_secs(86400*365),cancel)=>{
                     let f=match frame{Ok(f)=>f,Err(e)=>return e.into()};
                     if let Err(e)=self.apply(f){return e;}
@@ -784,7 +833,7 @@ impl Driver {
                     // Poll retransmission alongside receive work, so control ACK
                     // loss cannot stop draining incoming voice and resource events.
                     self.writer=Some(Box::pin(async move {sender.write(&data,deadline,&token).await}));
-                    self.pending=Some(Pending{id,soft:request.command.soft(),request,code:None,token:Zeroizing::new(String::new())});
+                    self.pending=Some(Pending{id,soft:request.command.soft(),request,code:None});
                 }
             }
         }
@@ -793,22 +842,19 @@ impl Driver {
         if self.writer.is_none() && self.pending.as_ref().is_some_and(|p| p.code.is_some()) {
             let p = self.pending.take().unwrap();
             let code = p.code.unwrap();
-            if code == 0
-                && let Command::Account(a) = &p.request.command
-            {
-                let mut credential = self.credential.lock().unwrap_or_else(|e| e.into_inner());
-                if a.action == "logout" {
-                    credential.zeroize();
-                } else if !p.token.is_empty() {
-                    *credential = p.token;
-                }
-            }
             let _ = p.request.reply.send(if code == 0 {
                 Ok(())
             } else {
                 Err(Error::Rejected(code))
             });
         }
+    }
+    fn saved_credential(&mut self, result: credentials::Result<()>) {
+        self.snapshot.credential_error = if result.is_ok() {
+            String::new()
+        } else {
+            credentials::ACCOUNT_STORAGE_WARNING.into()
+        };
     }
     fn apply(&mut self, f: pb::Frame) -> Result<()> {
         match pb::Kind::try_from(f.kind).map_err(|_| Error::InvalidState)? {
@@ -865,10 +911,46 @@ impl Driver {
                 if r.code > 255 || r.account_token.len() > 256 {
                     return Err(Error::InvalidState);
                 }
-                if self.pending.as_ref().is_some_and(|p| p.id == f.request) {
+                if self
+                    .pending
+                    .as_ref()
+                    .is_some_and(|p| p.id == f.request && p.code.is_none())
+                {
+                    // Persist as soon as the server confirms admission, even if
+                    // the outgoing control ACK or the caller subsequently fails.
+                    let pending = self.pending.as_ref().unwrap();
+                    if r.code == 0
+                        && let Command::Account(a) = &pending.request.command
+                    {
+                        let token = if a.action == "logout" {
+                            Some(Zeroizing::new(String::new()))
+                        } else if !r.account_token.is_empty() {
+                            Some(Zeroizing::new(std::mem::take(&mut r.account_token)))
+                        } else {
+                            None
+                        };
+                        if let Some(token) = token {
+                            *self.credential.lock().unwrap_or_else(|e| e.into_inner()) =
+                                token.clone();
+                            if let Some(account) = self.account.clone() {
+                                match account.save(token) {
+                                    Ok(receipt) => {
+                                        *self.saved.lock().unwrap_or_else(|e| e.into_inner()) =
+                                            Some(receipt.clone());
+                                        self.credential_write =
+                                            Some(Box::pin(credentials::saved(receipt)));
+                                    }
+                                    Err(error) => {
+                                        *self.saved.lock().unwrap_or_else(|e| e.into_inner()) =
+                                            None;
+                                        self.saved_credential(Err(error));
+                                        self.publish();
+                                    }
+                                }
+                            }
+                        }
+                    }
                     self.pending.as_mut().unwrap().code = Some(r.code);
-                    self.pending.as_mut().unwrap().token =
-                        Zeroizing::new(std::mem::take(&mut r.account_token));
                     self.finish_reply();
                 }
             }
@@ -1003,6 +1085,7 @@ mod moderation_tests {
             },
             history_limited: false,
             closed: None,
+            credential_error: String::new(),
             events: Arc::new(VecDeque::new()),
         };
         let page = pb::ChatPage {

@@ -296,6 +296,482 @@ async fn four_simultaneous_sources_reach_every_other_member() {
 #[cfg(feature = "audio")]
 struct EmptyCredentials(std::sync::Arc<std::sync::atomic::AtomicUsize>);
 #[cfg(feature = "audio")]
+#[derive(Clone, Default)]
+struct MemoryCredentials {
+    values: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>>,
+    deny_reads: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    deny_writes: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    block_writes: std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    write_entered: std::sync::Arc<tokio::sync::Notify>,
+}
+#[cfg(feature = "audio")]
+impl resona_client::credentials::Backend for MemoryCredentials {
+    fn has(&self, key: &str) -> resona_client::credentials::Result<bool> {
+        Ok(self.values.lock().unwrap().contains_key(key))
+    }
+    fn get(&self, key: &str) -> resona_client::credentials::Result<Vec<u8>> {
+        if self.deny_reads.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(resona_client::credentials::Error::Denied);
+        }
+        self.values
+            .lock()
+            .unwrap()
+            .get(key)
+            .cloned()
+            .ok_or(resona_client::credentials::Error::NotFound)
+    }
+    fn set(&self, key: &str, value: &[u8]) -> resona_client::credentials::Result<()> {
+        let (lock, wake) = &*self.block_writes;
+        let mut blocked = lock.lock().unwrap();
+        if *blocked {
+            self.write_entered.notify_one();
+        }
+        while *blocked {
+            blocked = wake.wait(blocked).unwrap();
+        }
+        drop(blocked);
+        if self.deny_writes.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(resona_client::credentials::Error::Denied);
+        }
+        self.values
+            .lock()
+            .unwrap()
+            .insert(key.into(), value.to_vec());
+        Ok(())
+    }
+    fn delete(&self, key: &str) -> resona_client::credentials::Result<()> {
+        self.values.lock().unwrap().remove(key);
+        Ok(())
+    }
+}
+#[cfg(feature = "audio")]
+async fn persistent_core(
+    directory: &Path,
+    credentials: MemoryCredentials,
+) -> resona_client::core::Core {
+    let mut options = resona_client::core::Options::local().unwrap();
+    options.directory = directory.into();
+    options.credentials = Some(Box::new(credentials));
+    let core = resona_client::core::Core::start(options).await.unwrap();
+    core.handle
+        .request(
+            "SetVoicePreferences",
+            serde_json::json!({
+                "enabled": false, "deafened": true, "autoUnmuteOnConnect": false,
+            }),
+        )
+        .await
+        .unwrap();
+    core
+}
+#[cfg(feature = "audio")]
+async fn wait_core_connection(handle: &mut resona_client::core::Handle, mode: &str) {
+    timeout(Duration::from_secs(12), async {
+        loop {
+            let w = handle.view.borrow_and_update().workspace.clone();
+            assert!(
+                w.session.mode != "failed" || mode == "failed",
+                "{}",
+                w.session.error
+            );
+            if w.session.mode == mode {
+                return;
+            }
+            handle.view.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+}
+#[cfg(feature = "audio")]
+#[tokio::test]
+async fn account_login_survives_fresh_cores_rotates_and_logout_forgets() {
+    use resona_client::{config::ServerProfile, credentials::Store};
+    use serde_json::json;
+    let (_peer, address, key) = start_peer(&["-server"]);
+    let directory = tempfile::tempdir().unwrap();
+    let credentials = MemoryCredentials::default();
+    let core = persistent_core(directory.path(), credentials.clone()).await;
+    let mut handle = core.handle.clone();
+    let profile = ServerProfile {
+        protocol: "resona-noise".into(),
+        id: "persistent".into(),
+        name: "fixture".into(),
+        nickname: "guest".into(),
+        address: address.to_string(),
+        server_public_key: key.iter().map(|b| format!("{b:02x}")).collect(),
+        ..Default::default()
+    };
+    handle
+        .request("SaveServer", json!({"profile":profile}))
+        .await
+        .unwrap();
+    handle
+        .request(
+            "ConnectServerWithPassword",
+            json!({"id":profile.id,"password":"local-test-only","remember":true}),
+        )
+        .await
+        .unwrap();
+    wait_core_connection(&mut handle, "connected").await;
+    let id = handle.view.borrow().workspace.session.id.clone();
+    handle.request("AccountCommand", json!({"sessionID":id,"action":"register","username":"persistent_account","nickname":"持续登录玩家","password":"account-test-password"})).await.unwrap();
+    let uid = handle.view.borrow().workspace.session.account_uid.clone();
+    assert!(!uid.is_empty());
+    let first = Store::new(credentials.clone())
+        .get(&profile.account_credential_key())
+        .unwrap();
+    assert!(first.starts_with("ra1_"));
+    core.close().await;
+    let core = persistent_core(directory.path(), credentials.clone()).await;
+    let mut handle = core.handle.clone();
+    handle
+        .request("ConnectSavedServer", json!({"id":profile.id}))
+        .await
+        .unwrap();
+    wait_core_connection(&mut handle, "connected").await;
+    assert_eq!(handle.view.borrow().workspace.session.account_uid, uid);
+    assert_eq!(
+        handle.view.borrow().workspace.session.nickname,
+        "持续登录玩家"
+    );
+    let second = Store::new(credentials.clone())
+        .get(&profile.account_credential_key())
+        .unwrap();
+    assert_ne!(*first, *second);
+    // A saved server password is independent of remembered account identity.
+    handle.request("DisconnectServer", json!({})).await.unwrap();
+    wait_core_connection(&mut handle, "offline").await;
+    handle
+        .request("ForgetServerPassword", json!({"id":profile.id}))
+        .await
+        .unwrap();
+    assert!(
+        Store::new(credentials.clone())
+            .has(&profile.account_credential_key())
+            .unwrap()
+    );
+    handle
+        .request(
+            "ConnectServerWithPassword",
+            json!({"id":profile.id,"password":"local-test-only"}),
+        )
+        .await
+        .unwrap();
+    wait_core_connection(&mut handle, "connected").await;
+    assert_eq!(handle.view.borrow().workspace.session.account_uid, uid);
+    tokio::time::sleep(Duration::from_millis(550)).await;
+    let id = handle.view.borrow().workspace.session.id.clone();
+    handle.request("AccountCommand", json!({"sessionID":id,"action":"change_password","password":"account-test-password","newPassword":"changed-test-password"})).await.unwrap();
+    let third = Store::new(credentials.clone())
+        .get(&profile.account_credential_key())
+        .unwrap();
+    assert_ne!(*second, *third);
+    core.close().await;
+    let core = persistent_core(directory.path(), credentials.clone()).await;
+    let mut handle = core.handle.clone();
+    handle
+        .request(
+            "ConnectServerWithPassword",
+            json!({"id":profile.id,"password":"local-test-only"}),
+        )
+        .await
+        .unwrap();
+    wait_core_connection(&mut handle, "connected").await;
+    assert_eq!(handle.view.borrow().workspace.session.account_uid, uid);
+    tokio::time::sleep(Duration::from_millis(550)).await;
+    let id = handle.view.borrow().workspace.session.id.clone();
+    handle
+        .request("AccountCommand", json!({"sessionID":id,"action":"logout"}))
+        .await
+        .unwrap();
+    wait_core_connection(&mut handle, "offline").await;
+    assert!(
+        !Store::new(credentials.clone())
+            .has(&profile.account_credential_key())
+            .unwrap()
+    );
+    handle
+        .request(
+            "ConnectServerWithPassword",
+            json!({"id":profile.id,"password":"local-test-only"}),
+        )
+        .await
+        .unwrap();
+    wait_core_connection(&mut handle, "connected").await;
+    assert!(
+        handle
+            .view
+            .borrow()
+            .workspace
+            .session
+            .account_uid
+            .is_empty()
+    );
+    // A revoked saved token fails visibly; the deliberate next connection is guest.
+    handle.request("DisconnectServer", json!({})).await.unwrap();
+    wait_core_connection(&mut handle, "offline").await;
+    Store::new(credentials.clone())
+        .set(&profile.account_credential_key(), &first)
+        .unwrap();
+    core.close().await;
+    let core = persistent_core(directory.path(), credentials.clone()).await;
+    let mut handle = core.handle.clone();
+    handle
+        .request(
+            "ConnectServerWithPassword",
+            json!({"id":profile.id,"password":"local-test-only"}),
+        )
+        .await
+        .unwrap();
+    wait_core_connection(&mut handle, "failed").await;
+    assert!(
+        !Store::new(credentials.clone())
+            .has(&profile.account_credential_key())
+            .unwrap()
+    );
+    handle
+        .request(
+            "ConnectServerWithPassword",
+            json!({"id":profile.id,"password":"local-test-only"}),
+        )
+        .await
+        .unwrap();
+    wait_core_connection(&mut handle, "connected").await;
+    assert!(
+        handle
+            .view
+            .borrow()
+            .workspace
+            .session
+            .account_uid
+            .is_empty()
+    );
+    for name in ["servers.json", "preferences.json"] {
+        if let Ok(contents) = std::fs::read_to_string(directory.path().join(name)) {
+            assert!(!contents.contains(first.as_str()));
+            assert!(!contents.contains("account-test-password"));
+        }
+    }
+    core.close().await;
+}
+#[cfg(feature = "audio")]
+#[tokio::test]
+async fn account_storage_denial_is_visible_and_preserves_confirmed_login() {
+    use resona_client::config::ServerProfile;
+    use serde_json::json;
+    use std::sync::atomic::Ordering;
+    let (_peer, address, key) = start_peer(&["-server"]);
+    let directory = tempfile::tempdir().unwrap();
+    let credentials = MemoryCredentials::default();
+    let core = persistent_core(directory.path(), credentials.clone()).await;
+    let mut handle = core.handle.clone();
+    let profile = ServerProfile {
+        protocol: "resona-noise".into(),
+        id: "denied".into(),
+        name: "fixture".into(),
+        nickname: "guest".into(),
+        address: address.to_string(),
+        server_public_key: key.iter().map(|b| format!("{b:02x}")).collect(),
+        ..Default::default()
+    };
+    handle
+        .request("SaveServer", json!({"profile":profile}))
+        .await
+        .unwrap();
+    handle
+        .request(
+            "ConnectServerWithPassword",
+            json!({"id":profile.id,"password":"local-test-only"}),
+        )
+        .await
+        .unwrap();
+    wait_core_connection(&mut handle, "connected").await;
+    credentials.deny_writes.store(true, Ordering::SeqCst);
+    let id = handle.view.borrow().workspace.session.id.clone();
+    handle.request("AccountCommand", json!({"sessionID":id,"action":"register","username":"storage_denied","password":"account-test-password"})).await.unwrap();
+    timeout(Duration::from_secs(2), async {
+        loop {
+            let workspace = handle.view.borrow_and_update().workspace.clone();
+            if !workspace.session.credential_error.is_empty() {
+                assert!(!workspace.session.account_uid.is_empty());
+                assert!(workspace.connected());
+                break;
+            }
+            handle.view.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    core.close().await;
+    credentials.deny_reads.store(true, Ordering::SeqCst);
+    let core = persistent_core(directory.path(), credentials.clone()).await;
+    let mut handle = core.handle.clone();
+    handle
+        .request(
+            "ConnectServerWithPassword",
+            json!({"id":profile.id,"password":"local-test-only"}),
+        )
+        .await
+        .unwrap();
+    wait_core_connection(&mut handle, "failed").await;
+    assert!(
+        handle
+            .view
+            .borrow()
+            .workspace
+            .session
+            .error
+            .contains("系统凭据")
+    );
+    assert!(handle.view.borrow().workspace.channels.is_empty());
+    timeout(Duration::from_secs(1), core.close()).await.unwrap();
+}
+#[cfg(feature = "audio")]
+#[tokio::test]
+async fn pending_account_storage_keeps_control_and_shutdown_responsive() {
+    use resona_client::{config::ServerProfile, credentials::Store};
+    use serde_json::json;
+    let (_peer, address, key) = start_peer(&["-server"]);
+    let directory = tempfile::tempdir().unwrap();
+    let credentials = MemoryCredentials::default();
+    // Always release the simulated OS prompt, including when an assertion fails.
+    struct Release(MemoryCredentials);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            *self.0.block_writes.0.lock().unwrap() = false;
+            self.0.block_writes.1.notify_all();
+        }
+    }
+    let release = Release(credentials.clone());
+    let core = persistent_core(directory.path(), credentials.clone()).await;
+    let mut handle = core.handle.clone();
+    let profile = ServerProfile {
+        protocol: "resona-noise".into(),
+        id: "blocked".into(),
+        name: "fixture".into(),
+        nickname: "guest".into(),
+        address: address.to_string(),
+        server_public_key: key.iter().map(|b| format!("{b:02x}")).collect(),
+        ..Default::default()
+    };
+    handle
+        .request("SaveServer", json!({"profile":profile}))
+        .await
+        .unwrap();
+    handle
+        .request(
+            "ConnectServerWithPassword",
+            json!({"id":profile.id,"password":"local-test-only"}),
+        )
+        .await
+        .unwrap();
+    wait_core_connection(&mut handle, "connected").await;
+    *credentials.block_writes.0.lock().unwrap() = true;
+    let id = handle.view.borrow().workspace.session.id.clone();
+    let account = handle.clone();
+    let login = tokio::spawn(async move {
+        account.request("AccountCommand", json!({"sessionID":id,"action":"register","username":"blocked_storage","password":"account-test-password"})).await
+    });
+    timeout(Duration::from_secs(2), credentials.write_entered.notified())
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(2), async {
+        loop {
+            let w = handle.view.borrow_and_update().workspace.clone();
+            if !w.session.account_uid.is_empty() && w.session.chat_state == "ready" {
+                break;
+            }
+            handle.view.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    let w = handle.view.borrow().workspace.clone();
+    timeout(Duration::from_secs(1), handle.request("SendChannelMessage",json!({
+        "sessionID":w.session.id,"channelID":w.session.channel_id,"text":"control remains available",
+    }))).await.unwrap().unwrap();
+    assert!(!login.is_finished());
+    timeout(
+        Duration::from_secs(1),
+        handle.request("DisconnectServer", json!({})),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    wait_core_connection(&mut handle, "offline").await;
+    // Deletion must follow the queued save, never be undone by it.
+    let delete = handle.clone();
+    let deletion = tokio::spawn(async move {
+        delete
+            .request("DeleteServer", json!({"id":"blocked"}))
+            .await
+    });
+    tokio::task::yield_now().await;
+    assert!(!deletion.is_finished());
+    drop(release);
+    timeout(Duration::from_secs(2), deletion)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let _ = login.await.unwrap();
+    assert!(
+        !Store::new(credentials.clone())
+            .has(&profile.account_credential_key())
+            .unwrap()
+    );
+    core.close().await;
+
+    // A separately stalled write may not keep application shutdown open.
+    let core = persistent_core(directory.path(), credentials.clone()).await;
+    let mut handle = core.handle.clone();
+    handle
+        .request("SaveServer", json!({"profile":profile}))
+        .await
+        .unwrap();
+    handle
+        .request(
+            "ConnectServerWithPassword",
+            json!({"id":profile.id,"password":"local-test-only"}),
+        )
+        .await
+        .unwrap();
+    wait_core_connection(&mut handle, "connected").await;
+    *credentials.block_writes.0.lock().unwrap() = true;
+    let release = Release(credentials.clone());
+    let id = handle.view.borrow().workspace.session.id.clone();
+    let account = handle.clone();
+    let login = tokio::spawn(async move {
+        account.request("AccountCommand",json!({
+        "sessionID":id,"action":"password","username":"blocked_storage","password":"account-test-password",
+    })).await
+    });
+    timeout(Duration::from_secs(2), credentials.write_entered.notified())
+        .await
+        .unwrap();
+    let status = handle.clone();
+    let status = tokio::spawn(async move {
+        status
+            .request("GetServerCredentialStatus", json!({"id":"blocked"}))
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    timeout(
+        Duration::from_secs(1),
+        handle.request("PrepareShutdown", json!({"notificationEnabled":false})),
+    )
+    .await
+    .expect("credential status blocked graceful disconnect")
+    .unwrap();
+    timeout(Duration::from_secs(1), core.close())
+        .await
+        .expect("OS prompt blocked shutdown");
+    drop(release);
+    let _ = login.await.unwrap();
+    let _ = status.await.unwrap();
+}
+#[cfg(feature = "audio")]
 impl resona_client::credentials::Backend for EmptyCredentials {
     fn has(&self, _: &str) -> resona_client::credentials::Result<bool> {
         Ok(false)

@@ -70,7 +70,8 @@ struct Local {
 }
 struct App {
     local: Mutex<Local>,
-    credentials: Arc<Mutex<credentials::Store<Box<dyn credentials::Backend + Send>>>>,
+    credentials: credentials::SharedStore,
+    accounts: Option<credentials::Accounts>,
     secure_storage: bool,
     credential_operation: AsyncMutex<()>,
     connection_operation: AsyncMutex<()>,
@@ -140,7 +141,17 @@ impl Core {
         })
         .await
         .map_err(|_| "无法初始化本地配置")??;
-        let mut client = lifecycle::Client::start(Arc::new(identity));
+        let secure_storage =
+            options.credentials.is_some() || credentials::Store::<credentials::Native>::available();
+        let credentials: credentials::SharedStore = Arc::new(Mutex::new(credentials::Store::new(
+            options
+                .credentials
+                .take()
+                .unwrap_or_else(|| Box::new(credentials::Native)),
+        )));
+        let accounts = secure_storage.then(|| credentials::Accounts::new(credentials.clone()));
+        let mut client =
+            lifecycle::Client::start_with_credentials(Arc::new(identity), accounts.clone());
         let packets = client.take_voice_rx();
         let observer = resources::Observer::start(client.handle.state.clone());
         #[cfg(test)]
@@ -164,8 +175,6 @@ impl Core {
             notifications: json!({}),
         });
         let cancel = CancellationToken::new();
-        let secure_storage =
-            options.credentials.is_some() || credentials::Store::<credentials::Native>::available();
         let app = Arc::new(App {
             secure_storage,
             local: Mutex::new(Local {
@@ -179,12 +188,8 @@ impl Core {
                 ready_generation: None,
                 closing: false,
             }),
-            credentials: Arc::new(Mutex::new(credentials::Store::new(
-                options
-                    .credentials
-                    .take()
-                    .unwrap_or_else(|| Box::new(credentials::Native)),
-            ))),
+            credentials,
+            accounts,
             credential_operation: AsyncMutex::new(()),
             connection_operation: AsyncMutex::new(()),
             connection_revision: AtomicU64::new(0),
@@ -293,6 +298,10 @@ async fn run(
         sounds.close()
     );
     app.updates.lock().await.stop().await;
+    if let Some(accounts) = &app.accounts {
+        // Never hold application exit hostage to an unanswered OS dialog.
+        let _ = tokio::time::timeout(Duration::from_millis(250), accounts.flush()).await;
+    }
     app.recorder.record(diagnostics::Kind::CoreStopped, &[]);
 }
 impl App {
@@ -1105,6 +1114,7 @@ impl App {
             .await
             .map_err(|_| "密码存储不可用")?;
         }
+        let connection = self.connection_operation.lock().await;
         let mut delete = None;
         match method {
             "SaveServer" => {
@@ -1127,7 +1137,7 @@ impl App {
                 }
                 if let Some(old) = next.iter_mut().find(|s| s.id == profile.id) {
                     if old.destination() != profile.destination() {
-                        delete = Some(old.credential_key());
+                        delete = Some((old.credential_key(), Some(old.account_credential_key())));
                     }
                     profile.skip_password_storage = old.skip_password_storage;
                     *old = profile;
@@ -1149,12 +1159,11 @@ impl App {
                 {
                     return Err("请退出服务器后删除".into());
                 }
-                delete = Some(
-                    next.iter()
-                        .find(|s| s.id == id)
-                        .ok_or("服务器书签不存在")?
-                        .credential_key(),
-                );
+                let profile = next.iter().find(|s| s.id == id).ok_or("服务器书签不存在")?;
+                delete = Some((
+                    profile.credential_key(),
+                    Some(profile.account_credential_key()),
+                ));
                 next.retain(|s| s.id != id);
             }
             "ForgetServerPassword" => {
@@ -1162,7 +1171,7 @@ impl App {
                     .iter_mut()
                     .find(|s| s.id == id)
                     .ok_or("服务器书签不存在")?;
-                delete = Some(profile.credential_key());
+                delete = Some((profile.credential_key(), None));
                 profile.skip_password_storage = true;
             }
             _ => unreachable!(),
@@ -1170,13 +1179,28 @@ impl App {
         let store = self.credentials.clone();
         let directory = self.options.directory.clone();
         let persisted = next.clone();
+        let receipt = if let Some((_, Some(key))) = &delete
+            && let Some(accounts) = &self.accounts
+        {
+            Some(
+                accounts
+                    .account(key.clone())
+                    .save(Zeroizing::new(String::new()))
+                    .map_err(|_| "无法清除已保存登录")?,
+            )
+        } else {
+            None
+        };
+        drop(connection);
+        if let Some(receipt) = receipt {
+            credentials::saved(receipt)
+                .await
+                .map_err(|_| "无法清除已保存登录")?;
+        }
         tokio::task::spawn_blocking(move || {
-            if let Some(key) = delete {
-                store
-                    .lock()
-                    .map_err(|_| "密码存储不可用")?
-                    .delete(&key)
-                    .map_err(|_| "无法清除已保存密码")?;
+            if let Some((password, _)) = delete {
+                let mut store = store.lock().map_err(|_| "凭据存储不可用")?;
+                store.delete(&password).map_err(|_| "无法清除已保存密码")?;
             }
             config::ProfileStore::new(directory.join("servers.json")).save(&persisted)
         })
