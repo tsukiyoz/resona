@@ -134,6 +134,9 @@ impl ServerProfile {
             format!("{}\0{}", self.id, self.destination()).as_bytes(),
         ))
     }
+    pub fn account_credential_key(&self) -> String {
+        format!("account-token:{}", self.credential_key())
+    }
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -387,8 +390,17 @@ mod tests {
         assert_eq!(p.endpoint().unwrap(), "[::1]:9988");
         p.validate().unwrap();
         let key = p.credential_key();
+        let account = p.account_credential_key();
+        assert_ne!(key, account);
+        p.server_public_key = "08".repeat(32);
+        assert_ne!(account, p.account_credential_key());
+        p.server_public_key = "07".repeat(32);
+        p.id = "another-bookmark".into();
+        assert_ne!(account, p.account_credential_key());
+        p.id = "bookmark".into();
         p.address = "localhost:9988".into();
         assert_ne!(key, p.credential_key());
+        assert_ne!(account, p.account_credential_key());
         p.address = "server:0".into();
         assert!(p.validate().is_err());
         p.server_public_key = "é".repeat(32);

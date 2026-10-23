@@ -12,8 +12,6 @@ AGENTS.md
 /test/audio3a/target/
 /native/webrtc-apm/target/
 /desktop/dist/
-/docs/ui-prototype/node_modules/
-/docs/ui-prototype/*.html
-/docs/ui-prototype/*.png
+/docs/ui-prototype/
 .DS_Store
 *.log

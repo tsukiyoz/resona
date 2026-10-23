@@ -208,6 +208,11 @@ impl Projection {
             return;
         };
         let state = &snapshot.state;
+        if !snapshot.credential_error.is_empty()
+            || current.credential_error == crate::credentials::ACCOUNT_STORAGE_WARNING
+        {
+            current.credential_error = snapshot.credential_error.clone();
+        }
         let channel = snapshot.channel();
         current.channel_id = channel.to_string();
         current.self_id = state.self_.to_string();
@@ -530,6 +535,7 @@ mod tests {
                 ..Default::default()
             },
             closed: None,
+            credential_error: String::new(),
             history_limited: false,
             events: Arc::new(VecDeque::new()),
         };

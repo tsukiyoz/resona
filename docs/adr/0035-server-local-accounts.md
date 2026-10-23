@@ -62,6 +62,30 @@ recovery may reuse a credential only for the same server/key, without replaying
 unknown account mutations. Closing a dialog does not undo committed server work.
 No account credentials enter logs, diagnostics, ordinary config or snapshots.
 
+### Local login persistence (2026-10-23)
+
+Retain the existing rotating native recovery token across ordinary disconnect
+and application restart in the OS secure store (macOS Keychain / Windows
+Credential Manager). Use a distinct service/key namespace from server passwords,
+bound to the same bookmark, destination and pinned server key. The existing
+30-day lifetime renews on successful native authentication; a second access/
+refresh-token protocol or idle refresh timer is unnecessary for this scope.
+
+Persist at the confirmed account reply, including network recovery before any
+subsequent channel restoration can fail. A bounded credential worker serializes
+operations independently of the transport/audio owner. Awaiting a credential
+receipt never prevents the session from processing another command. Explicit
+logout, terminal account replacement/revocation, bookmark deletion and target
+changes clear the corresponding stored credential. Invalid saved credentials
+fail visibly; the next deliberate connection may enter as guest for manual
+login. Denied reads fail explicitly; denied saves preserve the admitted account
+with a persistence warning. No plaintext fallback is permitted.
+
+Shutdown waits at most 250ms for queued credential work; unanswered OS prompts
+must not hold the application open. Persistence cannot be guaranteed if the user
+exits while OS authorization is pending or denies that authorization. Native
+secure storage remains unavailable on unsupported platforms.
+
 ## Scope
 
 This iteration adds guest/member/admin/owner presentation, account registration,

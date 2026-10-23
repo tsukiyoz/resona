@@ -301,6 +301,24 @@ release 工作负载下采集 GPU；单元测试通过不代表实际 GPU 降幅
 - Logout revokes the current account token, clears local account state and
   disconnects. Reconnecting explicitly starts as guest. Password changes revoke
   old tokens; successful current-session rotation is server-confirmed.
+- Ordinary disconnect and application exit retain account login for the same
+  bookmark, destination and pinned server key. On the next connection, restore
+  the account using its rotating 30-day token from macOS Keychain or Windows
+  Credential Manager. Registration, password/token login, password changes and
+  network recovery save confirmed rotations; passwords are never remembered as
+  account credentials. A successful authentication renews the existing 30-day
+  validity. There is no additional refresh timer or second token protocol.
+- A denied credential read fails explicitly before admission; it never silently
+  substitutes a guest identity or repeatedly opens authorization on network
+  retries. A failed write preserves the server-confirmed login and warns that
+  persistence failed. An expired/revoked saved token stops recovery, clears that
+  saved token and requires an explicit reconnect before guest/manual login.
+- Credential operations run in one bounded, ordered worker, outside the voice
+  and control loops. Unanswered OS authorization must not block server switching,
+  unrelated commands or application exit. Shutdown allows a bounded 250ms flush;
+  an unfinished/denied OS operation cannot guarantee persistence. Bookmark
+  deletion/destination changes follow session retirement and clear saved account
+  tokens; forgetting only the server password preserves the account login.
 - Transient network recovery retains account identity and restores the channel
   with the microphone muted. Revoked credentials and replacement are terminal,
   visible failures, never silent guest fallback or replacement/reconnect loops.

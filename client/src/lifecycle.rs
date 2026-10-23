@@ -2,12 +2,13 @@
 //! observes snapshots; voice packets use a separate bounded handoff.
 use crate::{
     config::{self, Identity, ServerProfile},
+    credentials,
     noise::CancellationToken,
     session::{self, Command, Session},
 };
 use std::{sync::Arc, time::Duration};
 use tokio::{
-    sync::{Notify, mpsc, watch},
+    sync::{Notify, mpsc, oneshot, watch},
     task::JoinHandle,
     time::{Instant, sleep},
 };
@@ -69,7 +70,7 @@ pub struct VoicePacket {
 }
 enum Control {
     Connect(ServerProfile, Zeroizing<String>),
-    Disconnect,
+    Disconnect(oneshot::Sender<()>),
     Retry(String),
 }
 #[derive(Clone)]
@@ -90,10 +91,12 @@ impl Handle {
             .map_err(|_| "客户端已关闭")
     }
     pub async fn disconnect(&self) -> config::Result<()> {
+        let (tx, rx) = oneshot::channel();
         self.control
-            .send(Control::Disconnect)
+            .send(Control::Disconnect(tx))
             .await
-            .map_err(|_| "客户端已关闭")
+            .map_err(|_| "客户端已关闭")?;
+        rx.await.map_err(|_| "客户端已关闭")
     }
     pub async fn retry(&self, id: String) -> config::Result<()> {
         self.control
@@ -127,6 +130,12 @@ impl Client {
         std::mem::replace(&mut self.voice_rx, empty)
     }
     pub fn start(identity: Arc<Identity>) -> Self {
+        Self::start_with_credentials(identity, None)
+    }
+    pub(crate) fn start_with_credentials(
+        identity: Arc<Identity>,
+        credentials: Option<credentials::Accounts>,
+    ) -> Self {
         let cancel = CancellationToken::new();
         let token = cancel.clone();
         let (control_tx, control) = mpsc::channel(8);
@@ -136,6 +145,7 @@ impl Client {
             let (progress_tx, progress) = mpsc::channel(8);
             Runner {
                 identity,
+                credentials,
                 control,
                 state_tx,
                 state: State::default(),
@@ -180,6 +190,7 @@ struct Progress {
 }
 struct Runner {
     identity: Arc<Identity>,
+    credentials: Option<credentials::Accounts>,
     control: mpsc::Receiver<Control>,
     state_tx: watch::Sender<State>,
     state: State,
@@ -238,6 +249,9 @@ impl Runner {
             profile: self.profile.clone().unwrap(),
             password: self.password.clone(),
             account_token: self.account_token.clone(),
+            account: self.credentials.as_ref().map(|store| {
+                store.account(self.profile.as_ref().unwrap().account_credential_key())
+            }),
             cancel: self.job_cancel.clone(),
             retry: self.retry.clone(),
             progress: self.progress_tx.clone(),
@@ -260,10 +274,11 @@ impl Runner {
                             self.state.profile=Some(profile);
                             match config::random_id(){Ok(id)=>{self.state.session_id=id;self.begin(false,None);},Err(_)=>self.fail("无法生成连接标识，请重新连接")}
                         }
-                        Some(Control::Disconnect)=>{
+                        Some(Control::Disconnect(reply))=>{
                             self.state.generation+=1;self.state.mode=Mode::Offline;self.state.profile=None;self.state.session_id.clear();self.state.error.clear();self.state.waiting=false;self.state.slow=false;self.state.attempt=0;
                             self.state.connection=None;self.state.voice=None;self.publish();self.retire().await;self.profile=None;self.password=Zeroizing::new(String::new());
                             self.account_token=Zeroizing::new(String::new());
+                            let _=reply.send(());
                         }
                         Some(Control::Retry(id)) if id==self.state.session_id=>{
                             if self.job.is_some() && self.state.mode==Mode::Reconnecting && self.state.waiting{self.retry.notify_waiters();}
@@ -332,6 +347,7 @@ struct Plan {
     profile: ServerProfile,
     password: Zeroizing<String>,
     account_token: Zeroizing<String>,
+    account: Option<credentials::Account>,
     cancel: CancellationToken,
     retry: Arc<Notify>,
     progress: mpsc::Sender<Progress>,
@@ -348,6 +364,20 @@ impl Plan {
         }
     }
     async fn run(mut self) -> session::Result<Established> {
+        if self.account_token.is_empty()
+            && let Some(account) = self.account.clone()
+        {
+            let result = tokio::select! {
+                biased;
+                _=self.cancel.cancelled()=>return Err(session::Error::Cancelled),
+                r=account.load()=>r,
+            };
+            self.account_token = match result {
+                Ok(token) => token,
+                Err(credentials::Error::NotFound) => Zeroizing::new(String::new()),
+                Err(_) => return Err(session::Error::CredentialStorage),
+            };
+        }
         for attempt in 1.. {
             if self.recover || attempt > 1 {
                 let wake = self.retry.notified();
@@ -363,12 +393,13 @@ impl Plan {
             }
             self.progress(attempt, false).await?;
             let deadline = Instant::now() + Duration::from_secs(8);
-            let result = Session::connect_until(
+            let result = Session::connect_persistent(
                 &self.profile,
                 &self.identity,
                 &self.password,
                 &self.cancel,
                 deadline,
+                self.account.clone(),
             )
             .await;
             match result {
@@ -387,6 +418,17 @@ impl Plan {
                             )
                             .await;
                         if let Err(error) = result {
+                            let rotated = session.handle.account_token();
+                            if !rotated.is_empty() {
+                                self.account_token = rotated;
+                            }
+                            if error == session::Error::Rejected(10)
+                                && let Some(account) = self.account.clone()
+                            {
+                                account
+                                    .save(Zeroizing::new(String::new()))
+                                    .map_err(|_| session::Error::CredentialStorage)?;
+                            }
                             session.close().await;
                             if !error.retryable()
                                 && !matches!(error, session::Error::Rejected(3 | 12))

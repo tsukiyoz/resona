@@ -1,11 +1,127 @@
 //! OS credential storage uses the existing service, account hash and payload.
 //! All methods are blocking: callers run them away from UI and audio workers.
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 use zeroize::Zeroizing;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 const SERVICE: &str = "io.github.tsukiyoz.resona.server-password";
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn service(key: &str) -> &'static str {
+    if key.starts_with("account-token:") {
+        "io.github.tsukiyoz.resona.account-token"
+    } else {
+        SERVICE
+    }
+}
+// Only the optional product Core starts the persistent credential worker.
+#[cfg_attr(not(feature = "audio"), allow(dead_code))]
+pub(crate) type SharedStore = Arc<Mutex<Store<Box<dyn Backend + Send>>>>;
+pub(crate) const ACCOUNT_STORAGE_WARNING: &str =
+    "无法保存或清除本地登录凭据；当前登录状态以服务器为准，下次连接可能需要重新登录";
+pub(crate) type Receipt = tokio::sync::watch::Receiver<Option<Result<()>>>;
+#[cfg_attr(not(feature = "audio"), allow(dead_code))]
+enum Operation {
+    Read(
+        String,
+        tokio::sync::oneshot::Sender<Result<Zeroizing<String>>>,
+    ),
+    Save(
+        String,
+        Zeroizing<String>,
+        tokio::sync::watch::Sender<Option<Result<()>>>,
+    ),
+    Flush(tokio::sync::oneshot::Sender<()>),
+}
+#[derive(Clone)]
+pub(crate) struct Accounts(tokio::sync::mpsc::Sender<Operation>);
+#[cfg_attr(not(feature = "audio"), allow(dead_code))]
+impl Accounts {
+    pub fn new(store: SharedStore) -> Self {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+        // Serialize low-frequency credential work independently of voice/control.
+        tokio::spawn(async move {
+            while let Some(operation) = rx.recv().await {
+                let store = store.clone();
+                let _ = tokio::task::spawn_blocking(move || match operation {
+                    Operation::Read(key, reply) => {
+                        let result = store
+                            .lock()
+                            .map_err(|_| Error::Unavailable)
+                            .and_then(|mut s| s.get(&key));
+                        let _ = reply.send(result);
+                    }
+                    Operation::Save(key, token, reply) => {
+                        let result =
+                            store
+                                .lock()
+                                .map_err(|_| Error::Unavailable)
+                                .and_then(|mut s| {
+                                    if token.is_empty() {
+                                        s.delete(&key)
+                                    } else {
+                                        s.set(&key, &token)
+                                    }
+                                });
+                        reply.send_replace(Some(result));
+                    }
+                    Operation::Flush(reply) => {
+                        let _ = reply.send(());
+                    }
+                })
+                .await;
+            }
+        });
+        Self(tx)
+    }
+    pub fn account(&self, key: String) -> Account {
+        Account {
+            accounts: self.clone(),
+            key,
+        }
+    }
+    pub async fn flush(&self) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if self.0.send(Operation::Flush(tx)).await.is_ok() {
+            let _ = rx.await;
+        }
+    }
+}
+pub(crate) async fn saved(mut receipt: Receipt) -> Result<()> {
+    loop {
+        if let Some(result) = *receipt.borrow_and_update() {
+            return result;
+        }
+        receipt.changed().await.map_err(|_| Error::Unavailable)?;
+    }
+}
+#[derive(Clone)]
+pub(crate) struct Account {
+    accounts: Accounts,
+    key: String,
+}
+impl Account {
+    pub async fn load(&self) -> Result<Zeroizing<String>> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.accounts
+            .0
+            .send(Operation::Read(self.key.clone(), tx))
+            .await
+            .map_err(|_| Error::Unavailable)?;
+        rx.await.map_err(|_| Error::Unavailable)?
+    }
+    pub fn save(&self, token: Zeroizing<String>) -> Result<Receipt> {
+        let (tx, rx) = tokio::sync::watch::channel(None);
+        self.accounts
+            .0
+            .try_send(Operation::Save(self.key.clone(), token, tx))
+            .map_err(|_| Error::Unavailable)?;
+        Ok(rx)
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     NotFound,
@@ -188,7 +304,7 @@ mod macos {
             let silent = Silent::begin()?;
             let result = match ItemSearchOptions::new()
                 .class(ItemClass::generic_password())
-                .service(SERVICE)
+                .service(service(key))
                 .account(key)
                 .load_attributes(true)
                 .search()
@@ -205,7 +321,7 @@ mod macos {
             let _lock = KEYCHAIN.lock().map_err(|_| Error::Denied)?;
             // Read legacy items directly once; do not use SecItem's compatibility
             // read path, which previously caused duplicate authorization dialogs.
-            let (data, _item) = find_generic_password(None, SERVICE, key).map_err(error)?;
+            let (data, _item) = find_generic_password(None, service(key), key).map_err(error)?;
             Ok(data.as_ref().to_vec())
         }
         fn set(&self, key: &str, value: &[u8]) -> Result<()> {
@@ -213,7 +329,7 @@ mod macos {
             let mut search = ItemSearchOptions::new();
             search
                 .class(ItemClass::generic_password())
-                .service(SERVICE)
+                .service(service(key))
                 .account(key);
             let mut changes = ItemUpdateOptions::new();
             changes.set_value(ItemUpdateValue::Data(CFData::from_buffer(value)));
@@ -227,8 +343,12 @@ mod macos {
                 data: CFData::from_buffer(value),
             });
             add.set_account_name(key)
-                .set_service(SERVICE)
-                .set_label("Resona server password");
+                .set_service(service(key))
+                .set_label(if key.starts_with("account-token:") {
+                    "Resona account login"
+                } else {
+                    "Resona server password"
+                });
             match add.add() {
                 Ok(()) => Ok(()),
                 Err(e) if e.code() == -25299 => update_item(&search, &changes).map_err(error),
@@ -237,7 +357,7 @@ mod macos {
         }
         fn delete(&self, key: &str) -> Result<()> {
             let _lock = KEYCHAIN.lock().map_err(|_| Error::Denied)?;
-            match delete_generic_password(SERVICE, key) {
+            match delete_generic_password(service(key), key) {
                 Ok(()) => Ok(()),
                 Err(e) if e.code() == -25300 => Ok(()),
                 Err(e) => Err(error(e)),
@@ -255,7 +375,7 @@ mod windows {
         Security::Credentials::*,
     };
     fn target(key: &str) -> Vec<u16> {
-        format!("{SERVICE}/{key}\0").encode_utf16().collect()
+        format!("{}/{key}\0", service(key)).encode_utf16().collect()
     }
     fn error() -> Error {
         if unsafe { GetLastError() } == ERROR_NOT_FOUND {
@@ -380,18 +500,20 @@ mod tests {
                 let _ = Native.delete(&self.0);
             }
         }
-        let _cleanup = Cleanup(key.clone());
-        assert!(!Native.has(&key).unwrap());
-        Store::new(Native).set(&key, "test-only-first").unwrap();
-        let mut store = Store::new(Native);
-        assert_eq!(store.get(&key).unwrap().as_str(), "test-only-first");
-        store.set(&key, "test-only-updated").unwrap();
-        assert_eq!(
-            Store::new(Native).get(&key).unwrap().as_str(),
-            "test-only-updated"
-        );
-        store.delete(&key).unwrap();
-        assert!(!Native.has(&key).unwrap());
+        for key in [key.clone(), format!("account-token:{key}")] {
+            let _cleanup = Cleanup(key.clone());
+            assert!(!Native.has(&key).unwrap());
+            Store::new(Native).set(&key, "test-only-first").unwrap();
+            let mut store = Store::new(Native);
+            assert_eq!(store.get(&key).unwrap().as_str(), "test-only-first");
+            store.set(&key, "test-only-updated").unwrap();
+            assert_eq!(
+                Store::new(Native).get(&key).unwrap().as_str(),
+                "test-only-updated"
+            );
+            store.delete(&key).unwrap();
+            assert!(!Native.has(&key).unwrap());
+        }
     }
     use std::cell::Cell;
     struct Mock {

@@ -23,8 +23,8 @@ fn pcm_bytes(data: &[u8]) -> Result<Vec<f32>> {
         "input must be 48 kHz mono f32le PCM, 20 ms to 120 s"
     );
     let mut pcm = Vec::with_capacity((data.len() / 4).div_ceil(FRAME) * FRAME);
-    for bytes in data.chunks_exact(4) {
-        let sample = f32::from_le_bytes(bytes.try_into()?);
+    for bytes in data.as_chunks::<4>().0 {
+        let sample = f32::from_le_bytes(*bytes);
         ensure!(
             sample.is_finite() && (-1.0..=1.0).contains(&sample),
             "invalid PCM sample"
@@ -87,8 +87,8 @@ pub fn encode(pcm: &[f32], backend: &str) -> Result<Vec<Vec<u8>>> {
     let mut packets = Vec::with_capacity(pcm.len() / FRAME);
     // Warm up on the same complete clip; retain the second pass only.
     for pass in 0..2 {
-        for source in pcm.chunks_exact(FRAME) {
-            let mut frame: [f32; FRAME] = source.try_into()?;
+        for source in pcm.as_chunks::<FRAME>().0 {
+            let mut frame = *source;
             chain.process(&mut frame, None).map_err(|e| anyhow!(e))?;
             let n = encoder
                 .encode(&frame, &mut packet)

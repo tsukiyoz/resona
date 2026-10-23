@@ -1,6 +1,6 @@
 # Resona 文档
 
-当前产品为独立的 GPUI 桌面、Go 客户端核心和 Go 语音转发服务，唯一传输为 Noise UDP。
+当前产品为内嵌 Rust 客户端核心的 GPUI 桌面和 Go 语音转发服务，唯一传输为 Noise UDP。
 
 | 文档 | 内容 |
 | --- | --- |
