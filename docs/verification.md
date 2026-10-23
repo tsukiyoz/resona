@@ -931,3 +931,6 @@ chunks_exact_to_as_chunks 检查，本机 Rust 1.96 尚未报告；将两处固�
 分组改用 as_chunks，直接复制固定数组，保留输入对齐、长度和样本校验。
 本机机器人严格 Clippy、格式检查、3 项单测及 2 项真实 UDP 互通通过，
 包含原生 DSP 试听源和三个 AGC 说话人的轮播；显式导出采样测试仍按设计忽略。
+修复提交 04c9650 的 [三平台 Actions](https://github.com/tsukiyoz/resona/actions/runs/39891660029)
+已全部通过：Linux 3m6s、macOS 2m52s、Windows 6m10s，包含客户端、真实互通与
+试听机器人检查；发布包、Windows 原生凭据及实际音频设备验收仍分别记录。
