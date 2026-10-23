@@ -5,8 +5,6 @@ go 1.26.0
 require (
 	github.com/casbin/casbin/v2 v2.135.0
 	github.com/flynn/noise v1.1.0
-	github.com/gen2brain/malgo v0.11.26
-	github.com/keybase/go-keychain v0.0.1
 	github.com/nats-io/nats-server/v2 v2.15.1
 	github.com/nats-io/nats.go v1.53.1
 	github.com/spf13/cobra v1.10.2

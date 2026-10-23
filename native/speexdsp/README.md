@@ -10,9 +10,11 @@ canceller (`mdf.c`), speech preprocessor, filterbank, and small FFT dependencies
 are included. `COPYING` contains the upstream BSD license and source files retain
 their original copyright notices. No codec, jitter buffer, or resampler is built.
 
-Resona supplies `processor.go` and a portable `speexdsp_config_types.h` in place of
-the configure-generated header. cgo compiles floating-point code with SMALLFT;
-there is no runtime shared-library dependency or optional download on startup.
+Resona supplies a portable `speexdsp_config_types.h` in place of the
+configure-generated header. `client/build.rs` and `test/audio3a/build.rs` compile
+the floating-point code with SMALLFT; Rust owns the processor instances through
+the upstream C API. No Go wrapper, runtime shared-library dependency or startup
+download is needed.
 
 Integration uses 48 kHz mono, 960-sample frames, and a 200 ms AEC tail. The actual
 stereo output callback is downmixed to provide the reference, after output volume

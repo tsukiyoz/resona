@@ -53,7 +53,7 @@ go test ./internal/... ./cmd/... ./tools/desktop-perf
 - 不支持的旧书签保留供删除或重新编辑，不能发起连接。
 - 音频采集、处理、编解码与混音由 Rust 客户端专用 worker 拥有，复用原生 Opus/SpeexDSP/WebRTC/RNNoise；服务端不做编解码。
 - 调试本地预览不联网；麦克风试听不向频道发送。服务器 JetStream 保存有限近期历史，客户端显示缓存最多 500 条 / 512 KiB。
-- `internal/client`、Go 音频/协议适配仍供测试、机器人及基准对照使用，不进入桌面发布包。
+- `client/` 是唯一客户端核心；试听机器人复用 Rust 会话与 DSP。Go 只保留服务端、共享协议/传输、发布工具及独立编解码基准参考。
 - 暂未选择项目开源许可证，不将本仓库描述为已完成开源授权的 SDK。
 
 [服务端运行](docs/server.md) · [文档索引](docs/README.md) · [桌面说明](desktop/README.md)

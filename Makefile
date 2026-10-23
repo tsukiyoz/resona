@@ -92,6 +92,7 @@ build-listening-bot: build-opus build-apm
 	cp "tools/listening-bot/target/release/resona-listening-bot$(GOEXE)" build/bin/
 
 test-listening-bot: build-opus
+	mkdir -p build/bin
 	CGO_ENABLED=0 go build -o "build/bin/listening-server$(GOEXE)" ./tools/listening-bot/server
 	$(RUST_BUILD_ENV) cargo test --locked --manifest-path tools/listening-bot/Cargo.toml
 
@@ -115,7 +116,7 @@ clean:
 	rm -rf -- "$(CURDIR)/build/bin" "$(CURDIR)/build/deploy" "$(CURDIR)/desktop/dist"
 
 clean-all: clean
-	rm -rf -- "$(CURDIR)/desktop/target" "$(CURDIR)/client/target" "$(CURDIR)/native/webrtc-apm/target"
+	rm -rf -- "$(CURDIR)/desktop/target" "$(CURDIR)/client/target" "$(CURDIR)/native/webrtc-apm/target" "$(CURDIR)/tools/listening-bot/target"
 
 test-build:
 	sh tools/test-build-toolchain.sh
@@ -127,12 +128,12 @@ test-deploy:
 test-client: build-opus
 	$(RUST_BUILD_ENV) cargo test --locked --manifest-path client/Cargo.toml --features audio
 
-test: test-build test-deploy test-client
+test: test-build test-deploy test-client test-listening-bot
 	go test ./internal/...
 	$(RUST_BUILD_ENV) cargo test --locked --manifest-path desktop/Cargo.toml
 	bash -c 'source native/rnnoise/prepare.sh; cargo test --locked --manifest-path native/webrtc-apm/Cargo.toml'
 
 test-native:
-	go test -race ./internal/protocol ./internal/protocol/native ./internal/nativewire ./internal/nativeidentity ./internal/noiseudp ./internal/server ./internal/audio ./internal/client
+	go test -race ./internal/nativewire ./internal/nativeidentity ./internal/noiseudp ./internal/server ./internal/accounts
 	$(MAKE) test-client
 	$(RUST_BUILD_ENV) cargo test --locked --manifest-path desktop/Cargo.toml

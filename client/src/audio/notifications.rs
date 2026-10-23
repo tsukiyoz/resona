@@ -66,18 +66,10 @@ impl SoundHandle {
             return Err("提示音音量无效".into());
         }
         let bytes = match kind {
-            "connected" => {
-                include_bytes!("../../../internal/audio/sounds/connected.wav").as_slice()
-            }
-            "disconnected" => {
-                include_bytes!("../../../internal/audio/sounds/disconnected.wav").as_slice()
-            }
-            "member_joined" => {
-                include_bytes!("../../../internal/audio/sounds/member-joined.wav").as_slice()
-            }
-            "member_left" => {
-                include_bytes!("../../../internal/audio/sounds/member-left.wav").as_slice()
-            }
+            "connected" => include_bytes!("../../assets/sounds/connected.wav").as_slice(),
+            "disconnected" => include_bytes!("../../assets/sounds/disconnected.wav").as_slice(),
+            "member_joined" => include_bytes!("../../assets/sounds/member-joined.wav").as_slice(),
+            "member_left" => include_bytes!("../../assets/sounds/member-left.wav").as_slice(),
             _ => return Err("提示音类型无效".into()),
         };
         let pcm = decode(bytes)?;
@@ -269,10 +261,10 @@ mod tests {
     #[test]
     fn bundled_cues_are_finite_bounded_pcm_and_invalid_chunks_fail() {
         for bytes in [
-            include_bytes!("../../../internal/audio/sounds/connected.wav").as_slice(),
-            include_bytes!("../../../internal/audio/sounds/disconnected.wav").as_slice(),
-            include_bytes!("../../../internal/audio/sounds/member-joined.wav").as_slice(),
-            include_bytes!("../../../internal/audio/sounds/member-left.wav").as_slice(),
+            include_bytes!("../../assets/sounds/connected.wav").as_slice(),
+            include_bytes!("../../assets/sounds/disconnected.wav").as_slice(),
+            include_bytes!("../../assets/sounds/member-joined.wav").as_slice(),
+            include_bytes!("../../assets/sounds/member-left.wav").as_slice(),
         ] {
             let pcm = decode(bytes).unwrap();
             assert!(!pcm.is_empty());

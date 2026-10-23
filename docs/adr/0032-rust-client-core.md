@@ -34,7 +34,11 @@ Speex 复用现有 vendored 1.2.1，WebRTC/RNNoise 沿用版本化 C ABI 2 动�
    桌面 IPC 和旧打包路径。共享服务端传输/协议不能误删。没有永久双核心选择器。
 
 每步独立验证和提交。产品现已切到 Rust Core，删除旧 Go 入口和桌面 IPC；
-Go client/audio 参考实现仍供机器人、基准及服务端互通测试使用，不进入桌面包。
+2026-10-23 完成收尾：删除 Go client/audio、客户端协议适配及专用配置/凭据/诊断/
+旧图标缓存。试听机器人复用正式 Rust 会话、DSP 与 Opus；GC 压测仅保留测试内的
+最小 Noise/控制帧/合成语音发包器。共享 SpeexDSP C 源码位于 native/speexdsp，
+提示音位于 client/assets/sounds。服务端 Go 传输/身份/Protobuf 与独立 gopus
+编解码参考继续保留，不再保留第二套完整客户端。
 不发布模拟连接/语音或静默缺失功能。
 保持现有 RN06、prologue、二进制字段与身份证明；语言迁移本身不升级应用协议。
 
