@@ -35,7 +35,7 @@ macOS 本机构建自动使用唯一有效的代码签名证书；存在多个�
 
 `make deploy` 从 `VERSION` 读取版本，在 `build/deploy/` 生成静态 Linux 服务端、Dockerfile、升级脚本及压缩包。通用源码在 [deploy/](deploy/README.md)，支持 amd64/arm64，默认 amd64；不依赖本机 Docker，不执行远端操作。
 
-`clean` 不删除 `build/appicon.png`、旧的 `build/deploy-*`、`build/` 下其他目录中的性能报告、用户配置或全局 Go/Cargo 下载缓存。不要把需要保留的数据放在 `build/bin/`、新的 `build/deploy/` 或 `desktop/dist/`。不要在同一次调用中混用 `clean` 和构建目标；按顺序分别执行。
+`clean` 不删除 `desktop/assets/` 中的图标、旧的 `build/deploy-*`、`build/` 下其他目录中的性能报告、用户配置或全局 Go/Cargo 下载缓存。不要把需要保留的数据放在 `build/bin/`、新的 `build/deploy/` 或 `desktop/dist/`。不要在同一次调用中混用 `clean` 和构建目标；按顺序分别执行。
 
 ## 测试
 

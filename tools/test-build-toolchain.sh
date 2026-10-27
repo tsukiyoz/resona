@@ -6,8 +6,9 @@ sandbox=$(mktemp -d "${TMPDIR:-/tmp}/resona-build-check.XXXXXX")
 trap 'rm -rf "$sandbox"' EXIT HUP INT TERM
 cp "$repo_dir/Makefile" "$sandbox/Makefile"
 mkdir -p "$sandbox/build/bin" "$sandbox/build/deploy" "$sandbox/desktop/dist" "$sandbox/desktop/target" \
-  "$sandbox/build/deploy-check" "$sandbox/build/performance" "$sandbox/client/target" "$sandbox/tools/listening-bot/target"
-touch "$sandbox/build/appicon.png" "$sandbox/build/bin/old-core" \
+  "$sandbox/build/deploy-check" "$sandbox/build/performance" "$sandbox/client/target" "$sandbox/tools/listening-bot/target" \
+  "$sandbox/desktop/assets"
+touch "$sandbox/desktop/assets/appicon.png" "$sandbox/build/bin/old-core" \
   "$sandbox/build/deploy/package.tar.gz" \
   "$sandbox/desktop/dist/old-app" "$sandbox/desktop/target/cache" \
   "$sandbox/client/target/cache" "$sandbox/tools/listening-bot/target/cache" \
@@ -21,14 +22,14 @@ test ! -e "$sandbox/desktop/dist"
 test -f "$sandbox/desktop/target/cache"
 test -f "$sandbox/client/target/cache"
 test -f "$sandbox/tools/listening-bot/target/cache"
-test -f "$sandbox/build/appicon.png"
+test -f "$sandbox/desktop/assets/appicon.png"
 test -f "$sandbox/build/deploy-check/data"
 test -f "$sandbox/build/performance/report.csv"
 make -C "$sandbox" clean-all
 test ! -e "$sandbox/desktop/target"
 test ! -e "$sandbox/client/target"
 test ! -e "$sandbox/tools/listening-bot/target"
-test -f "$sandbox/build/appicon.png"
+test -f "$sandbox/desktop/assets/appicon.png"
 test -f "$sandbox/build/deploy-check/data"
 test -f "$sandbox/build/performance/report.csv"
 make -C "$sandbox" clean

@@ -8,7 +8,6 @@ on:
     paths:
       - '.github/workflows/windows-build.yml'
       - 'build-windows.cmd'
-      - 'build/appicon.png'
       - 'desktop/**'
       - 'client/**'
       - 'internal/**'
@@ -21,7 +20,6 @@ on:
     paths:
       - '.github/workflows/windows-build.yml'
       - 'build-windows.cmd'
-      - 'build/appicon.png'
       - 'desktop/**'
       - 'client/**'
       - 'internal/**'
