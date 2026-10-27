@@ -52,7 +52,7 @@ and build in separate invocations. On Linux, `make build-desktop` places the
 desktop executable and native audio library in `build/bin/`.
 
 The bundle includes a multi-resolution `Resona.icns` generated from
-`build/appicon.png` with macOS `sips` and `iconutil`. `CFBundleIconFile` supplies
+`desktop/assets/resona-macos-light.png` with macOS `sips` and `iconutil`. `CFBundleIconFile` supplies
 the fixed white Finder icon and initial Dock icon; launch the `.app`, not the bare
 Rust executable. While running, the in-app logo and macOS Dock icon follow the
 effective theme: white with dark bars for light mode, dark with light bars for
@@ -61,7 +61,7 @@ cached pinned-shortcut icon. EXE and shortcut defaults remain white. Theme previ
 and cancellation update runtime icons without rewriting the signed package.
 
 From the repository root, `go run ./tools/appicon` regenerates both runtime PNGs,
-both Windows ICO resources and the white `build/appicon.png` from the original
+both Windows ICO resources and the white `desktop/assets/appicon.png` from the original
 `desktop/assets/resona-source.png`. Runtime PNGs are 256px and cached; icon updates
 only run when the theme changes, without an idle timer.
 

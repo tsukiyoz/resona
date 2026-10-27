@@ -15,7 +15,6 @@ on:
     paths:
       - '.github/workflows/macos-build.yml'
       - 'Makefile'
-      - 'build/appicon.png'
       - 'desktop/**'
       - 'client/**'
       - 'internal/**'
@@ -29,7 +28,6 @@ on:
     paths:
       - '.github/workflows/macos-build.yml'
       - 'Makefile'
-      - 'build/appicon.png'
       - 'desktop/**'
       - 'client/**'
       - 'internal/**'

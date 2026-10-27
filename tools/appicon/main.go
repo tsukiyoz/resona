@@ -52,7 +52,7 @@ func generateThemes() error {
 		path  string
 		image image.Image
 	}{
-		{"build/appicon.png", light},
+		{"desktop/assets/appicon.png", light},
 		{"desktop/assets/resona-light.png", resize(light, 256)},
 		{"desktop/assets/resona-dark.png", resize(dark, 256)},
 		{"desktop/assets/resona-macos-light.png", macIcon(light)},

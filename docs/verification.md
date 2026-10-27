@@ -241,7 +241,7 @@ Casbin/KV 角色、管理认证、频道与事件接口、成员/封禁/凭据�
 
 ## 2026-09-17 主题应用图标
 
-- 以原有音柱轮廓生成浅/深 PNG 和 ICO；静态 `build/appicon.png`、Windows resource 1 与 SVG 默认白色，resource 2 为深色运行时图标。运行时 PNG 为 256px，应用内及原生图标对象缓存，切换不写安装包、不增加定时器。
+- 以原有音柱轮廓生成浅/深 PNG 和 ICO；静态 `desktop/assets/appicon.png`、Windows resource 1 与 SVG 默认白色，resource 2 为深色运行时图标。运行时 PNG 为 256px，应用内及原生图标对象缓存，切换不写安装包、不增加定时器。
 - macOS 构建及桌面 40 项测试通过，实窗验证启动按系统浅色显示、深色预览及取消恢复。AppKit Dock 更新接入相同事件，未通过自动化独立截图 Dock，也未改动系统外观设置。Windows 大小图标使用独立拥有的 HICON，随 UI 线程退出回收；Windows 编译与固定任务栏/高 DPI 仍待 Actions 和实机验证。
 - 独立调试验证包 `desktop/dist/Resona-Theme.app` 已生成，ICNS 转换、plist 和 ad-hoc 签名完整性检查通过；原 `Resona.app` 未替换。此包未使用发行证书，不作为正式发布产物。
 
