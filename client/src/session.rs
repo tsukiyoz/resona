@@ -978,7 +978,9 @@ impl Driver {
                         self.snapshot.history_limited = true;
                     }
                 }
-                self.publish();
+                if self.snapshot.chat_status.status == 1 {
+                    self.publish();
+                }
             }
             pb::Kind::ChatStatus => {
                 let status =

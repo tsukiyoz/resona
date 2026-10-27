@@ -283,6 +283,8 @@ impl Projection {
         self.workspace.messages = snapshot
             .messages
             .iter()
+            // A resource/voice update must not reveal a partially received history page.
+            .filter(|_| snapshot.chat_status.status == 1)
             .map(|m| {
                 let id = if m.self_ && !m.client_id.is_empty() {
                     m.client_id.clone()
@@ -542,6 +544,48 @@ mod tests {
         let mut p = Projection::new(Vec::new());
         p.apply(&life, Some(&snapshot));
         (p, life, snapshot)
+    }
+    #[test]
+    fn initial_chat_is_presented_as_one_batch_without_delaying_channel_state() {
+        let (mut p, life, mut s) = fixture();
+        s.chat_status.status = 0;
+        for sequence in 1..=3 {
+            Arc::make_mut(&mut s.messages).push_back(pb::Message {
+                channel: 1,
+                epoch: 2,
+                sequence,
+                text: format!("message-{sequence}"),
+                history: sequence < 3,
+                ..Default::default()
+            });
+            p.apply(&life, Some(&s));
+            assert!(p.workspace.messages.is_empty());
+            assert_eq!(p.workspace.session.channel_id, "1");
+            assert_eq!(p.workspace.users.len(), 2);
+        }
+        s.chat_status.status = 2;
+        p.apply(&life, Some(&s));
+        assert!(p.workspace.messages.is_empty());
+        assert_eq!(p.workspace.session.chat_state, "failed");
+        s.chat_status.status = 1;
+        p.apply(&life, Some(&s));
+        assert_eq!(
+            p.workspace
+                .messages
+                .iter()
+                .map(|m| m.sequence)
+                .collect::<Vec<_>>(),
+            [1, 2, 3]
+        );
+        assert!(p.workspace.messages[0].history);
+        assert!(!p.workspace.messages[2].history);
+
+        // Re-entering a channel never exposes the previous channel's batch.
+        Arc::make_mut(&mut s.state).epoch += 1;
+        s.messages = Arc::default();
+        s.chat_status = pb::ChatStatus::default();
+        p.apply(&life, Some(&s));
+        assert!(p.workspace.messages.is_empty());
     }
     #[test]
     fn unknown_delivery_requires_confirmation_and_echo_deduplicates() {
