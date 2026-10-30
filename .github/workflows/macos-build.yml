@@ -10,33 +10,6 @@ on:
       MACOS_SIGNING_IDENTITY:
         required: true
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/macos-build.yml'
-      - 'Makefile'
-      - 'desktop/**'
-      - 'client/**'
-      - 'internal/**'
-      - 'native/**'
-      - 'third_party/**'
-      - 'go.mod'
-      - 'go.sum'
-      - 'VERSION'
-      - 'docs/noise-license.txt'
-  pull_request:
-    paths:
-      - '.github/workflows/macos-build.yml'
-      - 'Makefile'
-      - 'desktop/**'
-      - 'client/**'
-      - 'internal/**'
-      - 'native/**'
-      - 'third_party/**'
-      - 'go.mod'
-      - 'go.sum'
-      - 'VERSION'
-      - 'docs/noise-license.txt'
 
 permissions:
   contents: read
@@ -106,10 +79,10 @@ jobs:
           export PKG_CONFIG_PATH="$PWD/build/native/opus-install/lib/pkgconfig" OPUS_STATIC=1
           cargo test --locked --manifest-path client/Cargo.toml --features audio
           cargo test --locked --manifest-path desktop/Cargo.toml
-      # PR code must never receive the signing identity or certificate secrets.
+      # Only main/tag builds may import the signing identity.
       - name: Import signing identity for trusted builds
         id: signing
-        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/main' || github.ref_type == 'tag'))
+        if: (github.event_name == 'push' && github.ref_type == 'tag') || (github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/main' || github.ref_type == 'tag'))
         env:
           CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -168,7 +141,7 @@ jobs:
           if [[ "$CERTIFICATE_SIGNED" == true ]]; then
             echo 'Signed with the configured Apple certificate. Not notarized; a development certificate is not a Developer ID distribution certificate.' >> "$GITHUB_STEP_SUMMARY"
           else
-            echo 'Ad-hoc signed PR/test package. Not notarized; macOS may require manual approval to open.' >> "$GITHUB_STEP_SUMMARY"
+            echo 'Ad-hoc signed branch test package. Not notarized; macOS may require manual approval to open.' >> "$GITHUB_STEP_SUMMARY"
           fi
       - name: Upload macOS package
         uses: actions/upload-artifact@v6

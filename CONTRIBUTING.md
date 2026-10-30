@@ -57,11 +57,13 @@ versions are read automatically. Make, deployment packaging, Windows local build
 and Docker builds default to `v` plus VERSION; explicit build overrides do not
 edit the file or create a release. Raw `go build` without build flags still reports
 `dev`. CI requires the exact tag to match VERSION and the desktop version.
-Main-branch CI builds append `-dev` and are development
-snapshots. A tag runs `release.yml`, which calls both packaging workflows; do not call
+Branch pushes and pull requests do not start Actions automatically. Run relevant
+checks locally and dispatch workflows manually for cross-platform acceptance.
+Manual branch builds append `-dev` and are development snapshots.
+A tag runs `release.yml`, which calls both packaging workflows; do not call
 either platform package verified until its run succeeds. macOS builds separate
-Apple Silicon and Intel bundles. PR builds are ad-hoc signed test packages;
-trusted push builds and manual main builds require the signing Secrets below.
+Apple Silicon and Intel bundles. Manual non-main branch builds are ad-hoc signed
+test packages; release tags and manual main builds require the signing Secrets below.
 Certificate signing alone does not mean Apple notarization. Downloadable workflow artifacts are
 temporary (14 days), not durable GitHub Release assets.
 
@@ -87,8 +89,8 @@ or put them in ordinary Actions Variables. Export only the intended identity.
 Trusted builds import the identity into a temporary runner keychain, pass it to
 `RESONA_CODESIGN_IDENTITY`, verify the bundle, and delete the temporary keychain
 with an `always()` cleanup step. Missing/expired signing credentials fail trusted
-builds rather than silently producing ad-hoc packages. PRs and manual non-main
-builds outside release tags do not receive signing Secrets. Keep main/tag publishing permissions
+builds rather than silently producing ad-hoc packages. Manual non-main branch
+builds outside release tags do not import signing Secrets. Keep main/tag publishing permissions
 restricted to trusted maintainers; a workflow with Secrets can use the private key.
 
 The current identity is Apple Development, for development testing. Public macOS

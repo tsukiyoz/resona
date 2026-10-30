@@ -2,35 +2,6 @@ name: Rust client core
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/rust-client.yml'
-      - 'client/**'
-      - 'tools/listening-bot/**'
-      - 'native/client-audio/**'
-      - 'native/opus/**'
-      - 'native/speexdsp/**'
-      - 'internal/noiseudp/**'
-      - 'internal/nativewire/**'
-      - 'internal/nativeidentity/**'
-      - 'internal/server/**'
-      - 'go.mod'
-      - 'go.sum'
-  pull_request:
-    paths:
-      - '.github/workflows/rust-client.yml'
-      - 'client/**'
-      - 'tools/listening-bot/**'
-      - 'native/client-audio/**'
-      - 'native/opus/**'
-      - 'native/speexdsp/**'
-      - 'internal/noiseudp/**'
-      - 'internal/nativewire/**'
-      - 'internal/nativeidentity/**'
-      - 'internal/server/**'
-      - 'go.mod'
-      - 'go.sum'
 
 permissions:
   contents: read

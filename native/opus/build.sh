@@ -18,6 +18,7 @@ if ! git -C "$source_dir" rev-parse --verify refs/tags/v1.6.1 >/dev/null 2>&1; t
 fi
 test "$(git -C "$source_dir" rev-parse 'v1.6.1^{commit}')" = "$revision"
 cmake -S "$source_dir" -B "$root/build/native/opus-build" \
+    -DCMAKE_PROJECT_Opus_INCLUDE="$root/native/opus/apple-neon.cmake" \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$root/build/native/opus-install" \
     -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_SHARED_LIBS=OFF \
     -DOPUS_BUILD_TESTING=OFF -DOPUS_BUILD_PROGRAMS=OFF

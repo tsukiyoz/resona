@@ -1,7 +1,7 @@
 # Resona native desktop
 
-This directory contains the GPUI desktop client. It uses `gpui` 0.2.2 with a
-[documented macOS reentrancy patch](vendor/gpui/RESONA-PATCH.md) and
+This directory contains the GPUI desktop client. It uses `gpui` 0.2.2 with
+[documented local compatibility patches](vendor/README.md) and
 `gpui-component` 0.5.1 from crates.io. The UI calls the framework-independent
 `../client` Rust library through bounded asynchronous commands and coalesced events.
 An owned Tokio runtime handles control/network tasks; devices and processors belong
@@ -66,12 +66,14 @@ both Windows ICO resources and the white `desktop/assets/appicon.png` from the o
 only run when the theme changes, without an idle timer.
 
 The **macOS build** GitHub Action builds separate Apple Silicon (`macos-arm64`)
-and Intel (`macos-x64`) packages on main pushes, matching pull requests and version
-tags; it can also be started manually. Download the appropriate artifact, extract
-its inner ZIP and move `Resona.app` to Applications. `ditto` preserves bundle
+and Intel (`macos-x64`) packages when called by the version-tag release workflow
+or started manually. Branch pushes and pull requests do not start builds.
+Download the appropriate artifact, extract its inner ZIP and move `Resona.app`
+to Applications. `ditto` preserves bundle
 metadata and executable permissions. Trusted CI builds use the configured certificate;
-PRs use ad-hoc signatures. Neither is Apple notarization, and Gatekeeper may block
-downloaded development builds. Developer ID and notarization remain separate work.
+Manual non-main branch builds use ad-hoc signatures. Neither is Apple notarization,
+and Gatekeeper may block downloaded development builds. Developer ID and
+notarization remain separate work.
 
 Both desktop workflows name artifacts `Resona-<version>-<platform>-<commit SHA>`.
 Branch builds use `v<VERSION>-dev`; exact matching version tags omit `-dev`.
