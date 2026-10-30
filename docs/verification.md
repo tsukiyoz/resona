@@ -1098,3 +1098,17 @@ Escape 关闭表情、表情浮层内 Cmd+Q 退出、离线原生关闭按钮均
 make build-desktop 在受限环境的 iconutil 步骤失败；沙箱外重新打包通过，Info.plist
 及深度严格签名校验通过，产物为 desktop/dist/Resona.app。
 服务端及协议未修改，不更新预发服务；维护者简验后授权合并主分支并发布新 tag。
+
+## 2026-10-30 v0.2.4 发布检查
+
+VERSION、client/desktop manifests 与锁文件、试听机器人的本地 client 依赖版本统一为
+0.2.4，发布说明覆盖 v0.2.3 后的未发布改动。维护者授权合并 main、推送及新 tag；
+沿用不可变附注标签，不移动 v0.2.3。
+
+发布前重新执行：客户端 58 项单测、30 项真实 Go/Rust 互通、桌面 65 项单测及 1 项
+macOS Block 兼容测试通过；客户端 audio/all-targets Clippy -D warnings、两端
+cargo fmt --check、make test-build、git diff --check 通过。Opus 构建及重复安装检查
+通过，默认不再输出功能清单和未变更文件列表；警告、错误及实际进度保留。
+make build-desktop 使用 v0.2.4 成功，Info.plist 和深度严格签名校验通过。
+发布元数据只更新版本，没有改动依赖解析；产品与发布范围审查未发现阻塞问题。
+Windows、Intel macOS 及远端发布清单以 tag Actions 为准，本地检查不代表其构建已成功。
