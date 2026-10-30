@@ -1,8 +1,10 @@
 # Resona native desktop
 
-This directory contains the GPUI desktop client. It uses `gpui` 0.2.2 with
-[documented local compatibility patches](vendor/README.md) and
-`gpui-component` 0.5.1 from crates.io. The UI calls the framework-independent
+This directory contains the GPUI desktop client. Its only direct GUI dependency is
+`gpui-kit` 0.8.1, using its default GPUI backend, Base, component and asset exports.
+GPUI Fast is not enabled. Kit pins the Zed-derived `gpui-pre` backend to 0.3.10;
+[documented local compatibility patches](vendor/README.md) preserve platform fixes.
+The UI calls the framework-independent
 `../client` Rust library through bounded asynchronous commands and coalesced events.
 An owned Tokio runtime handles control/network tasks; devices and processors belong
 to their audio worker. No Go helper process or NDJSON pipe is shipped.

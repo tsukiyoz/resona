@@ -9,20 +9,20 @@ use crate::{
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::{DateTime, Local, Utc};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState, hotkey::HotKey};
-use gpui::{
-    AnyElement, Context, Entity, EntityInputHandler, FocusHandle, Image, ImageFormat,
-    InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, Window, div, img, prelude::*, px, svg,
-};
-use gpui_component::{
+use gpui_kit::component::{
     Disableable, IconName, IconNamed, Selectable,
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
-    input::{Input, InputEvent, InputState},
+    input::{Input, InputEvent, InputState, Textarea, TextareaState},
     menu::{ContextMenuExt, DropdownMenu, PopupMenuItem},
     popover::Popover,
     scroll::ScrollableElement,
     tooltip::Tooltip,
+};
+use gpui_kit::{
+    AnyElement, Context, Entity, EntityInputHandler, FocusHandle, Image, ImageFormat,
+    InteractiveElement, IntoElement, ParentElement, Render, SharedString,
+    StatefulInteractiveElement, Styled, Subscription, Window, div, img, prelude::*, px, svg,
 };
 use serde_json::{Value, json};
 use std::{
@@ -50,7 +50,7 @@ const INCOMING_BATCH: usize = 64;
 const LOADING_NOTICE_DELAY: Duration = Duration::from_millis(300);
 const CHAT_DATE_SEPARATOR_HEIGHT: f32 = 28.;
 
-gpui::actions!(resona, [DismissModal, DismissEmoji, Quit]);
+gpui_kit::actions!(resona, [DismissModal, DismissEmoji, Quit]);
 
 // Enable per-frame/event stderr tracing with RESONA_FRAME_TRACE.
 fn frame_trace() -> bool {
@@ -186,7 +186,7 @@ struct ChannelDrag {
 
 struct ChannelDragPreview {
     name: String,
-    offset: gpui::Point<gpui::Pixels>,
+    offset: gpui_kit::Point<gpui_kit::Pixels>,
 }
 
 impl Render for ChannelDragPreview {
@@ -279,7 +279,7 @@ struct LoadingScope(String, String, u32, u64);
 #[derive(Default)]
 struct LoadingNotice {
     pending: Option<(LoadingScope, Instant)>,
-    task: Option<gpui::Task<()>>,
+    task: Option<gpui_kit::Task<()>>,
 }
 
 impl LoadingNotice {
@@ -361,7 +361,7 @@ pub struct ResonaApp {
     emoji_focus: FocusHandle,
     chat_unread: bool,
     chat_follow_bottom: bool,
-    chat_scroll: gpui::ListState,
+    chat_scroll: gpui_kit::ListState,
     chat_history_error: String,
     chat_scroll_drag: Option<(String, String, u32, u64)>,
     logos: [Arc<Image>; 2],
@@ -396,7 +396,7 @@ pub struct ResonaApp {
     settings_apply: Option<(Preferences, String, bool)>,
     settings_operation: Option<(u64, u64)>,
     settings_revision: u64,
-    _settings_watch: Option<gpui::Task<()>>,
+    _settings_watch: Option<gpui_kit::Task<()>>,
     settings_notice: String,
     settings_discard: bool,
     core_info: Option<Value>,
@@ -409,7 +409,7 @@ pub struct ResonaApp {
     audio_settings_pending: bool,
     queued_voice: Option<VoiceState>,
     voice_target: Option<VoiceState>,
-    _audio_update: Option<gpui::Task<()>>,
+    _audio_update: Option<gpui_kit::Task<()>>,
     seen_notifications: HashSet<String>,
     notification_order: VecDeque<String>,
     last_member_notification: Option<Instant>,
@@ -423,7 +423,7 @@ pub struct ResonaApp {
     channel_error: String,
     channel_drag: Option<ChannelDrag>,
     channel_name_input: Entity<InputState>,
-    channel_description_input: Entity<InputState>,
+    channel_description_input: Entity<TextareaState>,
     channel_bitrate_input: Entity<InputState>,
     channel_audio_preset: u32,
     ownership_error: String,
@@ -437,7 +437,7 @@ pub struct ResonaApp {
     account_notice: String,
     account_revision: u64,
     device_menu: Option<DeviceMenu>,
-    device_trigger_bounds: [Option<gpui::Bounds<gpui::Pixels>>; 2],
+    device_trigger_bounds: [Option<gpui_kit::Bounds<gpui_kit::Pixels>>; 2],
     remember_password: bool,
     error: String,
     server_error: String,
@@ -449,7 +449,7 @@ pub struct ResonaApp {
     nickname_input: Entity<InputState>,
     public_key_input: Entity<InputState>,
     password_input: Entity<InputState>,
-    chat_input: Entity<InputState>,
+    chat_input: Entity<TextareaState>,
     shortcut_input: Entity<InputState>,
     playback_input: Entity<InputState>,
     playback_input_target: Option<UserPlaybackTarget>,
@@ -463,11 +463,8 @@ impl ResonaApp {
         let name_input = cx.new(|cx| InputState::new(window, cx).placeholder("服务器名称"));
         let channel_name_input = cx.new(|cx| InputState::new(window, cx).placeholder("频道名称"));
         let channel_bitrate_input = cx.new(|cx| InputState::new(window, cx).placeholder("16–64"));
-        let channel_description_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .multi_line(true)
-                .placeholder("频道描述")
-        });
+        let channel_description_input =
+            cx.new(|cx| TextareaState::new(window, cx).placeholder("频道描述"));
         let address_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("voice.example.com"));
         let nickname_input = cx.new(|cx| InputState::new(window, cx).placeholder("昵称"));
@@ -503,8 +500,8 @@ impl ResonaApp {
                 .masked(true)
         });
         let chat_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .multi_line(true)
+            TextareaState::new(window, cx)
+                .submit_on_enter(true)
                 .placeholder("发送到当前频道")
         });
         let (preferences, preference_error) = match Preferences::load() {
@@ -522,7 +519,10 @@ impl ResonaApp {
                     .values()
                     .any(|p| matches!(p, Pending::UserPlayback(_)));
                 match event {
-                    InputEvent::PressEnter { secondary: false } if !pending => {
+                    InputEvent::PressEnter {
+                        secondary: false,
+                        shift: false,
+                    } if !pending => {
                         if input.update(cx, |input, cx| {
                             input.marked_text_range(window, cx).is_some()
                         }) {
@@ -580,16 +580,18 @@ impl ResonaApp {
             &chat_input,
             window,
             |this, input, event: &InputEvent, window, cx| {
-                if matches!(event, InputEvent::PressEnter { secondary: false }) {
+                if matches!(
+                    event,
+                    InputEvent::PressEnter {
+                        secondary: false,
+                        shift: false
+                    }
+                ) {
                     if input.update(cx, |input, cx| {
                         input.marked_text_range(window, cx).is_some()
                     }) {
                         return;
                     }
-                    input.update(cx, |input, cx| {
-                        let value = remove_inserted_newline(input.value().as_ref(), input.cursor());
-                        input.set_value(value, window, cx);
-                    });
                     this.send_message(window, cx);
                 }
             },
@@ -615,11 +617,15 @@ impl ResonaApp {
                 &input,
                 window,
                 |this, input, event: &InputEvent, window, cx| {
-                    if !matches!(event, InputEvent::PressEnter { secondary: false })
-                        || input.update(cx, |input, cx| {
-                            input.marked_text_range(window, cx).is_some()
-                        })
-                    {
+                    if !matches!(
+                        event,
+                        InputEvent::PressEnter {
+                            secondary: false,
+                            shift: false
+                        }
+                    ) || input.update(cx, |input, cx| {
+                        input.marked_text_range(window, cx).is_some()
+                    }) {
                         return;
                     }
                     match this.modal.clone() {
@@ -670,7 +676,7 @@ impl ResonaApp {
                 this.clear_hotkey(cx);
                 this.closing = true;
                 this.sync_loading_notices(false, cx);
-                let _ = cx.background_executor().block_with_timeout(
+                let _ = cx.foreground_executor().block_with_timeout(
                     Duration::from_secs(7),
                     core.prepare_shutdown(
                         this.preferences.notifications_enabled && !this.voice.deafened,
@@ -695,7 +701,7 @@ impl ResonaApp {
             emoji_focus: cx.focus_handle(),
             chat_unread: false,
             chat_follow_bottom: true,
-            chat_scroll: gpui::ListState::new(0, gpui::ListAlignment::Bottom, px(80.)),
+            chat_scroll: gpui_kit::ListState::new(0, gpui_kit::ListAlignment::Bottom, px(80.)),
             chat_history_error: String::new(),
             chat_scroll_drag: None,
             logos: [crate::app_icon::DARK, crate::app_icon::LIGHT]
@@ -804,7 +810,7 @@ impl ResonaApp {
                 ])
                 .collect(),
         };
-        this.focus.focus(window);
+        this.focus.focus(window, cx);
         let (hotkey_tx, hotkey_rx) = async_channel::bounded(16);
         let hotkey_epoch = this.hotkey_epoch.clone();
         let overflow = Arc::new(AtomicBool::new(false));
@@ -1138,7 +1144,7 @@ impl ResonaApp {
                             match result {
                                 Ok(value) => {
                                     if let Some(token) = value["token"].as_str() {
-                                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
                                             token.to_owned(),
                                         ));
                                         self.account_notice =
@@ -1810,7 +1816,7 @@ impl ResonaApp {
                         self.modal = None;
                         self.connect_error.clear();
                         if window.is_window_active() {
-                            self.focus.focus(window);
+                            self.focus.focus(window, cx);
                         }
                     } else if workspace.session.mode == "failed" {
                         self.connect_error = if workspace.session.credential_error.is_empty() {
@@ -2747,7 +2753,7 @@ impl ResonaApp {
         self.account_revision = self.account_revision.wrapping_add(1);
         self.modal = None;
         self.connect_error.clear();
-        self.focus.focus(window);
+        self.focus.focus(window, cx);
         cx.notify();
     }
 
@@ -2852,7 +2858,7 @@ impl ResonaApp {
         } else if self.modal.is_some() {
             self.close_modal(window, cx);
         } else if self.device_menu.take().is_some() {
-            self.focus.focus(window);
+            self.focus.focus(window, cx);
             cx.notify();
         } else if self.pending.values().any(|pending| {
             matches!(
@@ -3780,7 +3786,7 @@ impl ResonaApp {
                                 .child(
                                     div()
                                         .text_sm()
-                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                                         .child("Resona"),
                                 ),
                         )
@@ -3883,7 +3889,7 @@ impl ResonaApp {
                     .child(
                         div()
                             .text_sm()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                             .truncate()
                             .child(title),
                     )
@@ -4480,7 +4486,7 @@ impl ResonaApp {
         let content_owner = view.clone();
         let content_focus = self.emoji_focus.clone();
         Popover::new("chat-emoji-picker")
-            .anchor(gpui::Corner::BottomRight)
+            .anchor(gpui_kit::Anchor::BottomRight)
             .track_focus(&self.emoji_focus)
             .open(self.emoji_scope.is_some())
             .on_open_change(move |open, window, cx| {
@@ -4504,7 +4510,7 @@ impl ResonaApp {
                     .tooltip("表情")
                     .disabled(!self.chat_input_available())
                     .on_click(move |event, window, cx| {
-                        if matches!(event, gpui::ClickEvent::Keyboard(_)) {
+                        if matches!(event, gpui_kit::ClickEvent::Keyboard(_)) {
                             keyboard_owner.update(cx, |this, cx| {
                                 let composing = this.chat_input.update(cx, |input, cx| {
                                     input.marked_text_range(window, cx).is_some()
@@ -4512,7 +4518,7 @@ impl ResonaApp {
                                 if !composing {
                                     this.emoji_scope = this.emoji_context();
                                     if this.emoji_scope.is_some() {
-                                        this.emoji_focus.focus(window);
+                                        this.emoji_focus.focus(window, cx);
                                     }
                                 }
                                 cx.notify();
@@ -4630,7 +4636,7 @@ impl ResonaApp {
             && self.workspace.session.chat_generation == generation
     }
     fn scroll_chat_to_bottom(&self) {
-        self.chat_scroll.scroll_to(gpui::ListOffset {
+        self.chat_scroll.scroll_to(gpui_kit::ListOffset {
             item_ix: self.chat_scroll.item_count(),
             offset_in_item: px(0.),
         });
@@ -4704,7 +4710,7 @@ impl ResonaApp {
                         return;
                     }
                     this.chat_follow_bottom =
-                        f32::from(this.chat_scroll.max_offset_for_scrollbar().height)
+                        f32::from(this.chat_scroll.max_offset_for_scrollbar().y)
                             + f32::from(this.chat_scroll.scroll_px_offset_for_scrollbar().y)
                             <= 4.;
                     if this.chat_follow_bottom && this.chat_unread {
@@ -4741,7 +4747,7 @@ impl ResonaApp {
                     .border_color(rgb(LINE))
                     .cursor_row_resize()
                     .hover(|s| s.bg(rgba(0xffffff20)))
-                    .on_mouse_down(gpui::MouseButton::Left, move |event, _, cx| {
+                    .on_mouse_down(gpui_kit::MouseButton::Left, move |event, _, cx| {
                         drag.update(cx, |this, cx| {
                             this.chat_collapsed = false;
                             this.composer_drag =
@@ -4890,7 +4896,7 @@ impl ResonaApp {
                             })
                             .child(
                                 div().flex_1().min_h_0().relative().child(
-                                gpui::list(self.chat_scroll.clone(), move |index, _, cx| {
+                                gpui_kit::list(self.chat_scroll.clone(), move |index, _, cx| {
                                         let this = items.read(cx);
                                         let Some(message) = this.workspace.messages.get(index) else { return div().into_any_element(); };
                                         let view = items.clone();
@@ -4907,7 +4913,7 @@ impl ResonaApp {
                                                         .icon(IconName::Copy)
                                                         .on_click(move |_, _, cx| {
                                                             cx.write_to_clipboard(
-                                                                gpui::ClipboardItem::new_string(text.clone()),
+                                                                gpui_kit::ClipboardItem::new_string(text.clone()),
                                                             );
                                                         }),
                                                 )
@@ -5068,7 +5074,7 @@ impl ResonaApp {
                             .border_color(rgb(LINE))
                             .bg(rgba(0xffffff06))
                             .child(
-                                Input::new(&self.chat_input)
+                                Textarea::new(&self.chat_input)
                                     .appearance(false)
                                     .w_full()
                                     .h_full()
@@ -5432,7 +5438,7 @@ impl ResonaApp {
             .gap_1()
             .child(div().text_size(px(9.)).text_color(rgb(MUTED)).child(label))
             .child(
-                gpui::canvas(
+                gpui_kit::canvas(
                     move |bounds, _, cx| {
                         bounds_entity.update(cx, |this, _| {
                             this.device_trigger_bounds
@@ -5477,7 +5483,11 @@ impl ResonaApp {
             .into_any_element()
     }
 
-    fn dismiss_device_menu(&mut self, position: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
+    fn dismiss_device_menu(
+        &mut self,
+        position: gpui_kit::Point<gpui_kit::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
         if self
             .device_trigger_bounds
             .iter()
@@ -5872,7 +5882,7 @@ impl ResonaApp {
         section.into_any_element()
     }
 
-    fn render_updates(&self, view: &Entity<Self>) -> gpui::Div {
+    fn render_updates(&self, view: &Entity<Self>) -> gpui_kit::Div {
         let state = self.update_status["state"].as_str().unwrap_or("idle");
         let configured = self.update_status["configured"].as_bool().unwrap_or(false);
         let pending = self
@@ -5948,7 +5958,7 @@ impl ResonaApp {
             .child(controls)
     }
 
-    fn render_audio_settings(&self, view: &Entity<Self>, devices_page: bool) -> gpui::Div {
+    fn render_audio_settings(&self, view: &Entity<Self>, devices_page: bool) -> gpui_kit::Div {
         let busy = self.settings_apply.is_some()
             || self.voice.busy
             || matches!(
@@ -6369,7 +6379,7 @@ impl ResonaApp {
                             .child(
                                 div().flex_1().min_w_0().h(px(8.)).bg(rgb(LINE)).child(
                                     div()
-                                        .w(gpui::relative((level + 60) as f32 / 60.))
+                                        .w(gpui_kit::relative((level + 60) as f32 / 60.))
                                         .h_full()
                                         .bg(rgb(if level > -6 { AMBER } else { MINT })),
                                 ),
@@ -6819,7 +6829,7 @@ impl ResonaApp {
                                 )
                                 .child(div().text_xs().text_color(rgb(MUTED)).child("描述"))
                                 .child(
-                                    Input::new(&self.channel_description_input)
+                                    Textarea::new(&self.channel_description_input)
                                         .h(px(110.))
                                         .disabled(pending || unavailable),
                                 )
@@ -7533,13 +7543,16 @@ impl ResonaApp {
                             .flex()
                             .flex_col()
                             .gap_1()
-                            .child(div().text_sm().font_weight(gpui::FontWeight::MEDIUM).child(
-                                if connected {
-                                    session.server_name.clone()
-                                } else {
-                                    "未连接服务器".into()
-                                },
-                            ))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(gpui_kit::FontWeight::MEDIUM)
+                                    .child(if connected {
+                                        session.server_name.clone()
+                                    } else {
+                                        "未连接服务器".into()
+                                    }),
+                            )
                             .child(div().text_xs().text_color(rgb(MUTED)).child(if !connected {
                                 "连接服务器后可管理账号"
                             } else if logged {
@@ -7923,7 +7936,7 @@ impl ResonaApp {
                     .child(
                         div()
                             .text_lg()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                             .child("Resona"),
                     )
                     .child(div().w_full().h(px(1.)).bg(rgb(LINE)))
@@ -8013,8 +8026,9 @@ impl ResonaApp {
                         .child(
                             div()
                                 .py_3()
+                                .pl_3()
                                 .text_lg()
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                                 .child("设置"),
                         )
                         .child(
@@ -8351,8 +8365,12 @@ impl ResonaApp {
                 .absolute()
                 .inset_0()
                 .bg(rgba(0x00000066))
-                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_mouse_down(gpui::MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+                    cx.stop_propagation()
+                })
+                .on_mouse_down(gpui_kit::MouseButton::Right, |_, _, cx| {
+                    cx.stop_propagation()
+                })
                 .on_click(|_, _, cx| cx.stop_propagation())
                 .flex()
                 .items_center()
@@ -8643,103 +8661,106 @@ impl Render for ResonaApp {
                 format!("{name} 的收听设置未应用：{error}")
             })
             .unwrap_or_else(|| self.error.clone());
-        let content =
-            div()
-                .id("resona-root")
-                .relative()
-                .w_full()
-                .flex_1()
-                .min_h_0()
-                .min_w_0()
-                .overflow_hidden()
-                .track_focus(&self.focus)
-                .on_mouse_move(
-                    cx.listener(|this, event: &gpui::MouseMoveEvent, window, cx| {
-                        if let Some((start_y, start_height)) = this.composer_drag {
-                            if event.pressed_button != Some(gpui::MouseButton::Left)
-                                || visible_text_channel(&this.workspace, &this.selected_server)
-                                    .is_none()
-                            {
-                                this.composer_drag = None;
-                                return;
-                            }
-                            this.composer_height = composer_height(
-                                start_height + start_y - f32::from(event.position.y),
-                                f32::from(window.viewport_size().height),
-                            );
-                            cx.notify();
-                        }
-                    }),
-                )
-                .on_mouse_up(
-                    gpui::MouseButton::Left,
-                    cx.listener(|this, _, _, cx| {
-                        this.composer_drag = None;
-                        this.chat_follow_bottom =
-                            f32::from(this.chat_scroll.max_offset_for_scrollbar().height)
-                                + f32::from(this.chat_scroll.scroll_px_offset_for_scrollbar().y)
-                                <= 4.;
-                        if this.chat_scroll_drag.take().is_some_and(|scope| {
-                            this.chat_history_context().as_ref() == Some(&scope)
-                        }) && this.chat_scroll.logical_scroll_top().item_ix <= 1
-                            && this.chat_history_error.is_empty()
+        let content = div()
+            .id("resona-root")
+            .relative()
+            .w_full()
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .overflow_hidden()
+            .track_focus(&self.focus)
+            .on_mouse_move(
+                cx.listener(|this, event: &gpui_kit::MouseMoveEvent, window, cx| {
+                    if let Some((start_y, start_height)) = this.composer_drag {
+                        if event.pressed_button != Some(gpui_kit::MouseButton::Left)
+                            || visible_text_channel(&this.workspace, &this.selected_server)
+                                .is_none()
                         {
-                            this.load_chat_history(cx);
+                            this.composer_drag = None;
+                            return;
                         }
-                    }),
-                )
-                .capture_any_mouse_down(cx.listener(|this, event: &gpui::MouseDownEvent, _, _| {
-                    let bounds = this.chat_scroll.viewport_bounds();
-                    this.chat_scroll_drag = (event.button == gpui::MouseButton::Left
-                        && bounds.contains(&event.position)
-                        && event.position.x >= bounds.right() - px(14.))
-                    .then(|| this.chat_history_context())
-                    .flatten();
-                }))
-                .on_mouse_up_out(
-                    gpui::MouseButton::Left,
-                    cx.listener(|this, _, _, cx| {
-                        this.composer_drag = None;
-                        if this.chat_scroll_drag.take().is_some_and(|scope| {
-                            this.chat_history_context().as_ref() == Some(&scope)
-                        }) && this.chat_scroll.logical_scroll_top().item_ix <= 1
-                            && this.chat_history_error.is_empty()
-                        {
-                            this.load_chat_history(cx);
-                        }
-                    }),
-                )
-                .on_action(cx.listener(Self::dismiss_modal))
-                .on_action(cx.listener(|this, _: &Quit, _, cx| this.begin_shutdown(cx)))
-                .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                    if event.keystroke.key == "escape" && this.composer_drag.take().is_some() {
-                        cx.stop_propagation();
-                        return;
+                        this.composer_height = composer_height(
+                            start_height + start_y - f32::from(event.position.y),
+                            f32::from(window.viewport_size().height),
+                        );
+                        cx.notify();
                     }
-                    if event.keystroke.key == "f8" && this.hotkey.is_none() {
-                        if !event.is_held {
-                            this.handle_ptt_key(true, cx);
-                        }
-                        cx.stop_propagation();
+                }),
+            )
+            .on_mouse_up(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.composer_drag = None;
+                    this.chat_follow_bottom =
+                        f32::from(this.chat_scroll.max_offset_for_scrollbar().y)
+                            + f32::from(this.chat_scroll.scroll_px_offset_for_scrollbar().y)
+                            <= 4.;
+                    if this
+                        .chat_scroll_drag
+                        .take()
+                        .is_some_and(|scope| this.chat_history_context().as_ref() == Some(&scope))
+                        && this.chat_scroll.logical_scroll_top().item_ix <= 1
+                        && this.chat_history_error.is_empty()
+                    {
+                        this.load_chat_history(cx);
                     }
-                }))
-                .capture_key_up(cx.listener(|this, event: &gpui::KeyUpEvent, _, cx| {
-                    if event.keystroke.key == "f8" && this.hotkey.is_none() {
-                        this.handle_ptt_key(false, cx);
-                        cx.stop_propagation();
+                }),
+            )
+            .capture_any_mouse_down(cx.listener(|this, event: &gpui_kit::MouseDownEvent, _, _| {
+                let bounds = this.chat_scroll.viewport_bounds();
+                this.chat_scroll_drag = (event.button == gpui_kit::MouseButton::Left
+                    && bounds.contains(&event.position)
+                    && event.position.x >= bounds.right() - px(14.))
+                .then(|| this.chat_history_context())
+                .flatten();
+            }))
+            .on_mouse_up_out(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.composer_drag = None;
+                    if this
+                        .chat_scroll_drag
+                        .take()
+                        .is_some_and(|scope| this.chat_history_context().as_ref() == Some(&scope))
+                        && this.chat_scroll.logical_scroll_top().item_ix <= 1
+                        && this.chat_history_error.is_empty()
+                    {
+                        this.load_chat_history(cx);
                     }
-                }))
-                .font_family(if cfg!(target_os = "windows") {
-                    "Segoe UI"
-                } else {
-                    ".SystemUIFont"
-                })
-                .text_color(rgb(TEXT))
-                .bg(rgb(BG))
-                .flex()
-                .flex_col()
-                .when(self.preference_error.is_some(), |root| {
-                    root.child(
+                }),
+            )
+            .on_action(cx.listener(Self::dismiss_modal))
+            .on_action(cx.listener(|this, _: &Quit, _, cx| this.begin_shutdown(cx)))
+            .capture_key_down(cx.listener(|this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                if event.keystroke.key == "escape" && this.composer_drag.take().is_some() {
+                    cx.stop_propagation();
+                    return;
+                }
+                if event.keystroke.key == "f8" && this.hotkey.is_none() {
+                    if !event.is_held {
+                        this.handle_ptt_key(true, cx);
+                    }
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_key_up(cx.listener(|this, event: &gpui_kit::KeyUpEvent, _, cx| {
+                if event.keystroke.key == "f8" && this.hotkey.is_none() {
+                    this.handle_ptt_key(false, cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .font_family(if cfg!(target_os = "windows") {
+                "Segoe UI"
+            } else {
+                ".SystemUIFont"
+            })
+            .text_color(rgb(TEXT))
+            .bg(rgb(BG))
+            .flex()
+            .flex_col()
+            .when(self.preference_error.is_some(), |root| {
+                root.child(
                     div()
                         .w_full()
                         .flex_shrink_0()
@@ -8753,96 +8774,94 @@ impl Render for ResonaApp {
                             "偏好未加载或未保存，本次修改不保存；请在设置 → 诊断查看并修复后重启。",
                         ),
                 )
-                })
-                .child(
-                    div()
-                        .flex_1()
-                        .min_h_0()
-                        .w_full()
-                        .flex()
-                        .child(self.render_rail(&view))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .relative()
-                                .flex()
-                                .flex_col()
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_h_0()
-                                        .w_full()
-                                        .flex()
-                                        .child(
-                                            self.render_sidebar(&view, self.channel_drag.is_some()),
-                                        )
-                                        .when(
-                                            self.detail_selection.is_some()
-                                                && page == ServerPage::Channels,
-                                            |body| body.child(self.render_details(&view)),
-                                        ),
-                                )
-                                .when_some(
-                                    visible_text_channel(&self.workspace, &self.selected_server)
-                                        .filter(|_| page == ServerPage::Channels),
-                                    |body, channel| body.child(self.render_chat(channel, &view)),
-                                ),
-                        ),
-                )
-                .child(self.render_voicebar(&view))
-                .when(!display_error.is_empty() && self.modal.is_none(), |root| {
-                    let entity = view.clone();
-                    root.child(
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .flex()
+                    .child(self.render_rail(&view))
+                    .child(
                         div()
-                            .absolute()
-                            .left(px(self.navigation_width() + 16.))
-                            .right(px(16.))
-                            .top(px(64.))
-                            .p_3()
-                            .rounded(px(5.))
-                            .border_1()
-                            .border_color(rgb(0x724146))
-                            .bg(rgb(0x3b2528))
-                            .shadow_md()
+                            .flex_1()
+                            .min_w_0()
+                            .relative()
                             .flex()
-                            .items_center()
-                            .gap_3()
+                            .flex_col()
                             .child(
                                 div()
                                     .flex_1()
-                                    .text_xs()
-                                    .text_color(rgb(RED))
-                                    .child(display_error.clone()),
+                                    .min_h_0()
+                                    .w_full()
+                                    .flex()
+                                    .child(self.render_sidebar(&view, self.channel_drag.is_some()))
+                                    .when(
+                                        self.detail_selection.is_some()
+                                            && page == ServerPage::Channels,
+                                        |body| body.child(self.render_details(&view)),
+                                    ),
                             )
-                            .child(
-                                Button::new("dismiss-error")
-                                    .icon(IconName::Close)
-                                    .ghost()
-                                    .tooltip("关闭")
-                                    .on_click(move |_, _, cx| {
-                                        entity.update(cx, |this, cx| {
-                                            this.error.clear();
-                                            this.playback_error = None;
-                                            cx.notify();
-                                        })
-                                    }),
+                            .when_some(
+                                visible_text_channel(&self.workspace, &self.selected_server)
+                                    .filter(|_| page == ServerPage::Channels),
+                                |body, channel| body.child(self.render_chat(channel, &view)),
                             ),
-                    )
-                })
-                .children(self.render_modal(&view))
-                .when(self.closing, |root| {
-                    root.child(
-                        div()
-                            .absolute()
-                            .inset_0()
-                            .bg(rgba(0x101214ed))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(div().text_sm().child("正在断开并退出")),
-                    )
-                });
+                    ),
+            )
+            .child(self.render_voicebar(&view))
+            .when(!display_error.is_empty() && self.modal.is_none(), |root| {
+                let entity = view.clone();
+                root.child(
+                    div()
+                        .absolute()
+                        .left(px(self.navigation_width() + 16.))
+                        .right(px(16.))
+                        .top(px(64.))
+                        .p_3()
+                        .rounded(px(5.))
+                        .border_1()
+                        .border_color(rgb(0x724146))
+                        .bg(rgb(0x3b2528))
+                        .shadow_md()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_xs()
+                                .text_color(rgb(RED))
+                                .child(display_error.clone()),
+                        )
+                        .child(
+                            Button::new("dismiss-error")
+                                .icon(IconName::Close)
+                                .ghost()
+                                .tooltip("关闭")
+                                .on_click(move |_, _, cx| {
+                                    entity.update(cx, |this, cx| {
+                                        this.error.clear();
+                                        this.playback_error = None;
+                                        cx.notify();
+                                    })
+                                }),
+                        ),
+                )
+            })
+            .children(self.render_modal(&view))
+            .when(self.closing, |root| {
+                root.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .bg(rgba(0x101214ed))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(div().text_sm().child("正在断开并退出")),
+                )
+            });
         div()
             .w(window.viewport_size().width)
             .h(window.viewport_size().height)
@@ -8850,7 +8869,11 @@ impl Render for ResonaApp {
             .flex_col()
             .bg(rgb(PANEL))
             .when(cfg!(target_os = "macos"), |root| {
-                root.child(gpui_component::TitleBar::new().bg(rgb(PANEL)).border_b_0())
+                root.child(
+                    gpui_kit::component::TitleBar::new()
+                        .bg(rgb(PANEL))
+                        .border_b_0(),
+                )
             })
             .child(content)
     }
@@ -8868,7 +8891,7 @@ fn notification_applies(workspace: &Workspace, notification: &crate::model::Noti
 }
 
 fn update_chat_list(
-    list: &gpui::ListState,
+    list: &gpui_kit::ListState,
     old: &[crate::model::Message],
     new: &[crate::model::Message],
     follow_bottom: bool,
@@ -8891,7 +8914,7 @@ fn update_chat_list(
             // A prepended page can move the date heading off the visible message.
             let heading_delta = i32::from(chat_starts_day(new, index, &Local))
                 - i32::from(chat_starts_day(old, top.item_ix, &Local));
-            list.scroll_to(gpui::ListOffset {
+            list.scroll_to(gpui_kit::ListOffset {
                 item_ix: index,
                 offset_in_item: (top.offset_in_item
                     + px(heading_delta as f32 * CHAT_DATE_SEPARATOR_HEIGHT))
@@ -9345,7 +9368,7 @@ fn field(label: &'static str, input: impl IntoElement) -> AnyElement {
 fn modal_title(title: impl Into<SharedString>) -> AnyElement {
     div()
         .text_lg()
-        .font_weight(gpui::FontWeight::BOLD)
+        .font_weight(gpui_kit::FontWeight::BOLD)
         .text_color(rgb(TEXT))
         .child(title.into())
         .into_any_element()
@@ -9475,13 +9498,6 @@ fn draft_key(workspace: &Workspace) -> String {
     format!("{owner}\u{0}{}", workspace.session.channel_id)
 }
 
-fn remove_inserted_newline(value: &str, cursor: usize) -> String {
-    let mut value = value.to_owned();
-    if cursor > 0 && cursor <= value.len() && value.as_bytes()[cursor - 1] == b'\n' {
-        value.replace_range(cursor - 1..cursor, "");
-    }
-    value
-}
 fn server_role_label(role: &str) -> &'static str {
     match role {
         "guest" => "游客",
@@ -9669,26 +9685,30 @@ mod tests {
         let mut new = vec![message("earlier", "2026-10-29T12:00:00Z")];
         new.extend(old.clone());
         assert!(!super::same_chat_list_item(&old, 0, &new, 1));
-        let list = gpui::ListState::new(old.len(), gpui::ListAlignment::Bottom, gpui::px(80.));
-        list.scroll_to(gpui::ListOffset {
+        let list = gpui_kit::ListState::new(
+            old.len(),
+            gpui_kit::ListAlignment::Bottom,
+            gpui_kit::px(80.),
+        );
+        list.scroll_to(gpui_kit::ListOffset {
             item_ix: 0,
-            offset_in_item: gpui::px(35.),
+            offset_in_item: gpui_kit::px(35.),
         });
         super::update_chat_list(&list, &old, &new, false);
         assert_eq!(list.logical_scroll_top().item_ix, 1);
-        assert_eq!(list.logical_scroll_top().offset_in_item, gpui::px(7.));
+        assert_eq!(list.logical_scroll_top().offset_in_item, gpui_kit::px(7.));
 
         // Removing the preceding message adds a heading to the anchor again.
         super::update_chat_list(&list, &new, &old, false);
         assert_eq!(list.logical_scroll_top().item_ix, 0);
-        assert_eq!(list.logical_scroll_top().offset_in_item, gpui::px(35.));
+        assert_eq!(list.logical_scroll_top().offset_in_item, gpui_kit::px(35.));
 
-        list.scroll_to(gpui::ListOffset {
+        list.scroll_to(gpui_kit::ListOffset {
             item_ix: 0,
-            offset_in_item: gpui::px(7.),
+            offset_in_item: gpui_kit::px(7.),
         });
         super::update_chat_list(&list, &old, &new, false);
-        assert_eq!(list.logical_scroll_top().offset_in_item, gpui::px(0.));
+        assert_eq!(list.logical_scroll_top().offset_in_item, gpui_kit::px(0.));
 
         // A preceding timestamp correction must invalidate the anchor's cached height.
         let mut corrected = new.clone();
@@ -9698,7 +9718,7 @@ mod tests {
         assert_eq!(list.logical_scroll_top().item_ix, 1);
         assert_eq!(
             list.logical_scroll_top().offset_in_item,
-            gpui::px(super::CHAT_DATE_SEPARATOR_HEIGHT)
+            gpui_kit::px(super::CHAT_DATE_SEPARATOR_HEIGHT)
         );
 
         let mut earlier_day = vec![message("yesterday", "2026-10-28T12:00:00Z")];
@@ -9853,22 +9873,26 @@ mod tests {
             ..Default::default()
         };
         let old: Vec<_> = (20..40).map(message).collect();
-        let list = gpui::ListState::new(old.len(), gpui::ListAlignment::Bottom, gpui::px(80.));
-        list.scroll_to(gpui::ListOffset {
+        let list = gpui_kit::ListState::new(
+            old.len(),
+            gpui_kit::ListAlignment::Bottom,
+            gpui_kit::px(80.),
+        );
+        list.scroll_to(gpui_kit::ListOffset {
             item_ix: 3,
-            offset_in_item: gpui::px(7.),
+            offset_in_item: gpui_kit::px(7.),
         });
         let mut new: Vec<_> = (0..41).map(message).collect();
         super::update_chat_list(&list, &old, &new, false);
         assert_eq!(list.item_count(), 41);
         assert_eq!(list.logical_scroll_top().item_ix, 23);
-        assert_eq!(list.logical_scroll_top().offset_in_item, gpui::px(7.));
+        assert_eq!(list.logical_scroll_top().offset_in_item, gpui_kit::px(7.));
         let before = new.clone();
         new[23].status = "failed".into();
         new[23].error = "server rejected".into();
         super::update_chat_list(&list, &before, &new, false);
         assert_eq!(list.logical_scroll_top().item_ix, 23);
-        assert_eq!(list.logical_scroll_top().offset_in_item, gpui::px(7.));
+        assert_eq!(list.logical_scroll_top().offset_in_item, gpui_kit::px(7.));
         super::update_chat_list(&list, &new, &[], false);
         assert_eq!(list.item_count(), 0);
     }
@@ -10213,9 +10237,8 @@ mod tests {
     }
     use super::{
         DetailChange, DetailSelection, can_prepare_voice_preferences, can_show_session_channels,
-        detail_selection_change, detail_text, ptt_can_send, remove_inserted_newline,
-        user_is_speaking, visible_text_channel, voice_operation_applied, voice_params,
-        voice_state_current,
+        detail_selection_change, detail_text, ptt_can_send, user_is_speaking, visible_text_channel,
+        voice_operation_applied, voice_params, voice_state_current,
     };
     use crate::model::{User, VoiceState, Workspace};
 
@@ -10559,15 +10582,6 @@ mod tests {
             detail_text(Some(&serde_json::json!("Opus mono")), "codec", &workspace),
             "Opus mono"
         );
-    }
-
-    #[test]
-    fn removes_only_newline_immediately_before_utf8_byte_cursor() {
-        assert_eq!(remove_inserted_newline("abc\n", 4), "abc");
-        assert_eq!(remove_inserted_newline("中文\nabc", 7), "中文abc");
-        assert_eq!(remove_inserted_newline("🙂\nrest", 5), "🙂rest");
-        assert_eq!(remove_inserted_newline("kept\nline\n", 10), "kept\nline");
-        assert_eq!(remove_inserted_newline("kept\nline", 9), "kept\nline");
     }
 
     fn speaking_context() -> (Workspace, VoiceState, User, User) {

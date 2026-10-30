@@ -18,6 +18,10 @@
 
 客户端与服务端在单仓库演进，Rust 客户端核心不依赖 GPUI。server 解密后转发 Opus，不做编解码或混音。传输为逐跳加密，server 可见明文，不是端到端加密。
 
+桌面 GUI 统一通过 `gpui-kit` 0.8.1 使用默认 GPUI 后端及 Base、组件、资源导出；
+Kit 负责初始化和统一窗口 Root，业务仍持有自己的视图与退出处理。未启用 GPUI Fast。
+平台兼容补丁及固定上游来源见 `desktop/vendor/README.md`。
+
 2026-10-21 按 ADR-0032 切换至进程内 `client/` Rust library，GPUI 经有界异步
 命令/事件通道调用。普通请求与安全取消分开受理，入队意图代次防止迟到按下/连接；
 展示字段独立合并、公平送达。网络拥有单个 Tokio runtime，音频专用线程拥有设备、

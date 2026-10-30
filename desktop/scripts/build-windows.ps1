@@ -139,7 +139,7 @@ try {
     $Licenses = Join-Path $Package "licenses"
     New-Item -ItemType Directory -Force $Licenses | Out-Null
     Copy-Item "$RepoDirectory\native\speexdsp\COPYING" "$Licenses\SpeexDSP.txt"
-    Copy-Item "$RepoDirectory\desktop\vendor\gpui\LICENSE-APACHE" "$Licenses\GPUI.txt"
+    Copy-Item "$RepoDirectory\desktop\vendor\gpui-pre-windows\LICENSE-APACHE" "$Licenses\GPUI.txt"
     Copy-Item "$RepoDirectory\build\native\opus-source\COPYING" "$Licenses\Opus.txt"
     $MiniAudio = Get-Content -Raw "$RepoDirectory\native\client-audio\miniaudio.h"
     [IO.File]::WriteAllText("$Licenses\miniaudio.txt", $MiniAudio.Substring($MiniAudio.LastIndexOf('ALTERNATIVE 1 - Public Domain')), [Text.UTF8Encoding]::new($false))

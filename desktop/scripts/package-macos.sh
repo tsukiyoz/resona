@@ -71,7 +71,7 @@ python3 "$repo_dir/native/webrtc-apm/licenses.py" "$repo_dir/native/webrtc-apm/C
   "$bundle_dir/Contents/Resources/licenses" "$repo_dir/native/webrtc-apm/target"
 cp "$repo_dir/build/native/opus-source/COPYING" "$bundle_dir/Contents/Resources/licenses/Opus.txt"
 cp "$repo_dir/native/speexdsp/COPYING" "$bundle_dir/Contents/Resources/licenses/SpeexDSP.txt"
-cp "$repo_dir/desktop/vendor/gpui/LICENSE-APACHE" "$bundle_dir/Contents/Resources/licenses/GPUI.txt"
+cp "$repo_dir/desktop/vendor/gpui-pre-windows/LICENSE-APACHE" "$bundle_dir/Contents/Resources/licenses/GPUI.txt"
 cp "$repo_dir/native/client-audio/miniaudio.h" "$icon_tmp/miniaudio.h"
 sed -n '/ALTERNATIVE 1 - Public Domain/,$p' "$icon_tmp/miniaudio.h" > "$bundle_dir/Contents/Resources/licenses/miniaudio.txt"
 chmod 755 "$bundle_dir/Contents/MacOS/resona-desktop"

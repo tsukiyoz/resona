@@ -4,9 +4,23 @@ Cargo's desktop-level patches apply to all transitive users of these packages.
 These are source fixes, not warning suppression or build-time registry edits.
 Remove each patch after an evaluated upstream release contains the fix.
 
-## GPUI 0.2.2
+## gpui-pre-windows 0.3.10
 
-See [its patch record](gpui/RESONA-PATCH.md).
+Source: crates.io package checksum
+`80670f987b920fba019917b2e222ecf2b377f2a6d77872010c7d284c235837b3`,
+<https://github.com/zed-industries/zed>, upstream Zed commit
+`08cbb88a152c3751a43e853425a70e9f631a5918` (published package metadata).
+The original Apache 2.0 license is retained and included in desktop packages.
+
+`src/events.rs`: apply the Windows system titlebar appearance before invoking
+the application appearance callback. Resona can then keep its explicit light/dark
+preference when Windows changes appearance. The callback still sees the true system
+appearance for the "follow system" preference. No timer or extra repaint is added.
+
+The previous full `gpui` 0.2.2 vendor tree is retired with the move to Kit 0.8.1's
+default `gpui-pre` 0.3.10 backend. Its macOS focus-lock fix is present upstream in
+`gpui-pre-macos/src/window.rs` (`drop(lock)` before `resignKeyWindow`). The former
+Taffy float literal patch is no longer needed by the new dependency graph.
 
 ## block 0.1.6
 
@@ -27,14 +41,6 @@ The archive's development-only `objc_test_utils` path is not published; remove
 that unusable dependency from the local manifest. Desktop integration tests
 exercise block copying, cloning and invocation on macOS.
 
-## proc-macro-error2 2.0.1
-
-Source: crates.io package checksum
-`11ec05c52be0a07b08061f7dd003e7d7092e0472bc731b4af7bb1ef876109802`,
-<https://github.com/GnomedDev/proc-macro-error-2>.
-The original MIT and Apache 2.0 license files are retained.
-
-`src/lib.rs`: make `extern crate proc_macro` public, matching its existing public
-re-export in `__export`. This fixes `pub_use_of_private_extern_crate` without
-changing the procedural macro implementation. The package's existing tests are
-retained. No dependency version is upgraded.
+The Kit backend still depends on this package through Metal, so the patch and its
+macOS integration test remain. The old `proc-macro-error2` patch is removed because
+that package is absent from the Kit dependency graph.

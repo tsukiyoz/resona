@@ -8,11 +8,10 @@ mod theme;
 mod ui;
 
 use anyhow::Result;
-use gpui::{
-    AppContext, Application, AssetSource, Bounds, KeyBinding, SharedString, WindowBounds,
-    WindowOptions, px, size,
+use gpui_kit::{
+    AppContext, AssetSource, Bounds, KeyBinding, SharedString, WindowBounds, WindowOptions, px,
+    size,
 };
-use gpui_component::{Root, input::Enter};
 use std::borrow::Cow;
 
 struct Assets;
@@ -32,11 +31,11 @@ impl AssetSource for Assets {
         if let Some(asset) = asset {
             return Ok(Some(Cow::Borrowed(asset)));
         }
-        gpui_component_assets::Assets.load(path)
+        gpui_kit::assets::Assets.load(path)
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        let mut assets = gpui_component_assets::Assets.list(path)?;
+        let mut assets = gpui_kit::assets::Assets.list(path)?;
         for asset in [
             "resona.svg",
             "mic.svg",
@@ -73,28 +72,27 @@ fn main() -> Result<()> {
         }
         _ => {}
     }
-    Application::new().with_assets(Assets).run(|cx| {
-        gpui_component::init(cx);
+    gpui_kit::application().with_assets(Assets).run(|cx| {
+        gpui_kit::init(cx);
         cx.bind_keys([
             KeyBinding::new("escape", ui::DismissEmoji, Some("ResonaEmoji")),
             KeyBinding::new("escape", ui::DismissModal, None),
             KeyBinding::new("cmd-q", ui::Quit, None),
             KeyBinding::new("ctrl-q", ui::Quit, None),
-            KeyBinding::new("shift-enter", Enter { secondary: true }, Some("Input")),
         ]);
         let bounds = Bounds::centered(None, size(px(800.), px(900.)), cx);
-        cx.on_window_closed(|cx| {
+        cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 cx.quit();
             }
         })
         .detach();
-        cx.open_window(
+        gpui_kit::open_window(
             WindowOptions {
-                titlebar: Some(gpui::TitlebarOptions {
+                titlebar: Some(gpui_kit::TitlebarOptions {
                     title: Some(concat!("Resona v", env!("CARGO_PKG_VERSION")).into()),
                     ..if cfg!(target_os = "macos") {
-                        gpui_component::TitleBar::title_bar_options()
+                        gpui_kit::component::TitleBar::title_bar_options()
                     } else {
                         Default::default()
                     }
@@ -103,6 +101,7 @@ fn main() -> Result<()> {
                 window_min_size: Some(size(px(760.), px(600.))),
                 ..Default::default()
             },
+            cx,
             |window, cx| {
                 let view = cx.new(|cx| ui::ResonaApp::new(window, cx));
                 let close_view = view.downgrade();
@@ -111,7 +110,7 @@ fn main() -> Result<()> {
                         .update(cx, |view, cx| view.begin_shutdown(cx))
                         .is_err()
                 });
-                cx.new(|cx| Root::new(view, window, cx))
+                view
             },
         )
         .expect("failed to open Resona window");
