@@ -48,6 +48,7 @@ const RED: u32 = 0xe28282;
 
 const INCOMING_BATCH: usize = 64;
 const LOADING_NOTICE_DELAY: Duration = Duration::from_millis(300);
+const CHAT_DATE_SEPARATOR_HEIGHT: f32 = 28.;
 
 gpui::actions!(resona, [DismissModal, DismissEmoji, Quit]);
 
@@ -4896,7 +4897,9 @@ impl ResonaApp {
                                         let retry = view.clone();
                                         let retry_id = message.id.clone();
                                         let copy_text = message.text.clone();
+                                        let local_time = message_datetime(&message.created_at, &Local);
                                         let row = div()
+                                            .hover(|s| s.bg(rgba(0xffffff14)))
                                             .context_menu(move |menu, _, _| {
                                                 let text = copy_text.clone();
                                                 menu.item(
@@ -4910,16 +4913,20 @@ impl ResonaApp {
                                                 )
                                             })
                                             .py_1()
+                                            .px_1()
+                                            .rounded(px(4.))
                                             .flex()
                                             .items_start()
-                                            .gap_2()
+                                            .gap_1()
                                             .child(
                                                 div()
-                                                    .w(px(40.))
+                                                    .w(px(58.))
                                                     .flex_shrink_0()
+                                                    .whitespace_nowrap()
                                                     .text_xs()
                                                     .text_color(rgb(MUTED))
-                                                    .child(short_time(&message.created_at)),
+                                                    .child(local_time.map(|time| time.format("%H:%M:%S").to_string())
+                                                        .unwrap_or_else(|| "时间未知".into())),
                                             )
                                             .child(
                                                 div()
@@ -5025,6 +5032,23 @@ impl ResonaApp {
                                             );
                                         div()
                                             .id(SharedString::from(format!("text-{}", message.id)))
+                                            .pr(px(20.))
+                                            .when(chat_starts_day(&this.workspace.messages, index, &Local), |item| {
+                                                item.child(
+                                                    div()
+                                                        .h(px(CHAT_DATE_SEPARATOR_HEIGHT))
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .gap_2()
+                                                        .text_xs()
+                                                        .text_color(rgb(MUTED))
+                                                        .child(div().w(px(32.)).h(px(1.)).bg(rgb(LINE)))
+                                                        .child(local_time.map(|time| time.format("%Y-%m-%d").to_string())
+                                                            .unwrap_or_else(|| "日期未知".into()))
+                                                        .child(div().w(px(32.)).h(px(1.)).bg(rgb(LINE))),
+                                                )
+                                            })
                                             .child(row)
                                             .into_any_element()
                                     }).size_full()
@@ -8851,28 +8875,45 @@ fn update_chat_list(
 ) {
     let top = list.logical_scroll_top();
     let anchor = old.get(top.item_ix).map(|m| &m.id);
-    let prefix = old
-        .iter()
-        .zip(new)
-        .take_while(|(a, b)| same_chat_row(a, b))
+    let prefix = (0..old.len().min(new.len()))
+        .take_while(|index| same_chat_list_item(old, *index, new, *index))
         .count();
-    let suffix = old[prefix..]
-        .iter()
-        .rev()
-        .zip(new[prefix..].iter().rev())
-        .take_while(|(a, b)| same_chat_row(a, b))
+    let suffix = (0..(old.len() - prefix).min(new.len() - prefix))
+        .take_while(|offset| {
+            same_chat_list_item(old, old.len() - 1 - offset, new, new.len() - 1 - offset)
+        })
         .count();
     if prefix != old.len() || prefix != new.len() {
         list.splice(prefix..old.len() - suffix, new.len() - prefix - suffix);
         if !follow_bottom
             && let Some(index) = anchor.and_then(|id| new.iter().position(|m| &m.id == id))
         {
+            // A prepended page can move the date heading off the visible message.
+            let heading_delta = i32::from(chat_starts_day(new, index, &Local))
+                - i32::from(chat_starts_day(old, top.item_ix, &Local));
             list.scroll_to(gpui::ListOffset {
                 item_ix: index,
-                offset_in_item: top.offset_in_item,
+                offset_in_item: (top.offset_in_item
+                    + px(heading_delta as f32 * CHAT_DATE_SEPARATOR_HEIGHT))
+                .max(px(0.)),
             });
         }
     }
+}
+
+fn same_chat_list_item(
+    old: &[crate::model::Message],
+    old_index: usize,
+    new: &[crate::model::Message],
+    new_index: usize,
+) -> bool {
+    if !same_chat_row(&old[old_index], &new[new_index]) {
+        return false;
+    }
+    let old_previous = old_index.checked_sub(1).map(|index| &old[index].created_at);
+    let new_previous = new_index.checked_sub(1).map(|index| &new[index].created_at);
+    old_previous == new_previous
+        || chat_starts_day(old, old_index, &Local) == chat_starts_day(new, new_index, &Local)
 }
 
 fn same_chat_row(a: &crate::model::Message, b: &crate::model::Message) -> bool {
@@ -9400,10 +9441,27 @@ fn speaking_indicator(
         .into_any_element()
 }
 
-fn short_time(value: &str) -> String {
-    DateTime::parse_from_rfc3339(value)
-        .map(|time| time.with_timezone(&Local).format("%H:%M").to_string())
-        .unwrap_or_else(|_| value.get(11..16).unwrap_or(value).to_string())
+fn message_datetime(
+    value: &str,
+    timezone: &impl chrono::TimeZone,
+) -> Option<chrono::NaiveDateTime> {
+    Some(
+        DateTime::parse_from_rfc3339(value)
+            .ok()?
+            .with_timezone(timezone)
+            .naive_local(),
+    )
+}
+
+fn chat_starts_day(
+    messages: &[crate::model::Message],
+    index: usize,
+    timezone: &impl chrono::TimeZone,
+) -> bool {
+    index == 0 || {
+        let date = |value: &str| message_datetime(value, timezone).map(|time| time.date());
+        date(&messages[index].created_at) != date(&messages[index - 1].created_at)
+    }
 }
 
 fn draft_key(workspace: &Workspace) -> String {
@@ -9541,6 +9599,113 @@ fn ordered_channels(channels: &[crate::model::Channel]) -> Vec<(crate::model::Ch
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn message_datetime_includes_local_date_and_seconds() {
+        let timezone = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+        for (source, expected) in [
+            ("2026-10-30T06:25:59Z", "2026-10-30 14:25:59"),
+            ("2026-10-30T23:30:00-04:00", "2026-10-31 11:30:00"),
+            ("2026-12-31T23:59:00Z", "2027-01-01 07:59:00"),
+            ("2026-10-30T14:25:00.123456+08:00", "2026-10-30 14:25:00"),
+        ] {
+            assert_eq!(
+                super::message_datetime(source, &timezone)
+                    .map(|time| time.format("%Y-%m-%d %H:%M:%S").to_string()),
+                Some(expected.to_string())
+            );
+        }
+        let timezone = chrono::FixedOffset::west_opt(8 * 3600).unwrap();
+        assert_eq!(
+            super::message_datetime("2027-01-01T01:00:00Z", &timezone)
+                .map(|time| time.format("%Y-%m-%d %H:%M:%S").to_string()),
+            Some("2026-12-31 17:00:00".to_string())
+        );
+    }
+
+    #[test]
+    fn message_datetime_rejects_missing_or_invalid_timestamps() {
+        for value in [
+            "",
+            "not a timestamp",
+            "2026-99-30T14:25:00Z",
+            "2026-10-30",
+            "14:25",
+        ] {
+            assert!(super::message_datetime(value, &chrono::Utc).is_none());
+        }
+    }
+
+    #[test]
+    fn chat_dates_group_by_local_day_and_separate_unknown_timestamps() {
+        let timezone = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+        let messages: Vec<_> = [
+            "2026-12-31T15:59:59Z",
+            "2026-12-31T16:00:00Z",
+            "2027-01-01T07:59:59+08:00",
+            "invalid",
+            "",
+            "2027-01-01T08:00:00+08:00",
+        ]
+        .into_iter()
+        .map(|created_at| crate::model::Message {
+            created_at: created_at.into(),
+            ..Default::default()
+        })
+        .collect();
+        let boundaries: Vec<_> = (0..messages.len())
+            .map(|index| super::chat_starts_day(&messages, index, &timezone))
+            .collect();
+        assert_eq!(boundaries, [true, true, false, true, false, true]);
+    }
+
+    #[test]
+    fn history_date_heading_changes_preserve_the_visible_message_offset() {
+        let message = |id: &str, created_at: &str| crate::model::Message {
+            id: id.into(),
+            created_at: created_at.into(),
+            ..Default::default()
+        };
+        let old = vec![message("a", "2026-10-29T12:40:13Z")];
+        let mut new = vec![message("earlier", "2026-10-29T12:00:00Z")];
+        new.extend(old.clone());
+        assert!(!super::same_chat_list_item(&old, 0, &new, 1));
+        let list = gpui::ListState::new(old.len(), gpui::ListAlignment::Bottom, gpui::px(80.));
+        list.scroll_to(gpui::ListOffset {
+            item_ix: 0,
+            offset_in_item: gpui::px(35.),
+        });
+        super::update_chat_list(&list, &old, &new, false);
+        assert_eq!(list.logical_scroll_top().item_ix, 1);
+        assert_eq!(list.logical_scroll_top().offset_in_item, gpui::px(7.));
+
+        // Removing the preceding message adds a heading to the anchor again.
+        super::update_chat_list(&list, &new, &old, false);
+        assert_eq!(list.logical_scroll_top().item_ix, 0);
+        assert_eq!(list.logical_scroll_top().offset_in_item, gpui::px(35.));
+
+        list.scroll_to(gpui::ListOffset {
+            item_ix: 0,
+            offset_in_item: gpui::px(7.),
+        });
+        super::update_chat_list(&list, &old, &new, false);
+        assert_eq!(list.logical_scroll_top().offset_in_item, gpui::px(0.));
+
+        // A preceding timestamp correction must invalidate the anchor's cached height.
+        let mut corrected = new.clone();
+        corrected[0].created_at = "2026-10-28T12:00:00Z".into();
+        assert!(!super::same_chat_list_item(&new, 1, &corrected, 1));
+        super::update_chat_list(&list, &new, &corrected, false);
+        assert_eq!(list.logical_scroll_top().item_ix, 1);
+        assert_eq!(
+            list.logical_scroll_top().offset_in_item,
+            gpui::px(super::CHAT_DATE_SEPARATOR_HEIGHT)
+        );
+
+        let mut earlier_day = vec![message("yesterday", "2026-10-28T12:00:00Z")];
+        earlier_day.extend(old.clone());
+        assert!(super::same_chat_list_item(&old, 0, &earlier_day, 1));
+    }
+
     #[test]
     fn server_entry_only_opens_channels_after_connection_and_resources_are_ready() {
         use super::{ResourceState as R, ServerPage as P, server_page};

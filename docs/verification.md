@@ -1032,3 +1032,22 @@ workflow_dispatch。版本 tag 仍由 release.yml 验证版本并调用 Windows/
 actionlint v1.7.9 检查所有工作流通过；YAML 解析及触发器检查确认只有发布工作流
 具有 push（仅 v* tag），两个平台仍可被发布工作流调用，所有工作流可手动启动。
 make test-build 与 git diff --check 通过。本次未触发远端构建或创建 tag。
+
+### 聊天消息日期（2026-10-30）
+
+分支 fix/tsukiyo/desktop-20261030_chat-timestamps 从合并构建修复和按需 Actions
+后的本地 main 创建。最终交互按客户端本地日期分组：已加载首条及日期变化处显示
+固定 28px 的日期分隔区，中央 YYYY-MM-DD、两侧各 32px 细线；每条消息常驻
+HH:mm:ss、昵称、正文，58px 时间列及 4px 间距，保留淡色行悬停。整个 item 右侧
+预留 20px，避开 16px 覆盖式滚动条。日期线位于消息 hover/右键区域之外。
+非法或空时间显示“时间未知”，日期分组为“日期未知”。列表仍按消息索引，比较
+前驱日期边界以失效受影响行高，并补偿可见锚点内日期线的高度差，不新增同步
+请求、业务状态或后台任务。产品复核未发现代码层面阻塞问题。
+
+桌面 release 单测 65 项、macOS Block 兼容测试 1 项通过；时区测试覆盖跨天、
+跨年、显式偏移、小数秒和非法输入；日期分组及滚动测试覆盖同日历史插入、日期线
+移除/恢复、日期线内锚点钳零及前驱时间修正。cargo fmt --check 与 git diff --check
+通过。按天分组版本 make build-desktop 在沙箱外完成，Info.plist 与深度严格签名
+校验通过，产物为 desktop/dist/Resona.app。维护者已反馈新版实窗验收无问题，
+授权提交并合入本地 main；未单独记录最小窗口/深浅主题/多链接组合或 Windows
+验收。本次无服务端变更，未部署预发服务器，未推送或打 tag。
