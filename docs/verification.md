@@ -1051,3 +1051,34 @@ HH:mm:ss、昵称、正文，58px 时间列及 4px 间距，保留淡色行悬�
 校验通过，产物为 desktop/dist/Resona.app。维护者已反馈新版实窗验收无问题，
 授权提交并合入本地 main；未单独记录最小窗口/深浅主题/多链接组合或 Windows
 验收。本次无服务端变更，未部署预发服务器，未推送或打 tag。
+
+### GPUI Kit 迁移（2026-10-30）
+
+分支 `feature/tsukiyo/desktop-20261030_gpui-kit` 从本地 main 创建。
+桌面唯一直接 GUI 依赖改为固定 `gpui-kit` 0.8.1，默认后端及组件、资源启用；
+依赖图为 Base/component/assets 0.8.1 和 Zed 派生的 gpui-pre 0.3.10，
+没有 gpui-fast、旧 gpui 0.2.2 或 proc-macro-error2。固定发布包与上游 Zed
+commit、仍需保留的 Windows 标题栏和 block 补丁记录于 vendor/README.md。
+旧完整 GPUI 与不再使用的宏补丁 vendor 已移除，平台打包许可路径同步更新。
+
+Kit 初始化及 open_window 提供统一 Root，业务保留激活、原生关闭和退出命令。
+新版 Textarea 的 submit_on_enter 代替旧版先插入换行再删除的补偿；
+Shift+Enter 保留换行，单行表单沿用普通 Enter 与 IME guard。
+Theme::update 将 Resona palette 同步至新版组件 tokens 和 Base；
+退出兜底改用新版前台 executor 的有界等待，仍由独立客户端线程完成回复，
+不增加常驻任务、资源请求、帧循环或音频处理。
+
+release cargo check、64 项桌面单测及 1 项 macOS Block 兼容测试通过；
+移除的 1 项测试仅针对已删除的换行补偿 helper。cargo fmt --check、
+git diff --check 和 make build-desktop 通过，Info.plist 与深度严格签名校验通过。
+产物为 desktop/dist/Resona.app。
+
+macOS 原生窗口验证：启动及设置弹层、浅色即时预览后取消恢复深色、中文和 emoji
+昵称、Shift+Enter 多行输入、Enter 单次发送、日期与时间显示、表情选择插入、
+Escape 关闭表情、表情浮层内 Cmd+Q 退出、离线原生关闭按钮均正常。
+聊天测试使用独立 127.0.0.1 临时服务；服务已停止，测试书签已移除。
+流程评审发现并修复主题 tokens 同步问题，未发现其余代码层面的阻塞问题。
+未验证真实中文 IME 候选确认、Windows/Intel 原生构建、最小窗口的全部菜单组合、
+多人连麦或游戏同负载性能，不能据此声称框架迁移降低占用。
+设置侧栏标题随后右移 12px，重新打包及签名校验通过；维护者验收后授权合入本地 main。
+服务端无修改，未更新预发部署；本次不推送或打 tag。Windows 等验证范围仍以上述限制为准。

@@ -1,6 +1,6 @@
 use crate::preferences::ThemePreference;
-use gpui::{App, Rgba, Window, rgb as gpui_rgb, rgba as gpui_rgba};
-use gpui_component::{Theme, ThemeMode};
+use gpui_kit::component::{Theme, ThemeMode};
+use gpui_kit::{App, Rgba, Window, rgb as gpui_rgb, rgba as gpui_rgba};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 // The desktop currently has one window; color tokens are resolved while it renders.
@@ -26,36 +26,37 @@ pub fn apply(preference: ThemePreference, window: Option<&mut Window>, cx: &mut 
         apply_titlebar(mode, window);
     }
     Theme::change(mode, window, cx);
-    let theme = Theme::global_mut(cx);
-    theme.font_size = gpui::px(14.);
-    theme.radius = gpui::px(6.);
-    theme.radius_lg = gpui::px(8.);
-    let tone = |dark, light| {
-        gpui_rgb(if mode == ThemeMode::Light {
-            light
-        } else {
-            dark
-        })
-        .into()
-    };
-    theme.background = tone(0x101113, 0xffffff);
-    theme.foreground = tone(0xe8ecef, 0x202428);
-    theme.border = tone(0x35393e, 0xd3d8de);
-    theme.input = tone(0x3b4046, 0xe7eaed);
-    theme.primary = tone(0xdce6ec, 0x1d292f);
-    theme.primary_foreground = tone(0x14191d, 0xffffff);
-    theme.primary_hover = tone(0xf0f5f7, 0x17252c);
-    theme.primary_active = tone(0xb8c7d1, 0x34444d);
-    theme.secondary = tone(0x202428, 0xf0f2f4);
-    theme.secondary_hover = tone(0x2d3237, 0xe6eaee);
-    theme.secondary_active = tone(0x353c42, 0xdce2e7);
-    theme.secondary_foreground = tone(0xd2dae0, 0x303d44);
-    theme.accent = tone(0x293632, 0xeaf3f0);
-    theme.accent_foreground = tone(0xb0d6c8, 0x28594c);
-    theme.muted = tone(0x22262a, 0xf0f2f3);
-    theme.muted_foreground = tone(0x929ca7, 0x66727d);
-    theme.ring = tone(0x8bada0, 0x43816c);
-    theme.popover = tone(0x191c20, 0xffffff);
+    Theme::update(cx, |theme| {
+        theme.font_size = gpui_kit::px(14.);
+        theme.radius = gpui_kit::px(6.);
+        theme.radius_lg = gpui_kit::px(8.);
+        let tone = |dark, light| {
+            gpui_rgb(if mode == ThemeMode::Light {
+                light
+            } else {
+                dark
+            })
+            .into()
+        };
+        theme.background = tone(0x101113, 0xffffff);
+        theme.foreground = tone(0xe8ecef, 0x202428);
+        theme.border = tone(0x35393e, 0xd3d8de);
+        theme.input = tone(0x3b4046, 0xe7eaed);
+        theme.primary = tone(0xdce6ec, 0x1d292f);
+        theme.primary_foreground = tone(0x14191d, 0xffffff);
+        theme.primary_hover = tone(0xf0f5f7, 0x17252c);
+        theme.primary_active = tone(0xb8c7d1, 0x34444d);
+        theme.secondary = tone(0x202428, 0xf0f2f4);
+        theme.secondary_hover = tone(0x2d3237, 0xe6eaee);
+        theme.secondary_active = tone(0x353c42, 0xdce2e7);
+        theme.secondary_foreground = tone(0xd2dae0, 0x303d44);
+        theme.accent = tone(0x293632, 0xeaf3f0);
+        theme.accent_foreground = tone(0xb0d6c8, 0x28594c);
+        theme.muted = tone(0x22262a, 0xf0f2f3);
+        theme.muted_foreground = tone(0x929ca7, 0x66727d);
+        theme.ring = tone(0x8bada0, 0x43816c);
+        theme.popover = tone(0x191c20, 0xffffff);
+    });
 }
 
 #[cfg(target_os = "windows")]

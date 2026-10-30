@@ -1,7 +1,7 @@
 pub const LIGHT: &[u8] = include_bytes!("../assets/resona-light.png");
 pub const DARK: &[u8] = include_bytes!("../assets/resona-dark.png");
 
-pub fn apply(light: bool, window: Option<&gpui::Window>) {
+pub fn apply(light: bool, window: Option<&gpui_kit::Window>) {
     platform::apply(light, window);
 }
 
@@ -22,7 +22,7 @@ mod platform {
         static ICONS: RefCell<Icons> = RefCell::new(Icons::default());
     }
 
-    pub fn apply(light: bool, _: Option<&gpui::Window>) {
+    pub fn apply(light: bool, _: Option<&gpui_kit::Window>) {
         let Some(main_thread) = MainThreadMarker::new() else {
             return;
         };
@@ -90,7 +90,7 @@ mod platform {
         static ICONS: RefCell<Icons> = RefCell::new(Icons::default());
     }
 
-    pub fn apply(light: bool, window: Option<&gpui::Window>) {
+    pub fn apply(light: bool, window: Option<&gpui_kit::Window>) {
         let Some(window) = window else { return };
         let Ok(handle) = HasWindowHandle::window_handle(window) else {
             return;
@@ -153,5 +153,5 @@ mod platform {
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 mod platform {
-    pub fn apply(_: bool, _: Option<&gpui::Window>) {}
+    pub fn apply(_: bool, _: Option<&gpui_kit::Window>) {}
 }
