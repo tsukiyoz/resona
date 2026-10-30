@@ -1000,3 +1000,24 @@ make build-desktop 完成，最新版 desktop/dist/Resona.app 的 Info.plist 和
 流程复核无阻塞问题。未通过真实五分钟墙钟等待或游戏负载测量推断性能收益。
 客户端 audio/all-targets 严格 Clippy、cargo fmt 与 git diff --check 通过；
 make build-desktop 完成，新版应用 Info.plist 与深度严格签名校验通过。
+
+### macOS 构建告警修复（2026-10-28）
+
+分支 `fix/tsukiyo/build-20261028_warnings` 保持产品版本 0.2.3。Opus 1.6.1
+在 Darwin ARM 没有运行时 CPU 检测，默认 MAY_HAVE_NEON 却要求该检测；Apple
+Silicon 构建改为固定 NEON，并补齐相应头文件声明宏，保留 SIMD 源码和硬化选项。
+首次完整重编译发现只关闭 MAY_HAVE_NEON 会缺失函数声明，补齐宏后重编译通过。
+按 CMake 目标选择，不将构建主机架构强加给显式 Intel 目标。make test-build 增加
+八组配置检查，覆盖 ARM64、Intel、显式架构、其他平台及关闭 intrinsics 的情况。
+
+GPUI grid 浮点字面量明确为 f32。桌面依赖图以本地源码补丁修正 block 0.1.6 的
+uninhabited_static/隐式 C ABI，以及 proc-macro-error2 2.0.1 的私有 extern crate
+公开重导出；没有屏蔽 lint、修改 Cargo registry 或升级依赖版本。原始包校验和、
+来源、许可与补丁范围记录于 desktop/vendor/README.md。
+
+最终 make build 成功，Opus 不再输出 ERRORRuntime 提示，Rust 无原有浮点、ABI
+和未来不兼容告警；macOS 应用 Info.plist、深度严格签名校验及 Go server 构建通过。
+客户端 audio/release 单测 56 项、桌面 release 单测 61 项、新增 macOS Block
+捕获/复制/克隆调用测试 1 项、make test-build、cargo fmt --check 和
+git diff --check 通过。未做 Windows/Intel 原生编译、实机连麦或性能测量，未部署
+预发服务器，未提交或推送。

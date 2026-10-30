@@ -120,6 +120,7 @@ clean-all: clean
 
 test-build:
 	sh tools/test-build-toolchain.sh
+	cmake -S tools/test-opus-config -B build/native/opus-config-test
 	sh tools/test-macos-signing.sh
 
 test-deploy:

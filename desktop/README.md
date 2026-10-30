@@ -1,7 +1,7 @@
 # Resona native desktop
 
-This directory contains the GPUI desktop client. It uses `gpui` 0.2.2 with a
-[documented macOS reentrancy patch](vendor/gpui/RESONA-PATCH.md) and
+This directory contains the GPUI desktop client. It uses `gpui` 0.2.2 with
+[documented local compatibility patches](vendor/README.md) and
 `gpui-component` 0.5.1 from crates.io. The UI calls the framework-independent
 `../client` Rust library through bounded asynchronous commands and coalesced events.
 An owned Tokio runtime handles control/network tasks; devices and processors belong

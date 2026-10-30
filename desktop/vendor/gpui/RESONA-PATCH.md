@@ -20,6 +20,10 @@ in that observer; applying the system default afterward would overwrite it.
 The reported window appearance remains the system appearance so follow-system
 mode continues to work.
 
+In `src/taffy.rs`, explicitly type the grid's zero length and fraction as `f32`.
+Rust 1.99 warns about the previous float fallback and will eventually reject it;
+the resulting layout values are unchanged.
+
 `desktop/Cargo.toml` patches this exact crate for the entire desktop dependency
 graph. Do not edit Cargo registry caches or apply patches during a build. Remove
 this directory and the Cargo patch after an evaluated upstream release includes
