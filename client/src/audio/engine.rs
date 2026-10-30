@@ -141,7 +141,6 @@ impl Handle {
             gate.epoch = gate.epoch.wrapping_add(1);
             if !config.enabled
                 || config.muted
-                || config.deafened
                 || config.activation_mode != self.state.borrow().config.activation_mode
             {
                 gate.pressed = false;
@@ -236,7 +235,7 @@ impl Engine {
             Box::new(|config, monitor| {
                 Device::open(
                     !config.muted || monitor,
-                    true,
+                    !config.deafened || monitor,
                     &config.input_device_id,
                     &config.output_device_id,
                 )
@@ -431,7 +430,7 @@ impl Worker {
             .route
             .clone();
         let needed =
-            apply.config.enabled && !apply.config.deafened && (route.channel != 0 || apply.monitor);
+            apply.config.needs_device(apply.monitor) && (route.channel != 0 || apply.monitor);
         let reopen = self
             .pipeline
             .as_ref()
@@ -503,8 +502,7 @@ impl Worker {
                     }
                     self.transmitting = false;
                 }
-                if !pipeline.config.enabled
-                    || pipeline.config.deafened
+                if !pipeline.config.needs_device(self.monitor)
                     || (pipeline.route.channel == 0 && !self.monitor)
                 {
                     self.device = None;
@@ -512,8 +510,7 @@ impl Worker {
                 // A newer scope may supersede a slow device open. Retry on its
                 // next route update even when the pipeline already has that scope.
                 if self.device.is_none()
-                    && pipeline.config.enabled
-                    && !pipeline.config.deafened
+                    && pipeline.config.needs_device(self.monitor)
                     && (pipeline.route.channel != 0 || self.monitor)
                 {
                     let mut device = (self.open)(&pipeline.config, self.monitor)?;
@@ -566,8 +563,7 @@ impl Worker {
                 gate.enabled = self.device.is_some()
                     && !self.monitor
                     && pipeline.config.enabled
-                    && !pipeline.config.muted
-                    && !pipeline.config.deafened;
+                    && !pipeline.config.muted;
             }
         }
         Ok(())
@@ -670,6 +666,9 @@ impl Worker {
         // Follow the sound card's sample clock. Relative timer deadlines drift
         // on late wakes; two frames of lead absorb ordinary scheduling jitter.
         for _ in 0..2 {
+            if pipeline.config.deafened && !self.monitor {
+                break;
+            }
             if device.pending() >= FRAME * 2 {
                 break;
             }
@@ -1064,7 +1063,71 @@ mod tests {
         engine.close().await.unwrap();
     }
     #[tokio::test]
-    async fn failed_candidate_preserves_audio_and_deafen_clears_ptt() {
+    async fn independent_voice_controls_open_devices_only_when_needed() {
+        let opened = Arc::new(Mutex::new(Vec::new()));
+        let closed = Arc::new(AtomicUsize::new(0));
+        let observed = opened.clone();
+        let retired = closed.clone();
+        let engine = Engine::start_with(
+            factory(),
+            Box::new(move |config, monitor| {
+                assert!(!monitor);
+                observed
+                    .lock()
+                    .unwrap()
+                    .push((config.muted, config.deafened));
+                Ok(Box::new(Fake(retired.clone())))
+            }),
+        )
+        .unwrap();
+        engine
+            .handle
+            .route(
+                Route {
+                    generation: 1,
+                    epoch: 1,
+                    channel: 1,
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+        for (muted, deafened) in [
+            (true, true),
+            (false, true),
+            (true, false),
+            (false, false),
+            (true, true),
+        ] {
+            let state = engine
+                .handle
+                .configure(
+                    Config {
+                        enabled: true,
+                        muted,
+                        deafened,
+                        ..Default::default()
+                    },
+                    false,
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                (state.config.muted, state.config.deafened),
+                (muted, deafened)
+            );
+            assert_eq!(engine.handle.shared.gate.lock().unwrap().enabled, !muted);
+        }
+        assert_eq!(
+            *opened.lock().unwrap(),
+            [(false, true), (true, false), (false, false)]
+        );
+        assert_eq!(closed.load(Ordering::SeqCst), 3);
+        engine.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_candidate_preserves_audio_and_listening_preserves_ptt() {
         let closed = Arc::new(AtomicUsize::new(0));
         let b = closed.clone();
         let engine = Engine::start_with(
@@ -1110,9 +1173,10 @@ mod tests {
         let mut deaf = config.clone();
         deaf.deafened = true;
         engine.handle.configure(deaf, false).await.unwrap();
-        assert!(!engine.handle.shared.gate.lock().unwrap().pressed);
+        assert!(engine.handle.shared.gate.lock().unwrap().pressed);
+        assert!(engine.handle.shared.gate.lock().unwrap().enabled);
         engine.handle.configure(config, false).await.unwrap();
-        assert!(!engine.handle.shared.gate.lock().unwrap().pressed);
+        assert!(engine.handle.shared.gate.lock().unwrap().pressed);
         engine.handle.ptt(true).unwrap();
         engine
             .handle
@@ -1244,7 +1308,13 @@ mod tests {
             let engine = Engine::start_with(
                 factory(),
                 Box::new(move |config, _| {
-                    assert_eq!(*config, expected);
+                    assert_eq!(
+                        Config {
+                            deafened: false,
+                            ..config.clone()
+                        },
+                        expected
+                    );
                     let probe = Arc::new(RouteProbe::default());
                     *current.lock().unwrap() = probe.clone();
                     opened.fetch_add(1, Ordering::SeqCst);
@@ -1310,7 +1380,7 @@ mod tests {
                 .unwrap();
             engine.handle.configure(config, false).await.unwrap();
             wait_for_audio(&engine, &latest).await;
-            assert_eq!(opens.load(Ordering::SeqCst), 2);
+            assert_eq!(opens.load(Ordering::SeqCst), 3);
             engine.handle.route(Route::default(), None).unwrap();
             tokio::time::timeout(Duration::from_secs(1), async {
                 while engine.handle.state.borrow().active {

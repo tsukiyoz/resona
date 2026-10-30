@@ -73,6 +73,9 @@ impl Config {
             && self.output_device_id == other.output_device_id
             && self.activation_mode == other.activation_mode
     }
+    pub fn needs_device(&self, monitor: bool) -> bool {
+        self.enabled && (monitor || !self.muted || !self.deafened)
+    }
 }
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Peer {
@@ -368,7 +371,7 @@ impl Pipeline {
         if monitor {
             return Ok((None, level_db(pcm)));
         }
-        if !self.config.enabled || self.config.muted || self.config.deafened {
+        if !self.config.enabled || self.config.muted {
             return Ok((None, level));
         }
         let open = match self.config.activation_mode.as_str() {
@@ -715,6 +718,39 @@ mod tests {
         )
         .unwrap()
     }
+    #[test]
+    fn input_and_output_mutes_are_independent() {
+        let mut p = pipeline();
+        let now = Instant::now();
+        let mut pcm = [0.05; FRAME];
+        let mut bytes = [0; 1024];
+        for muted in [false, true] {
+            for deafened in [false, true] {
+                let config = Config {
+                    muted,
+                    deafened,
+                    ..config()
+                };
+                assert_eq!(config.needs_device(false), !muted || !deafened);
+                assert!(config.needs_device(true));
+                p.configure(config).unwrap();
+                let (packet, _) = p
+                    .capture(&mut pcm, &[0.0; FRAME], false, false, now, &mut bytes)
+                    .unwrap();
+                assert_eq!(packet.is_some(), !muted);
+            }
+        }
+        let before = p.counters.dropped;
+        feed(&mut p, &encoded(), 2, now);
+        assert!(p.speakers.is_empty());
+        assert_eq!(p.counters.dropped - before, 6);
+        p.configure(config()).unwrap();
+        feed(&mut p, &encoded(), 2, now);
+        let mut out = [0.0; FRAME * 2];
+        assert!(p.render(now, &mut out).unwrap());
+        assert!(out.iter().any(|x| x.abs() > 0.001));
+    }
+
     #[test]
     fn jitter_reorders_wraps_rejects_duplicates_and_plays_short_end() {
         let mut jitter = Jitter::default();

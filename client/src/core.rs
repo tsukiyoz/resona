@@ -440,7 +440,7 @@ impl App {
             && let Err(error) = session
                 .command(
                     session::Command::VoiceState {
-                        muted: monitor || config.muted || config.deafened || !config.enabled,
+                        muted: monitor || config.muted || !config.enabled,
                         deafened: config.deafened,
                     },
                     Instant::now() + Duration::from_secs(3),
@@ -503,7 +503,7 @@ impl App {
                     && session
                         .command(
                             session::Command::VoiceState {
-                                muted: previous.muted || previous.deafened || !previous.enabled,
+                                muted: previous.muted || !previous.enabled,
                                 deafened: previous.deafened,
                             },
                             Instant::now() + Duration::from_secs(3),

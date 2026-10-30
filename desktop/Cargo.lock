@@ -5581,7 +5581,7 @@ dependencies = [
 
 [[package]]
 name = "resona-client"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "base64",
  "cc",
@@ -5611,7 +5611,7 @@ dependencies = [
 
 [[package]]
 name = "resona-desktop"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "anyhow",
  "async-channel",
