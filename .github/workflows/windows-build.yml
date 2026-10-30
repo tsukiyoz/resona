@@ -3,31 +3,6 @@ name: Windows build
 on:
   workflow_call:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/windows-build.yml'
-      - 'build-windows.cmd'
-      - 'desktop/**'
-      - 'client/**'
-      - 'internal/**'
-      - 'native/**'
-      - 'third_party/**'
-      - 'go.mod'
-      - 'go.sum'
-      - 'VERSION'
-  pull_request:
-    paths:
-      - '.github/workflows/windows-build.yml'
-      - 'build-windows.cmd'
-      - 'desktop/**'
-      - 'client/**'
-      - 'internal/**'
-      - 'native/**'
-      - 'third_party/**'
-      - 'go.mod'
-      - 'go.sum'
-      - 'VERSION'
 
 permissions:
   contents: read

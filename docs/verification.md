@@ -1021,3 +1021,14 @@ uninhabited_static/隐式 C ABI，以及 proc-macro-error2 2.0.1 的私有 exter
 捕获/复制/克隆调用测试 1 项、make test-build、cargo fmt --check 和
 git diff --check 通过。未做 Windows/Intel 原生编译、实机连麦或性能测量，未部署
 预发服务器，未提交或推送。
+
+### Actions 按需构建（2026-10-30）
+
+分支推送与 PR 不再自动触发桌面、Rust 客户端和性能工具工作流；所有工作流保留
+workflow_dispatch。版本 tag 仍由 release.yml 验证版本并调用 Windows/macOS
+打包，原有发布清单签名和发布前校验不变。macOS 仅 tag 发布或手动 main/tag
+构建导入签名身份，手动普通分支使用 ad-hoc 签名。贡献与下载说明已同步。
+
+actionlint v1.7.9 检查所有工作流通过；YAML 解析及触发器检查确认只有发布工作流
+具有 push（仅 v* tag），两个平台仍可被发布工作流调用，所有工作流可手动启动。
+make test-build 与 git diff --check 通过。本次未触发远端构建或创建 tag。
