@@ -1851,8 +1851,7 @@ impl ResonaApp {
             Ok(voice) if voice_state_current(&voice, &self.voice) => {
                 let mut repaint = replace_voice_state(&mut self.voice, voice, false);
                 let voice = &self.voice;
-                if !voice.enabled || voice.muted || voice.deafened || voice.activation_mode != "ptt"
-                {
+                if !voice.enabled || voice.muted || voice.activation_mode != "ptt" {
                     repaint |= self.ptt_pressed;
                     self.ptt_pressed = false;
                 }
@@ -1986,7 +1985,6 @@ impl ResonaApp {
                 || (self.voice.enabled
                     && self.voice.active
                     && !self.voice.muted
-                    && !self.voice.deafened
                     && !self.voice.busy));
         if !available {
             if self.hotkey.is_some() {
@@ -3138,11 +3136,7 @@ impl ResonaApp {
             cx.notify();
             return;
         }
-        if next.muted
-            || next.deafened
-            || !next.enabled
-            || next.activation_mode != self.voice.activation_mode
-        {
+        if next.muted || !next.enabled || next.activation_mode != self.voice.activation_mode {
             self.set_push_to_talk(false, cx);
         }
         if next.deafened && !self.voice.deafened {
@@ -3351,9 +3345,9 @@ impl ResonaApp {
         } else if self.workspace.connected() && self.voice.active {
             "已应用到当前语音"
         } else if self.workspace.connected() {
-            "已保存，启用语音后自动应用（无需重启应用）"
+            "已保存，恢复麦克风或收听后自动应用（无需重启应用）"
         } else {
-            "已保存，连接并启用语音后自动应用（无需重启应用）"
+            "已保存，连接后自动应用（无需重启应用）"
         }
         .into();
         if hotkey_changed {
@@ -5131,8 +5125,15 @@ impl ResonaApp {
 
     fn render_voicebar(&self, view: &Entity<Self>) -> AnyElement {
         let connected = self.workspace.connected();
-        let disabled =
-            !connected || self.voice.busy || !self.voice.enabled || !self.capabilities.voice;
+        let disabled = !connected
+            || self.voice.busy
+            || self.closing
+            || self.microphone_test.enabled
+            || self.microphone_test.busy
+            || self.speaking_transition_pending()
+            || !self.capabilities.voice;
+        let mic_muted = !self.voice.enabled || !self.voice.active || self.voice.muted;
+        let output_muted = !self.voice.enabled || !self.voice.active || self.voice.deafened;
         let target = self
             .queued_voice
             .as_ref()
@@ -5147,9 +5148,11 @@ impl ResonaApp {
         } else if self.voice.busy {
             "正在更新语音"
         } else if !self.voice.enabled {
-            "语音未启用"
+            "语音未就绪"
+        } else if self.voice.deafened && self.voice.muted {
+            "麦克风与收听已关闭"
         } else if self.voice.deafened {
-            "收听与发送已暂停"
+            "收听已关闭，麦克风仍可发言"
         } else if self.voice.muted {
             "麦克风已静音"
         } else if self.voice.activation_mode == "ptt" && !self.ptt_pressed {
@@ -5242,42 +5245,15 @@ impl ResonaApp {
                     ),
             )
             .child(
-                Button::new("toggle-voice")
-                    .label(if self.voice.enabled {
-                        "停用语音"
-                    } else {
-                        "启用语音"
-                    })
-                    .ghost()
-                    .disabled(!connected || !self.capabilities.voice)
-                    .on_click({
-                        let entity = view.clone();
-                        move |_, _, cx| {
-                            entity.update(cx, |this, cx| {
-                                let enabled = !this.voice.enabled;
-                                this.configure_voice(
-                                    |v| {
-                                        v.enabled = enabled;
-                                        if enabled {
-                                            v.muted = true;
-                                        }
-                                    },
-                                    cx,
-                                );
-                            });
-                        }
-                    }),
-            )
-            .child(
                 Button::new("mute")
-                    .icon(if self.voice.muted {
+                    .icon(if mic_muted {
                         VoiceIcon::MicOff
                     } else {
                         VoiceIcon::Mic
                     })
-                    .selected(self.voice.muted)
-                    .tooltip(if self.voice.muted {
-                        "解除麦克风静音"
+                    .selected(mic_muted)
+                    .tooltip(if mic_muted {
+                        "开启麦克风"
                     } else {
                         "将麦克风静音"
                     })
@@ -5286,32 +5262,42 @@ impl ResonaApp {
                         let entity = view.clone();
                         move |_, _, cx| {
                             entity.update(cx, |this, cx| {
-                                let muted = !this.voice.muted;
-                                this.configure_voice(|v| v.muted = muted, cx);
+                                this.configure_voice(
+                                    |v| {
+                                        v.muted = v.enabled && v.active && !v.muted;
+                                        v.enabled = true;
+                                    },
+                                    cx,
+                                );
                             });
                         }
                     }),
             )
             .child(
                 Button::new("deafen")
-                    .icon(if self.voice.deafened {
+                    .icon(if output_muted {
                         VoiceIcon::HeadphonesOff
                     } else {
                         VoiceIcon::Headphones
                     })
-                    .selected(self.voice.deafened)
-                    .tooltip(if self.voice.deafened {
+                    .selected(output_muted)
+                    .tooltip(if output_muted {
                         "恢复收听"
                     } else {
-                        "停止收听与发送"
+                        "停止收听"
                     })
                     .disabled(disabled)
                     .on_click({
                         let entity = view.clone();
                         move |_, _, cx| {
                             entity.update(cx, |this, cx| {
-                                let deafened = !this.voice.deafened;
-                                this.configure_voice(|v| v.deafened = deafened, cx);
+                                this.configure_voice(
+                                    |v| {
+                                        v.deafened = v.enabled && v.active && !v.deafened;
+                                        v.enabled = true;
+                                    },
+                                    cx,
+                                );
                             });
                         }
                     }),
@@ -9232,7 +9218,6 @@ fn ptt_can_send(workspace: &Workspace, voice: &VoiceState, closing: bool) -> boo
         && voice.enabled
         && voice.active
         && !voice.muted
-        && !voice.deafened
         && !voice.busy
         && voice.activation_mode == "ptt"
 }
@@ -9388,7 +9373,6 @@ fn user_is_speaking(
         || voice.busy
         || !voice.enabled
         || !voice.active
-        || voice.deafened
     {
         return false;
     }
@@ -9396,9 +9380,10 @@ fn user_is_speaking(
     if user.is_self {
         !voice.muted && voice.local_speaking
     } else {
-        !user.id.is_empty()
+        !voice.deafened
+            && !user.id.is_empty()
             && !user.playback_muted
-            && !(user.voice_state_known && (user.input_muted || user.output_muted))
+            && !(user.voice_state_known && user.input_muted)
             && voice
                 .speaking_client_ids
                 .iter()
@@ -9425,14 +9410,14 @@ fn speaking_indicator(
     };
     let (icon, tooltip) = if locally_muted {
         (Some("headphones-off.svg"), "已在本机静音")
-    } else if output_muted {
-        (Some("headphones-off.svg"), "收听与发送已暂停")
     } else if input_muted {
         (Some("mic-off.svg"), "麦克风已静音")
     } else if speaking && user.is_self {
         (None, "正在发送语音")
     } else if speaking {
         (None, "正在播放语音")
+    } else if output_muted {
+        (Some("headphones-off.svg"), "收听已关闭")
     } else {
         (None, "未在说话")
     };
@@ -10468,10 +10453,6 @@ mod tests {
                 ..voice.clone()
             },
             VoiceState {
-                deafened: true,
-                ..voice.clone()
-            },
-            VoiceState {
                 enabled: false,
                 ..voice.clone()
             },
@@ -10642,9 +10623,23 @@ mod tests {
         assert!(!user_is_speaking(&workspace, &voice, false, &remote));
         remote.input_muted = false;
         remote.output_muted = true;
-        assert!(!user_is_speaking(&workspace, &voice, false, &remote));
+        assert!(user_is_speaking(&workspace, &voice, false, &remote));
         remote.output_muted = false;
         assert!(user_is_speaking(&workspace, &voice, false, &remote));
+    }
+
+    #[test]
+    fn paused_listening_preserves_local_speaking_and_push_to_talk() {
+        let (workspace, mut voice, local, remote) = speaking_context();
+        voice.local_speaking = true;
+        voice.deafened = true;
+        voice.activation_mode = "ptt".into();
+        assert!(ptt_can_send(&workspace, &voice, false));
+        assert!(user_is_speaking(&workspace, &voice, false, &local));
+        assert!(!user_is_speaking(&workspace, &voice, false, &remote));
+        voice.muted = true;
+        assert!(!ptt_can_send(&workspace, &voice, false));
+        assert!(!user_is_speaking(&workspace, &voice, false, &local));
     }
 
     #[test]
