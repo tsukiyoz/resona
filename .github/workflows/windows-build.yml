@@ -56,6 +56,50 @@ jobs:
             mingw-w64-x86_64-ninja
             mingw-w64-x86_64-pkgconf
             mingw-w64-x86_64-python
+      - name: Set up Rust toolchains before restoring cache
+        shell: pwsh
+        run: |
+          rustup toolchain install stable-x86_64-pc-windows-msvc --profile minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustup toolchain install stable-x86_64-pc-windows-gnu --profile minimal --component llvm-tools-preview
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustup default stable-x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Fingerprint native build tools
+        id: native-tools
+        shell: pwsh
+        env:
+          MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          $packages = & "$env:MSYS2_ROOT\usr\bin\pacman.exe" -Q
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $tools = "$env:ImageOS`n$env:ImageVersion`n$env:MSYS2_ROOT`n" + ($packages -join "`n")
+          $bytes = [System.Text.Encoding]::UTF8.GetBytes($tools)
+          $hash = [System.Security.Cryptography.SHA256]::HashData($bytes)
+          "key=$([Convert]::ToHexString($hash).ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          $nativeWorkspace = Join-Path $env:GITHUB_WORKSPACE 'native/webrtc-apm'
+          $nativeTarget = Join-Path $env:RUNNER_TEMP '3a'
+          $relativeTarget = [IO.Path]::GetRelativePath($nativeWorkspace, $nativeTarget)
+          if ([IO.Path]::IsPathRooted($relativeTarget)) { throw 'Native cache requires workspace and target on the same drive' }
+          "apm-target=$relativeTarget" >> $env:GITHUB_OUTPUT
+      - name: Cache pinned native dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            build/native/opus-source
+            build/native/opus-build
+            build/native/opus-install
+            build/native/rnnoise
+          key: native-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.native-tools.outputs.key }}-${{ hashFiles('native/opus/**', 'native/rnnoise/prepare.sh', '.github/workflows/windows-build.yml') }}
+      - name: Cache Rust and WebRTC dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3, Node.js 24
+        with:
+          shared-key: desktop-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.native-tools.outputs.key }}-${{ hashFiles('native/**', 'client/build.rs', 'desktop/build.rs', 'desktop/scripts/**', 'Makefile', '.github/workflows/windows-build.yml') }}
+          workspaces: |
+            client
+            desktop
+            native/webrtc-apm -> ${{ steps.native-tools.outputs.apm-target }}
+          cache-bin: false
       - name: Build and test
         shell: pwsh
         env:

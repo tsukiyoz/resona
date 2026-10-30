@@ -53,6 +53,36 @@ jobs:
           rustup default stable
       - name: Set up WebRTC build tools
         run: brew install meson ninja cmake pkgconf
+      - name: Fingerprint native build tools
+        id: native-tools
+        run: |
+          set -euo pipefail
+          {
+            printf '%s\n' "$ImageOS" "$ImageVersion" "$MACOSX_DEPLOYMENT_TARGET"
+            xcrun clang --version
+            xcodebuild -version
+            brew list --versions meson ninja cmake pkgconf
+          } > "$RUNNER_TEMP/resona-native-tools.txt"
+          echo "key=$(shasum -a 256 "$RUNNER_TEMP/resona-native-tools.txt" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - name: Cache pinned native dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            build/native/opus-source
+            build/native/opus-build
+            build/native/opus-install
+            build/native/rnnoise
+          key: native-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.native-tools.outputs.key }}-${{ hashFiles('native/opus/**', 'native/rnnoise/prepare.sh', '.github/workflows/macos-build.yml') }}
+      - name: Cache Rust and WebRTC dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3, Node.js 24
+        with:
+          shared-key: desktop-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.native-tools.outputs.key }}-${{ hashFiles('native/**', 'client/build.rs', 'desktop/build.rs', 'desktop/scripts/**', 'Makefile', '.github/workflows/macos-build.yml') }}
+          workspaces: |
+            client
+            desktop
+            native/webrtc-apm
+          env-vars: CARGO CC CFLAGS CXX CMAKE RUST MACOSX_DEPLOYMENT_TARGET
+          cache-bin: false
       - name: Prepare pinned client codec
         run: make build-opus
       - name: Resolve build version

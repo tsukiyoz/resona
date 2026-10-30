@@ -78,6 +78,33 @@ visibility, deploying a server and configuring branch protection are separate
 operations. A maintenance branch is warranted only when supporting fixes for an
 older release line independently of main; fix main too where applicable.
 
+### Desktop Build Caches
+
+The Windows and macOS packaging workflows restore Cargo dependency artifacts for
+`client`, `desktop` and `native/webrtc-apm`, including the bundled WebRTC C++ build.
+Windows maps the native library's target directory to the short `RUNNER_TEMP/3a`
+path used by the build script. Cargo downloads are cached too; binaries and
+incremental artifacts are pruned to limit size. Cargo still rebuilds changed
+project code and version/update metadata. Tests and release optimization settings
+remain enabled.
+
+A separate cache retains the pinned Opus source/build/install directories and
+RNNoise source/model data. The normal preparation scripts still verify upstream
+revisions and model checksums on cache hits. Keys separate OS/architecture,
+runner image, native tool versions and build inputs; Rust caches additionally
+track installed Rust toolchains and Cargo dependency manifests/lockfiles.
+Native/toolchain changes do not fall back to incompatible build caches.
+
+Caches live in GitHub Actions, not in the repository or downloadable packages.
+Only successful jobs save them; app bundles, signing credentials and configuration
+are excluded. A cache miss or eviction must still allow a complete build.
+Manage entries under **Actions > Caches**. GitHub scopes caches by branch/tag:
+after merging cache changes, manually run both packaging workflows on `main` to
+seed the default-branch caches that later branch/tag runs can restore. A cache
+created only on one release tag is not shared with another tag. Compare a second
+run on the same ref/toolchain with the first, including cache transfer time,
+before claiming a speedup; no warm-cache timing has been established yet.
+
 ## macOS CI Signing
 
 Configure repository Actions Secrets `MACOS_CERTIFICATE_P12_BASE64` (Base64 of an
