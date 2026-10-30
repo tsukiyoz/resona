@@ -4,6 +4,11 @@
 then installs a release static library under `build/native/opus-install`.
 The desktop and Rust client use its pkg-config metadata with `OPUS_STATIC=1`.
 
+Opus version and feature summaries are hidden; CMake's short configuration summary,
+compilation progress, warnings and errors remain visible. Installation reports
+changed files only. Unchanged files are still checked but no longer produce
+repetitive `Up-to-date` lines.
+
 `apple-neon.cmake` runs immediately after Opus's CMake `project()` declaration.
 For a macOS ARM64 target, it selects always-available NEON rather than runtime
 CPU detection, which Opus 1.6.1 does not implement on Darwin ARM. It also supplies
