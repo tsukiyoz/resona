@@ -5,10 +5,55 @@ use crate::{
     theme::{Color, color},
 };
 use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::{
+    IconName,
+    button::{Button, ButtonVariants},
+};
 use gpui_kit::{
     AnyElement, InteractiveElement, IntoElement, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, div, prelude::*, px, svg,
 };
+
+pub fn attention_notice(
+    text: String,
+    pending: usize,
+    dismiss: impl Fn(&gpui_kit::ClickEvent, &mut gpui_kit::Window, &mut gpui_kit::App) + 'static,
+) -> impl IntoElement {
+    div()
+        .id("poke-notice")
+        .w(px(320.))
+        .max_w_full()
+        .p_3()
+        .rounded(px(6.))
+        .bg(color(Color::Panel))
+        .border_1()
+        .border_color(color(Color::SelectionBorder))
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_sm()
+                .child(text)
+                .when(pending > 0, |text| {
+                    text.child(
+                        div()
+                            .text_xs()
+                            .text_color(color(Color::Muted))
+                            .child(format!("另有 {pending} 条提醒")),
+                    )
+                }),
+        )
+        .child(
+            Button::new("dismiss-poke")
+                .icon(IconName::Close)
+                .ghost()
+                .tooltip("关闭提醒")
+                .on_click(dismiss),
+        )
+}
 
 pub fn server_entry_contents(entry: &ServerEntry<'_>) -> gpui_kit::Div {
     div()

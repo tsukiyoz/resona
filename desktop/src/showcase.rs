@@ -1,6 +1,6 @@
 //! Debug-only local fixtures. This entry point never constructs ResonaApp or CoreClient.
 use crate::{
-    components::{server_entry_contents, speaking_indicator},
+    components::{attention_notice, server_entry_contents, speaking_indicator},
     model::{Capabilities, Channel, ProcessorOption, User, VoiceState, Workspace},
     preferences::ThemePreference,
     presentation::{self, ResourceState, ServerPage},
@@ -16,7 +16,7 @@ use gpui_kit::{
     Render, Styled, Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
 
-const SCENARIOS: [&str; 8] = [
+const SCENARIOS: [&str; 9] = [
     "离线",
     "本地预览",
     "准备连接",
@@ -25,6 +25,7 @@ const SCENARIOS: [&str; 8] = [
     "连接恢复失败",
     "语音失败",
     "音频不可用",
+    "戳一下",
 ];
 
 pub fn open(cx: &mut App) {
@@ -50,6 +51,7 @@ pub fn open(cx: &mut App) {
                 scenario: 0,
                 backend: "speex".into(),
                 theme: ThemePreference::System,
+                show_notice: true,
                 focus: {
                     let focus = cx.focus_handle();
                     focus.focus(window, cx);
@@ -65,6 +67,7 @@ struct Showcase {
     scenario: usize,
     backend: String,
     theme: ThemePreference,
+    show_notice: bool,
     focus: FocusHandle,
 }
 
@@ -96,6 +99,7 @@ impl Render for Showcase {
                     .selected(self.scenario == index)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.scenario = index;
+                        this.show_notice = true;
                         cx.notify();
                     })),
             );
@@ -157,6 +161,7 @@ impl Render for Showcase {
             .track_focus(&self.focus)
             .on_action(cx.listener(|_, _: &crate::ui::Quit, _, cx| cx.quit()))
             .h(window.viewport_size().height)
+            .relative()
             .flex()
             .flex_col()
             .bg(color(Color::Panel))
@@ -294,6 +299,25 @@ impl Render for Showcase {
                             ),
                     ),
             )
+            .when(self.scenario == 8 && self.show_notice, |root| {
+                root.child(
+                    div()
+                        .absolute()
+                        .top_3()
+                        .left_0()
+                        .w_full()
+                        .flex()
+                        .justify_center()
+                        .child(attention_notice(
+                            "一个较长的中文昵称和 Emoji🙂 戳了你一下".into(),
+                            2,
+                            cx.listener(|this, _, _, cx| {
+                                this.show_notice = false;
+                                cx.notify();
+                            }),
+                        )),
+                )
+            })
     }
 }
 

@@ -6,6 +6,7 @@ pub use crate::config::ServerProfile;
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Session {
+    pub can_poke: bool,
     pub chat_state: String,
     pub chat_epoch: u32,
     pub chat_generation: u64,
@@ -112,6 +113,7 @@ pub struct Message {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Notification {
+    pub nickname: String,
     pub id: String,
     pub kind: String,
     #[serde(rename = "channelID")]

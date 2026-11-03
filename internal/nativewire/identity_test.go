@@ -48,6 +48,7 @@ func TestIdentityProofBindsHelloAndTransport(t *testing.T) {
 	for _, mutate := range []func(*Hello, []byte){
 		func(h *Hello, b []byte) { h.Nickname = "other" },
 		func(h *Hello, b []byte) { h.Password = "other" },
+		func(h *Hello, b []byte) { h.ReceivePokes = !h.ReceivePokes },
 		func(h *Hello, b []byte) { b[0]++ },
 		func(h *Hello, b []byte) { h.PublicKey = bytes.Repeat([]byte{3}, 32) },
 	} {

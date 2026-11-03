@@ -109,6 +109,7 @@ pub fn sign_hello(
         password,
         public_key: identity.verifying_key().to_bytes().to_vec(),
         signature: Vec::new(),
+        receive_pokes: true,
     };
     let unsigned = pack(pb::Kind::Hello, 0, &hello)?;
     let mut digest = Sha256::new();

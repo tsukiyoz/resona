@@ -94,6 +94,7 @@ impl Error {
             Self::Rejected(10) => "账号验证失败，请检查输入或重新登录",
             Self::Rejected(11) => "账号名称已被使用",
             Self::Rejected(12) => "账号服务繁忙，请稍后重试",
+            Self::Rejected(13) => "该成员已离线、已变化或暂不支持戳一下",
             Self::Rejected(_) => "服务器拒绝此操作，请检查权限和频道状态",
             _ => "服务器连接已关闭，请检查网络后重试",
         }
@@ -102,6 +103,7 @@ impl Error {
 
 #[derive(Clone, Debug)]
 pub struct MemberEvent {
+    pub nickname: String,
     pub serial: u64,
     pub kind: &'static str,
     pub channel: u32,
@@ -137,6 +139,10 @@ impl Snapshot {
 
 #[derive(Clone)]
 pub enum Command {
+    Poke {
+        target: u16,
+        instance: String,
+    },
     Account(AccountRequest),
     Move(u16),
     Chat {
@@ -234,6 +240,18 @@ impl Command {
     fn frame(&self, id: u32) -> Result<Vec<u8>> {
         use pb::Kind;
         let data = match self {
+            Self::Poke { target, instance }
+                if *target != 0 && !instance.is_empty() && instance.len() <= 128 =>
+            {
+                wire::pack(
+                    Kind::Poke,
+                    id,
+                    &pb::Poke {
+                        target: u32::from(*target),
+                        instance: instance.clone(),
+                    },
+                )
+            }
             Self::Account(a)
                 if a.action.len() <= 32
                     && a.username.len() <= 32
@@ -858,6 +876,35 @@ impl Driver {
     }
     fn apply(&mut self, f: pb::Frame) -> Result<()> {
         match pb::Kind::try_from(f.kind).map_err(|_| Error::InvalidState)? {
+            pb::Kind::Poked => {
+                let p = pb::Poked::decode(f.body.as_slice()).map_err(|_| Error::InvalidState)?;
+                if f.request != 0
+                    || p.sender == 0
+                    || p.sender > u16::MAX.into()
+                    || p.sender == self.snapshot.state.self_
+                    || p.instance.is_empty()
+                    || p.instance.len() > 128
+                    || p.nickname.trim().is_empty()
+                    || p.nickname.chars().count() > 30
+                    || p.nickname.chars().any(char::is_control)
+                {
+                    return Err(Error::InvalidState);
+                }
+                let events = Arc::make_mut(&mut self.snapshot.events);
+                let serial = events.back().map_or(1, |event| event.serial + 1);
+                if events.len() == 64 {
+                    events.pop_front();
+                }
+                events.push_back(MemberEvent {
+                    serial,
+                    kind: "poke",
+                    channel: 0,
+                    epoch: 0,
+                    nickname: p.nickname,
+                    timestamp: crate::workspace::now(),
+                });
+                self.publish();
+            }
             pb::Kind::State => {
                 let s = pb::State::decode(f.body.as_slice()).map_err(|_| Error::InvalidState)?;
                 let old = &self.snapshot.state;
@@ -892,6 +939,7 @@ impl Driver {
                                     events.pop_front();
                                 }
                                 events.push_back(MemberEvent {
+                                    nickname: String::new(),
                                     serial,
                                     kind,
                                     channel,

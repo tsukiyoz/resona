@@ -776,6 +776,27 @@ impl App {
                 self.refresh(true);
                 Ok(self.workspace())
             }
+            "PokeUser" => {
+                let id = string("sessionID");
+                let target = channel(&string("userID"))?;
+                let instance = string("instance");
+                {
+                    let local = self.lock();
+                    let workspace = &local.projection.workspace;
+                    if !workspace.connected()
+                        || workspace.session.id != id
+                        || !workspace.session.can_poke
+                        || !workspace.users.iter().any(|u| {
+                            u.id == target.to_string() && u.instance == instance && !u.is_self
+                        })
+                    {
+                        return Err("该成员已离线或当前连接不支持戳一下".into());
+                    }
+                }
+                self.command(&id, session::Command::Poke { target, instance })
+                    .await?;
+                Ok(json!({}))
+            }
             "CreateChannel" | "UpdateChannel" | "DeleteChannel" | "ReorderChannel" => {
                 let command = match method {
                     "CreateChannel" => session::Command::CreateChannel {

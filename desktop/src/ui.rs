@@ -99,6 +99,7 @@ impl IconNamed for VoiceIcon {
 
 #[derive(Clone)]
 enum Pending {
+    Poke(UserPlaybackTarget),
     Account(String, u64),
     AccountToken(String, u64),
     ChatRetry(String, String, u32),
@@ -419,6 +420,7 @@ pub struct ResonaApp {
     _settings_watch: Option<gpui_kit::Task<()>>,
     settings_notice: String,
     settings_discard: bool,
+    settings_reset_confirm: bool,
     core_info: Option<Value>,
     diagnostic_error: String,
     build_info_error: String,
@@ -433,6 +435,7 @@ pub struct ResonaApp {
     seen_notifications: HashSet<String>,
     notification_order: VecDeque<String>,
     last_member_notification: Option<Instant>,
+    poke_notices: VecDeque<String>,
     pending: HashMap<u64, PendingRequest>,
     drafts: HashMap<String, String>,
     submitted_drafts: HashMap<String, (String, String)>,
@@ -760,6 +763,7 @@ impl ResonaApp {
             _settings_watch: None,
             settings_notice: String::new(),
             settings_discard: false,
+            settings_reset_confirm: false,
             core_info: None,
             diagnostic_error: String::new(),
             build_info_error: String::new(),
@@ -774,6 +778,7 @@ impl ResonaApp {
             seen_notifications: HashSet::new(),
             notification_order: VecDeque::new(),
             last_member_notification: None,
+            poke_notices: VecDeque::new(),
             pending: HashMap::new(),
             drafts: HashMap::new(),
             submitted_drafts: HashMap::new(),
@@ -938,6 +943,7 @@ impl ResonaApp {
         match result {
             Ok(id) => {
                 let scope = match &pending {
+                    Pending::Poke(target) => ReplyScope::Session(target.session.clone()),
                     Pending::Voice | Pending::VoiceSnapshot | Pending::PushToTalk => {
                         ReplyScope::Session(self.workspace.session.id.clone())
                     }
@@ -971,6 +977,11 @@ impl ResonaApp {
 
     fn request_failed(&mut self, pending: Pending, error: String) {
         match pending {
+            Pending::Poke(target) => {
+                if target.session == self.workspace.session.id && self.workspace.connected() {
+                    self.push_poke_notice(format!("戳一下失败：{error}"));
+                }
+            }
             Pending::DeleteServer(server_id) => {
                 if delete_modal_matches(self.modal.as_ref(), &server_id) {
                     self.server_error = error;
@@ -1067,10 +1078,15 @@ impl ResonaApp {
                 }
             }
             Incoming::Notifications(value) => {
-                if let Ok(workspace) = serde_json::from_value::<Workspace>(value) {
+                if let Ok(mut workspace) = serde_json::from_value::<Workspace>(value) {
                     if workspace.session.id == self.workspace.session.id
-                        && workspace.session.chat_epoch == self.workspace.session.chat_epoch
+                        && self.workspace.connected()
                     {
+                        if workspace.session.chat_epoch != self.workspace.session.chat_epoch {
+                            workspace
+                                .notifications
+                                .retain(|notification| notification.kind == "poke");
+                        }
                         self.process_notifications(&workspace);
                     }
                 }
@@ -1181,6 +1197,12 @@ impl ResonaApp {
                 }
                 let pending = Some(request.action);
                 match (pending, result) {
+                    (Some(Pending::Poke(_)), result) => {
+                        self.push_poke_notice(match result {
+                            Ok(_) => "已发送戳一下".into(),
+                            Err(error) => format!("戳一下失败：{error}"),
+                        });
+                    }
                     (Some(Pending::Account(session, revision)), result) => {
                         if session == self.workspace.session.id {
                             let current = revision == self.account_revision
@@ -1823,6 +1845,7 @@ impl ResonaApp {
                     self.resource_error.clear();
                 }
                 if workspace.session.id != self.workspace.session.id {
+                    self.poke_notices.clear();
                     self.queued_voice = None;
                     self.voice_target = None;
                     self.voice = VoiceState::default();
@@ -1833,6 +1856,7 @@ impl ResonaApp {
                     self.set_push_to_talk(false, cx);
                 }
                 if !workspace.connected() {
+                    self.poke_notices.clear();
                     self.device_menu = None;
                     self.detail_value = None;
                 }
@@ -2305,6 +2329,26 @@ impl ResonaApp {
         }
     }
 
+    fn push_poke_notice(&mut self, text: String) {
+        if self.poke_notices.len() == 8 {
+            self.poke_notices.pop_front();
+        }
+        self.poke_notices.push_back(text);
+    }
+
+    fn poke_user(&mut self, target: UserPlaybackTarget, cx: &mut Context<Self>) {
+        if self.closing
+            || !can_poke_user(&self.workspace, &target)
+            || self
+                .pending_actions()
+                .any(|p| matches!(p, Pending::Poke(_)))
+        {
+            return;
+        }
+        self.request("PokeUser", json!({"sessionID": target.session, "userID": target.user, "instance": target.instance}), Pending::Poke(target));
+        cx.notify();
+    }
+
     fn process_notifications(&mut self, workspace: &Workspace) {
         if self.closing {
             return;
@@ -2319,6 +2363,9 @@ impl ResonaApp {
                 if let Some(id) = self.notification_order.pop_front() {
                     self.seen_notifications.remove(&id);
                 }
+            }
+            if notification.kind == "poke" && workspace.connected() {
+                self.push_poke_notice(format!("{} 戳了你一下", notification.nickname));
             }
             let fresh = DateTime::parse_from_rfc3339(&notification.created_at)
                 .ok()
@@ -2741,6 +2788,7 @@ impl ResonaApp {
     }
 
     fn close_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings_reset_confirm = false;
         if matches!(
             self.modal,
             Some(
@@ -3255,6 +3303,7 @@ impl ResonaApp {
             return;
         }
         self.device_menu = None;
+        self.settings_reset_confirm = false;
         let mut desired = self.preferences.clone();
         desired.merge_settings(
             self.settings_baseline.as_ref().unwrap(),
@@ -4199,7 +4248,31 @@ impl ResonaApp {
                                                 .map(|u| u.playback_volume.min(794))
                                                 .unwrap_or(100);
                                             let muted = current.is_some_and(|u| u.playback_muted);
-                                            let mut menu = menu.label(format!(
+                                            let mut menu = menu;
+                                            if this.workspace.session.can_poke {
+                                                let entity = menu_entity.clone();
+                                                let target = menu_target.clone();
+                                                let can_poke = !this.closing
+                                                    && can_poke_user(&this.workspace, &target)
+                                                    && !this
+                                                        .pending_actions()
+                                                        .any(|p| matches!(p, Pending::Poke(_)));
+                                                menu = menu
+                                                    .item(
+                                                        PopupMenuItem::new("戳一下")
+                                                            .disabled(!can_poke)
+                                                            .on_click(move |_, _, cx| {
+                                                                entity.update(cx, |this, cx| {
+                                                                    this.poke_user(
+                                                                        target.clone(),
+                                                                        cx,
+                                                                    )
+                                                                });
+                                                            }),
+                                                    )
+                                                    .separator();
+                                            }
+                                            menu = menu.label(format!(
                                                 "本机收听 · {}",
                                                 playback_label(volume)
                                             ));
@@ -7981,6 +8054,49 @@ impl ResonaApp {
                                 }
                             }),
                     )
+                    .child(
+                        div().flex().flex_col().gap_2()
+                            .child(Button::new("reset-preferences")
+                                .label("重置偏好设置")
+                                .outline()
+                                .disabled(self.settings_apply.is_some() || self.closing)
+                                .on_click({
+                                    let entity = entity.clone();
+                                    move |_, _, cx| entity.update(cx, |this, cx| {
+                                        this.settings_reset_confirm = true;
+                                        cx.notify();
+                                    })
+                                }))
+                            .when(self.settings_reset_confirm, |section| {
+                                section.child(div().text_xs().text_color(color(MUTED))
+                                    .child("恢复设备、声音、提示音、外观和快捷键的默认值；保留服务器、身份、登录和侧栏布局。恢复后点击“应用”生效。"))
+                                    .child(div().flex().gap_2()
+                                        .child(Button::new("cancel-reset-preferences").label("取消重置").ghost().on_click({
+                                            let entity = entity.clone();
+                                            move |_, _, cx| entity.update(cx, |this, cx| {
+                                                this.settings_reset_confirm = false;
+                                                cx.notify();
+                                            })
+                                        }))
+                                        .child(Button::new("confirm-reset-preferences").label("恢复默认值").outline()
+                                            .disabled(self.settings_apply.is_some() || self.closing)
+                                            .on_click({
+                                                let entity = entity.clone();
+                                                move |_, window, cx| entity.update(cx, |this, cx| {
+                                                    if this.settings_apply.is_some() || this.closing { return; }
+                                                    if let Some(draft) = &mut this.settings_draft {
+                                                        draft.reset_settings();
+                                                        let shortcut = draft.push_to_talk_shortcut.clone();
+                                                        theme::apply(draft.theme, Some(window), cx);
+                                                        this.shortcut_input.update(cx, |input, cx| input.set_value(shortcut, window, cx));
+                                                        this.settings_notice = "已恢复默认草稿，点击应用后生效".into();
+                                                    }
+                                                    this.settings_reset_confirm = false;
+                                                    cx.notify();
+                                                })
+                                            })))
+                            }),
+                    )
                     .child(div().w_full().h(px(1.)).bg(color(LINE)))
                     .child(div().text_sm().text_color(color(MUTED)).child("本机诊断"))
                     .child(
@@ -8875,6 +8991,31 @@ impl Render for ResonaApp {
                 )
             })
             .children(self.render_modal(&view))
+            .when(
+                !self.poke_notices.is_empty() && self.workspace.connected() && !self.closing,
+                |root| {
+                    let entity = view.clone();
+                    root.child(
+                        div()
+                            .absolute()
+                            .top_3()
+                            .left_0()
+                            .w_full()
+                            .flex()
+                            .justify_center()
+                            .child(crate::components::attention_notice(
+                                self.poke_notices.front().cloned().unwrap_or_default(),
+                                self.poke_notices.len() - 1,
+                                move |_, _, cx| {
+                                    entity.update(cx, |this, cx| {
+                                        this.poke_notices.pop_front();
+                                        cx.notify();
+                                    })
+                                },
+                            )),
+                    )
+                },
+            )
             .when(self.closing, |root| {
                 root.child(
                     div()
@@ -8904,9 +9045,21 @@ impl Render for ResonaApp {
     }
 }
 
+fn can_poke_user(workspace: &Workspace, target: &UserPlaybackTarget) -> bool {
+    workspace.connected()
+        && workspace.session.can_poke
+        && workspace.session.id == target.session
+        && !target.instance.is_empty()
+        && workspace
+            .users
+            .iter()
+            .any(|user| user.id == target.user && user.instance == target.instance && !user.is_self)
+}
+
 fn notification_applies(workspace: &Workspace, notification: &crate::model::Notification) -> bool {
     match notification.kind.as_str() {
         "connected" => workspace.connected(),
+        "poke" => workspace.connected(),
         "disconnected" => true,
         "member_joined" | "member_left" => {
             workspace.connected() && notification.channel_id == workspace.session.channel_id
@@ -9540,6 +9693,51 @@ fn ordered_channels(channels: &[crate::model::Channel]) -> Vec<(crate::model::Ch
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn poke_targets_are_session_scoped_and_never_self_or_reused_ids() {
+        let mut workspace = super::Workspace::default();
+        workspace.session.mode = "connected".into();
+        workspace.session.id = "session".into();
+        workspace.session.channel_id = "1".into();
+        workspace.session.can_poke = true;
+        workspace.users.push(super::User {
+            id: "2".into(),
+            instance: "member-instance".into(),
+            channel_id: "2".into(),
+            ..Default::default()
+        });
+        let target = super::UserPlaybackTarget {
+            session: "session".into(),
+            user: "2".into(),
+            instance: "member-instance".into(),
+        };
+        assert!(super::can_poke_user(&workspace, &target));
+        workspace.users[0].instance = "replacement".into();
+        assert!(!super::can_poke_user(&workspace, &target));
+        workspace.users[0].instance = target.instance.clone();
+        workspace.users[0].is_self = true;
+        assert!(!super::can_poke_user(&workspace, &target));
+        workspace.users[0].is_self = false;
+        workspace.session.can_poke = false;
+        assert!(!super::can_poke_user(&workspace, &target));
+        workspace.session.can_poke = true;
+        workspace.session.id = "replacement".into();
+        assert!(!super::can_poke_user(&workspace, &target));
+    }
+
+    #[test]
+    fn applying_reset_preferences_never_changes_current_voice_mutes() {
+        let mut voice = super::VoiceState {
+            muted: true,
+            deafened: true,
+            ..Default::default()
+        };
+        super::apply_preferences(&super::Preferences::default(), &mut voice);
+        assert!(voice.muted);
+        assert!(voice.deafened);
+        assert!(voice.auto_unmute_on_connect);
+    }
+
     #[test]
     fn read_only_requests_do_not_block_unrelated_actions() {
         use super::Pending;

@@ -30,7 +30,13 @@ enum Kind {
   KIND_REORDER_CHANNEL = 16;
   KIND_ACCOUNT = 17;
   KIND_CHAT_PAGE = 18;
+  KIND_POKE = 19;
+  KIND_POKED = 20;
 }
+// Transient same-server attention request; instance prevents targeting a reused ID.
+message Poke { uint32 target = 1; string instance = 2; }
+// Filled by the server, never supplied by the sender. Not retained in chat history.
+message Poked { uint32 sender = 1; string instance = 2; string nickname = 3; }
 // Sent only over the authenticated reliable control stream. No secret is part
 // of State, resource events, chat messages, or diagnostic exports.
 message AccountCommand {
@@ -46,6 +52,7 @@ message Hello {
   string password = 2;
   bytes public_key = 3;
   bytes signature = 4;
+  bool receive_pokes = 5;
 }
 message ClaimOwner { string token = 1; }
 message CreateChannel { string name = 1; string description = 2; uint32 bitrate = 3; }
@@ -93,6 +100,7 @@ message State {
   bool can_reorder_channels = 16;
   string account_uid = 17;
   string account_name = 18;
+  bool can_poke = 19;
 }
 // VoiceState sets both flags; it is not a partial update. Missing flags mean false.
 message Command {

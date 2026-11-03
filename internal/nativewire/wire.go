@@ -43,6 +43,8 @@ const (
 	ReorderChannelKind
 	AccountKind
 	ChatPageKind
+	PokeKind
+	PokedKind
 )
 
 var ErrPacket = errors.New("invalid Resona packet")
@@ -53,10 +55,11 @@ type Frame struct {
 	Body    []byte
 }
 type Hello struct {
-	Nickname  string
-	Password  string
-	PublicKey []byte
-	Signature []byte
+	ReceivePokes bool
+	Nickname     string
+	Password     string
+	PublicKey    []byte
+	Signature    []byte
 }
 
 type (
@@ -95,7 +98,16 @@ type Member struct {
 	AccountUID string
 	ServerRole string
 }
+type Poke struct {
+	Target   uint16
+	Instance string
+}
+type Poked struct {
+	Sender             uint16
+	Instance, Nickname string
+}
 type State struct {
+	CanPoke                  bool
 	CanWatchResources        bool
 	Revision                 uint64
 	AllChannels, AllMembers  bool
@@ -158,6 +170,7 @@ const (
 	AccountInvalid
 	AccountNameTaken
 	AccountBusy
+	MemberUnavailable
 )
 
 type Message struct {

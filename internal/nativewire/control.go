@@ -12,6 +12,14 @@ import (
 // ordinary copyable values, without protobuf runtime state or mutable pointers.
 func marshalBody(kind uint8, value any) (proto.Message, error) {
 	switch v := value.(type) {
+	case Poke:
+		if kind == PokeKind {
+			return &pb.Poke{Target: uint32(v.Target), Instance: v.Instance}, nil
+		}
+	case Poked:
+		if kind == PokedKind {
+			return &pb.Poked{Sender: uint32(v.Sender), Instance: v.Instance, Nickname: v.Nickname}, nil
+		}
 	case AccountCommand:
 		if kind == AccountKind {
 			return &pb.AccountCommand{Action: v.Action, Username: v.Username, Password: v.Password, Token: v.Token, NewPassword: v.NewPassword, Nickname: v.Nickname}, nil
@@ -38,7 +46,7 @@ func marshalBody(kind uint8, value any) (proto.Message, error) {
 		}
 	case Hello:
 		if kind == HelloKind {
-			return &pb.Hello{Nickname: v.Nickname, Password: v.Password, PublicKey: v.PublicKey, Signature: v.Signature}, nil
+			return &pb.Hello{Nickname: v.Nickname, Password: v.Password, PublicKey: v.PublicKey, Signature: v.Signature, ReceivePokes: v.ReceivePokes}, nil
 		}
 	case ClaimOwner:
 		if kind == ClaimOwnerKind {
@@ -50,6 +58,7 @@ func marshalBody(kind uint8, value any) (proto.Message, error) {
 		}
 		s := &pb.State{Name: v.Name, Self: uint32(v.Self), Epoch: v.Epoch, Channels: make([]*pb.Channel, len(v.Channels)), Members: make([]*pb.Member, len(v.Members)), IdentityUid: v.IdentityUID, ServerRole: v.ServerRole, CanClaimOwner: v.CanClaimOwner}
 		s.CanManageChannels = v.CanManageChannels
+		s.CanPoke = v.CanPoke
 		s.CanReorderChannels = v.CanReorderChannels
 		s.CanConfigureChannelAudio = v.CanConfigureChannelAudio
 		s.CanWatchResources, s.Revision = v.CanWatchResources, v.Revision
@@ -99,6 +108,30 @@ func marshalBody(kind uint8, value any) (proto.Message, error) {
 
 func decodeBody(f Frame, value any) error {
 	switch out := value.(type) {
+	case *Poke:
+		if out == nil || f.Kind != PokeKind {
+			return ErrPacket
+		}
+		var v pb.Poke
+		if err := unmarshal.Unmarshal(f.Body, &v); err != nil {
+			return err
+		}
+		if v.Target == 0 || v.Target > math.MaxUint16 || len(v.Instance) == 0 || len(v.Instance) > 128 {
+			return ErrPacket
+		}
+		*out = Poke{Target: uint16(v.Target), Instance: v.Instance}
+	case *Poked:
+		if out == nil || f.Kind != PokedKind {
+			return ErrPacket
+		}
+		var v pb.Poked
+		if err := unmarshal.Unmarshal(f.Body, &v); err != nil {
+			return err
+		}
+		if v.Sender == 0 || v.Sender > math.MaxUint16 || len(v.Instance) == 0 || len(v.Instance) > 128 || len(v.Nickname) > 120 {
+			return ErrPacket
+		}
+		*out = Poked{Sender: uint16(v.Sender), Instance: v.Instance, Nickname: v.Nickname}
 	case *AccountCommand:
 		if out == nil || f.Kind != AccountKind {
 			return ErrPacket
@@ -173,7 +206,7 @@ func decodeBody(f Frame, value any) error {
 		if err := unmarshal.Unmarshal(f.Body, &v); err != nil {
 			return err
 		}
-		*out = Hello{Nickname: v.Nickname, Password: v.Password, PublicKey: v.PublicKey, Signature: v.Signature}
+		*out = Hello{Nickname: v.Nickname, Password: v.Password, PublicKey: v.PublicKey, Signature: v.Signature, ReceivePokes: v.ReceivePokes}
 	case *ClaimOwner:
 		if out == nil || f.Kind != ClaimOwnerKind {
 			return ErrPacket
@@ -269,6 +302,7 @@ func decodeBody(f Frame, value any) error {
 		}
 		s := State{Name: v.Name, Self: uint16(v.Self), Epoch: v.Epoch, Channels: make([]Channel, len(v.Channels)), Members: make([]Member, len(v.Members)), IdentityUID: v.IdentityUid, ServerRole: v.ServerRole, CanClaimOwner: v.CanClaimOwner}
 		s.CanManageChannels = v.CanManageChannels
+		s.CanPoke = v.CanPoke
 		s.CanReorderChannels = v.CanReorderChannels
 		s.CanConfigureChannelAudio = v.CanConfigureChannelAudio
 		s.CanWatchResources, s.Revision = v.CanWatchResources, v.Revision

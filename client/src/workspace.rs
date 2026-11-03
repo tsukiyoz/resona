@@ -196,6 +196,7 @@ impl Projection {
             current.account_uid.clear();
             current.account_name.clear();
             current.can_claim_owner = false;
+            current.can_poke = false;
             current.can_manage_channels = false;
             current.can_reorder_channels = false;
             current.can_configure_channel_audio = false;
@@ -222,6 +223,7 @@ impl Projection {
         current.account_name = state.account_name.clone();
         current.server_role = state.server_role.clone();
         current.can_claim_owner = state.can_claim_owner;
+        current.can_poke = state.can_poke;
         current.can_manage_channels = state.can_manage_channels;
         current.can_reorder_channels = state.can_reorder_channels;
         current.can_configure_channel_audio = state.can_configure_channel_audio;
@@ -336,11 +338,14 @@ impl Projection {
             .iter()
             .filter(|event| event.serial > self.event)
         {
-            if event.channel == channel && event.epoch == snapshot.state.epoch {
+            if event.kind == "poke"
+                || (event.channel == channel && event.epoch == snapshot.state.epoch)
+            {
                 if self.workspace.notifications.len() == 64 {
                     self.workspace.notifications.remove(0);
                 }
                 self.workspace.notifications.push(Notification {
+                    nickname: event.nickname.clone(),
                     id: format!("{}-{}", life.generation, event.serial),
                     kind: event.kind.into(),
                     channel_id: channel.to_string(),
@@ -661,6 +666,7 @@ mod tests {
         let (mut p, life, mut s) = fixture();
         Arc::make_mut(&mut s.events).extend([
             session::MemberEvent {
+                nickname: String::new(),
                 serial: 1,
                 kind: "member_left",
                 channel: 1,
@@ -668,6 +674,7 @@ mod tests {
                 timestamp: "old".into(),
             },
             session::MemberEvent {
+                nickname: String::new(),
                 serial: 2,
                 kind: "member_joined",
                 channel: 1,
@@ -680,5 +687,33 @@ mod tests {
         assert_eq!(p.workspace.notifications[0].created_at, "original");
         p.apply(&life, Some(&s));
         assert_eq!(p.workspace.notifications.len(), 1);
+    }
+
+    #[test]
+    fn poke_is_session_scoped_and_survives_background_and_channel_change() {
+        let (mut p, life, mut s) = fixture();
+        Arc::make_mut(&mut s.events).push_back(session::MemberEvent {
+            serial: 1,
+            kind: "poke",
+            channel: 0,
+            epoch: 0,
+            nickname: "跨频道朋友🙂".into(),
+            timestamp: "received".into(),
+        });
+        p.apply(&life, Some(&s));
+        assert_eq!(p.workspace.notifications.len(), 1);
+        // The background path consumes events without projecting all resources.
+        p.observe_events(&life, &s);
+        assert_eq!(p.workspace.notifications.len(), 1);
+        Arc::make_mut(&mut s.state).epoch += 1;
+        p.apply(&life, Some(&s));
+        assert_eq!(p.workspace.notifications.len(), 1);
+        assert_eq!(p.workspace.notifications[0].nickname, "跨频道朋友🙂");
+        let mut next = life.clone();
+        next.generation += 1;
+        next.session_id = "replacement".into();
+        Arc::make_mut(&mut s.events).clear();
+        p.apply(&next, Some(&s));
+        assert!(p.workspace.notifications.is_empty());
     }
 }

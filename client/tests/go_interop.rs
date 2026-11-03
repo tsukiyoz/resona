@@ -101,6 +101,81 @@ async fn app_session(
 }
 
 #[tokio::test]
+async fn poke_crosses_channels_without_chat_history_or_replay() {
+    use resona_client::session::{Command as C, Error as E};
+    let (_server, address, key) = start_peer(&["-server"]);
+    let a = app_session(address, key, "发起者🙂").await;
+    let mut b = app_session(address, key, "接收者").await;
+    assert!(a.handle.state.borrow().state.can_poke);
+    let send = |handle: resona_client::session::Handle, command| async move {
+        handle
+            .command(
+                command,
+                Instant::now() + Duration::from_secs(3),
+                &CancellationToken::new(),
+            )
+            .await
+    };
+    send(b.handle.clone(), C::Move(2)).await.unwrap();
+    wait_state(&mut b.handle, |s| s.channel() == 2).await;
+    let member = b
+        .handle
+        .state
+        .borrow()
+        .state
+        .members
+        .iter()
+        .find(|m| m.id == b.handle.state.borrow().state.self_)
+        .unwrap()
+        .clone();
+    let command = C::Poke {
+        target: member.id.try_into().unwrap(),
+        instance: member.instance.clone(),
+    };
+    send(a.handle.clone(), command.clone()).await.unwrap();
+    wait_state(&mut b.handle, |s| s.events.iter().any(|e| e.kind == "poke")).await;
+    assert!(
+        b.handle
+            .state
+            .borrow()
+            .events
+            .iter()
+            .any(|e| e.nickname == "发起者🙂")
+    );
+    assert!(b.handle.state.borrow().messages.is_empty());
+    assert_eq!(send(a.handle.clone(), command).await, Err(E::Rejected(3)));
+    assert_eq!(
+        send(
+            a.handle.clone(),
+            C::Poke {
+                target: member.id.try_into().unwrap(),
+                instance: "stale".into()
+            }
+        )
+        .await,
+        Err(E::Rejected(13))
+    );
+    send(b.handle.clone(), C::Move(1)).await.unwrap();
+    wait_state(&mut b.handle, |s| s.channel() == 1).await;
+    assert_eq!(
+        b.handle
+            .state
+            .borrow()
+            .events
+            .iter()
+            .filter(|e| e.kind == "poke")
+            .count(),
+        1
+    );
+    b.close().await;
+    let b = app_session(address, key, "new-receiver").await;
+    assert!(b.handle.state.borrow().events.is_empty());
+    assert!(b.handle.state.borrow().messages.is_empty());
+    a.close().await;
+    b.close().await;
+}
+
+#[tokio::test]
 async fn account_owner_channel_crud_and_chat_survive_server_restart() {
     use resona_client::session::{AccountRequest, Command as C, Error as E, Handle};
     async fn command(handle: &Handle, command: C) {

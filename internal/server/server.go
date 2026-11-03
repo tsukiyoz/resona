@@ -48,6 +48,9 @@ type Server struct {
 	pendingMaxClients int
 }
 type peer struct {
+	receivePokes   bool
+	pokeSend       bucket
+	pokeReceive    bucket
 	account        accounts.Proof
 	accountExpires time.Time
 	accountBucket  bucket
@@ -213,6 +216,7 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 	_ = stream.SetDeadline(time.Time{})
 	p := &peer{conn: c, stream: stream, epoch: 1, out: make(chan []byte, 16), voiceOut: w.NewVoiceRing(4), done: make(chan struct{}), chatWake: make(chan struct{}, 1), chatOut: make(chan []byte, 4)}
 	p.identity = nativeidentity.UID(hello.PublicKey)
+	p.receivePokes = hello.ReceivePokes
 	// Bootstrap only the current channel; the client explicitly lists what its UI needs.
 	s.mu.Lock()
 	// IDs are never reused during this server lifetime, including after disconnect.
@@ -290,6 +294,12 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 		}
 		if f.Kind == w.AccountKind {
 			if !s.accountCommand(p, f) {
+				return
+			}
+			continue
+		}
+		if f.Kind == w.PokeKind {
+			if !s.pokeCommand(p, f) {
 				return
 			}
 			continue
@@ -429,7 +439,7 @@ func (s *Server) stateLocked(p *peer) w.State {
 		}
 	}
 	manage := s.config.Store.Allowed(p.principal(), "channels", "write", "*")
-	return w.State{Name: s.config.Name, Self: p.member.ID, Epoch: p.epoch, Channels: channels, Members: members, IdentityUID: p.identity, AccountUID: p.principal(), AccountName: p.account.Username, ServerRole: role, CanClaimOwner: canClaim, CanManageChannels: manage, CanReorderChannels: manage, CanConfigureChannelAudio: manage, CanWatchResources: true, AllChannels: p.watch.AllChannels, AllMembers: p.watch.AllMembers, DefaultChannel: s.defaultChannel}
+	return w.State{Name: s.config.Name, Self: p.member.ID, Epoch: p.epoch, Channels: channels, Members: members, IdentityUID: p.identity, AccountUID: p.principal(), AccountName: p.account.Username, ServerRole: role, CanClaimOwner: canClaim, CanManageChannels: manage, CanReorderChannels: manage, CanConfigureChannelAudio: manage, CanWatchResources: true, AllChannels: p.watch.AllChannels, AllMembers: p.watch.AllMembers, DefaultChannel: s.defaultChannel, CanPoke: true}
 }
 
 // One shared KV informer feeds the existing per-session interest projection.

@@ -86,6 +86,14 @@ impl Default for Preferences {
 }
 
 impl Preferences {
+    pub fn reset_settings(&mut self) {
+        *self = Self {
+            read_only: self.read_only,
+            server_sidebar_collapsed: self.server_sidebar_collapsed,
+            ..Self::default()
+        };
+    }
+
     pub fn recovery() -> Self {
         Self {
             read_only: true,
@@ -675,10 +683,37 @@ mod tests {
         Preferences::default().save_at(&path).unwrap();
         let original = fs::read(&path).unwrap();
         let mut changed = recovery.clone();
+        changed.reset_settings();
         changed.playback_volume = 300;
         assert!(changed.save_ordered_at(1, &Mutex::new(0), &path).is_err());
         assert_eq!(fs::read(&path).unwrap(), original);
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn reset_changes_only_the_draft_and_preserves_navigation_and_protection() {
+        let original = Preferences {
+            theme: ThemePreference::Light,
+            playback_volume: 300,
+            auto_unmute_on_connect: false,
+            server_sidebar_collapsed: true,
+            ..Preferences::default()
+        };
+        let mut draft = original.clone();
+        draft.reset_settings();
+        assert_eq!(original.playback_volume, 300);
+        assert_eq!(
+            draft.playback_volume,
+            Preferences::default().playback_volume
+        );
+        assert!(draft.server_sidebar_collapsed);
+        let mut applied = original.clone();
+        applied.merge_settings(&original, &draft);
+        assert_eq!(applied, draft);
+        assert_eq!(original.theme, ThemePreference::Light);
+        let mut protected = Preferences::recovery();
+        protected.reset_settings();
+        assert!(protected.read_only);
     }
 
     #[test]

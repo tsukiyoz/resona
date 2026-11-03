@@ -70,6 +70,7 @@ impl SoundHandle {
             "disconnected" => include_bytes!("../../assets/sounds/disconnected.wav").as_slice(),
             "member_joined" => include_bytes!("../../assets/sounds/member-joined.wav").as_slice(),
             "member_left" => include_bytes!("../../assets/sounds/member-left.wav").as_slice(),
+            "poke" => include_bytes!("../../assets/sounds/connected.wav").as_slice(),
             _ => return Err("提示音类型无效".into()),
         };
         let pcm = decode(bytes)?;

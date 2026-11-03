@@ -43,6 +43,8 @@ const (
 	Kind_KIND_REORDER_CHANNEL Kind = 16
 	Kind_KIND_ACCOUNT         Kind = 17
 	Kind_KIND_CHAT_PAGE       Kind = 18
+	Kind_KIND_POKE            Kind = 19
+	Kind_KIND_POKED           Kind = 20
 )
 
 // Enum value maps for Kind.
@@ -67,6 +69,8 @@ var (
 		16: "KIND_REORDER_CHANNEL",
 		17: "KIND_ACCOUNT",
 		18: "KIND_CHAT_PAGE",
+		19: "KIND_POKE",
+		20: "KIND_POKED",
 	}
 	Kind_value = map[string]int32{
 		"KIND_UNSPECIFIED":     0,
@@ -88,6 +92,8 @@ var (
 		"KIND_REORDER_CHANNEL": 16,
 		"KIND_ACCOUNT":         17,
 		"KIND_CHAT_PAGE":       18,
+		"KIND_POKE":            19,
+		"KIND_POKED":           20,
 	}
 )
 
@@ -180,6 +186,120 @@ func (x *Frame) GetBody() []byte {
 	return nil
 }
 
+// Transient same-server attention request; instance prevents targeting a reused ID.
+type Poke struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Target        uint32                 `protobuf:"varint,1,opt,name=target,proto3" json:"target,omitempty"`
+	Instance      string                 `protobuf:"bytes,2,opt,name=instance,proto3" json:"instance,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Poke) Reset() {
+	*x = Poke{}
+	mi := &file_control_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Poke) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Poke) ProtoMessage() {}
+
+func (x *Poke) ProtoReflect() protoreflect.Message {
+	mi := &file_control_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Poke.ProtoReflect.Descriptor instead.
+func (*Poke) Descriptor() ([]byte, []int) {
+	return file_control_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *Poke) GetTarget() uint32 {
+	if x != nil {
+		return x.Target
+	}
+	return 0
+}
+
+func (x *Poke) GetInstance() string {
+	if x != nil {
+		return x.Instance
+	}
+	return ""
+}
+
+// Filled by the server, never supplied by the sender. Not retained in chat history.
+type Poked struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Sender        uint32                 `protobuf:"varint,1,opt,name=sender,proto3" json:"sender,omitempty"`
+	Instance      string                 `protobuf:"bytes,2,opt,name=instance,proto3" json:"instance,omitempty"`
+	Nickname      string                 `protobuf:"bytes,3,opt,name=nickname,proto3" json:"nickname,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Poked) Reset() {
+	*x = Poked{}
+	mi := &file_control_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Poked) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Poked) ProtoMessage() {}
+
+func (x *Poked) ProtoReflect() protoreflect.Message {
+	mi := &file_control_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Poked.ProtoReflect.Descriptor instead.
+func (*Poked) Descriptor() ([]byte, []int) {
+	return file_control_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *Poked) GetSender() uint32 {
+	if x != nil {
+		return x.Sender
+	}
+	return 0
+}
+
+func (x *Poked) GetInstance() string {
+	if x != nil {
+		return x.Instance
+	}
+	return ""
+}
+
+func (x *Poked) GetNickname() string {
+	if x != nil {
+		return x.Nickname
+	}
+	return ""
+}
+
 // Sent only over the authenticated reliable control stream. No secret is part
 // of State, resource events, chat messages, or diagnostic exports.
 type AccountCommand struct {
@@ -196,7 +316,7 @@ type AccountCommand struct {
 
 func (x *AccountCommand) Reset() {
 	*x = AccountCommand{}
-	mi := &file_control_proto_msgTypes[1]
+	mi := &file_control_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -208,7 +328,7 @@ func (x *AccountCommand) String() string {
 func (*AccountCommand) ProtoMessage() {}
 
 func (x *AccountCommand) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[1]
+	mi := &file_control_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -221,7 +341,7 @@ func (x *AccountCommand) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AccountCommand.ProtoReflect.Descriptor instead.
 func (*AccountCommand) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{1}
+	return file_control_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *AccountCommand) GetAction() string {
@@ -272,13 +392,14 @@ type Hello struct {
 	Password      string                 `protobuf:"bytes,2,opt,name=password,proto3" json:"password,omitempty"`
 	PublicKey     []byte                 `protobuf:"bytes,3,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
 	Signature     []byte                 `protobuf:"bytes,4,opt,name=signature,proto3" json:"signature,omitempty"`
+	ReceivePokes  bool                   `protobuf:"varint,5,opt,name=receive_pokes,json=receivePokes,proto3" json:"receive_pokes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Hello) Reset() {
 	*x = Hello{}
-	mi := &file_control_proto_msgTypes[2]
+	mi := &file_control_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -290,7 +411,7 @@ func (x *Hello) String() string {
 func (*Hello) ProtoMessage() {}
 
 func (x *Hello) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[2]
+	mi := &file_control_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -303,7 +424,7 @@ func (x *Hello) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Hello.ProtoReflect.Descriptor instead.
 func (*Hello) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{2}
+	return file_control_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *Hello) GetNickname() string {
@@ -334,6 +455,13 @@ func (x *Hello) GetSignature() []byte {
 	return nil
 }
 
+func (x *Hello) GetReceivePokes() bool {
+	if x != nil {
+		return x.ReceivePokes
+	}
+	return false
+}
+
 type ClaimOwner struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Token         string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
@@ -343,7 +471,7 @@ type ClaimOwner struct {
 
 func (x *ClaimOwner) Reset() {
 	*x = ClaimOwner{}
-	mi := &file_control_proto_msgTypes[3]
+	mi := &file_control_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -355,7 +483,7 @@ func (x *ClaimOwner) String() string {
 func (*ClaimOwner) ProtoMessage() {}
 
 func (x *ClaimOwner) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[3]
+	mi := &file_control_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -368,7 +496,7 @@ func (x *ClaimOwner) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClaimOwner.ProtoReflect.Descriptor instead.
 func (*ClaimOwner) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{3}
+	return file_control_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ClaimOwner) GetToken() string {
@@ -389,7 +517,7 @@ type CreateChannel struct {
 
 func (x *CreateChannel) Reset() {
 	*x = CreateChannel{}
-	mi := &file_control_proto_msgTypes[4]
+	mi := &file_control_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -401,7 +529,7 @@ func (x *CreateChannel) String() string {
 func (*CreateChannel) ProtoMessage() {}
 
 func (x *CreateChannel) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[4]
+	mi := &file_control_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -414,7 +542,7 @@ func (x *CreateChannel) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateChannel.ProtoReflect.Descriptor instead.
 func (*CreateChannel) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{4}
+	return file_control_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *CreateChannel) GetName() string {
@@ -450,7 +578,7 @@ type UpdateChannel struct {
 
 func (x *UpdateChannel) Reset() {
 	*x = UpdateChannel{}
-	mi := &file_control_proto_msgTypes[5]
+	mi := &file_control_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -462,7 +590,7 @@ func (x *UpdateChannel) String() string {
 func (*UpdateChannel) ProtoMessage() {}
 
 func (x *UpdateChannel) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[5]
+	mi := &file_control_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -475,7 +603,7 @@ func (x *UpdateChannel) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateChannel.ProtoReflect.Descriptor instead.
 func (*UpdateChannel) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{5}
+	return file_control_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *UpdateChannel) GetId() uint32 {
@@ -515,7 +643,7 @@ type DeleteChannel struct {
 
 func (x *DeleteChannel) Reset() {
 	*x = DeleteChannel{}
-	mi := &file_control_proto_msgTypes[6]
+	mi := &file_control_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -527,7 +655,7 @@ func (x *DeleteChannel) String() string {
 func (*DeleteChannel) ProtoMessage() {}
 
 func (x *DeleteChannel) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[6]
+	mi := &file_control_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -540,7 +668,7 @@ func (x *DeleteChannel) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteChannel.ProtoReflect.Descriptor instead.
 func (*DeleteChannel) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{6}
+	return file_control_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *DeleteChannel) GetId() uint32 {
@@ -562,7 +690,7 @@ type ReorderChannel struct {
 
 func (x *ReorderChannel) Reset() {
 	*x = ReorderChannel{}
-	mi := &file_control_proto_msgTypes[7]
+	mi := &file_control_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -574,7 +702,7 @@ func (x *ReorderChannel) String() string {
 func (*ReorderChannel) ProtoMessage() {}
 
 func (x *ReorderChannel) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[7]
+	mi := &file_control_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -587,7 +715,7 @@ func (x *ReorderChannel) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReorderChannel.ProtoReflect.Descriptor instead.
 func (*ReorderChannel) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{7}
+	return file_control_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ReorderChannel) GetId() uint32 {
@@ -616,7 +744,7 @@ type WatchResources struct {
 
 func (x *WatchResources) Reset() {
 	*x = WatchResources{}
-	mi := &file_control_proto_msgTypes[8]
+	mi := &file_control_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -628,7 +756,7 @@ func (x *WatchResources) String() string {
 func (*WatchResources) ProtoMessage() {}
 
 func (x *WatchResources) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[8]
+	mi := &file_control_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -641,7 +769,7 @@ func (x *WatchResources) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchResources.ProtoReflect.Descriptor instead.
 func (*WatchResources) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{8}
+	return file_control_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *WatchResources) GetAllChannels() bool {
@@ -670,7 +798,7 @@ type Channel struct {
 
 func (x *Channel) Reset() {
 	*x = Channel{}
-	mi := &file_control_proto_msgTypes[9]
+	mi := &file_control_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -682,7 +810,7 @@ func (x *Channel) String() string {
 func (*Channel) ProtoMessage() {}
 
 func (x *Channel) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[9]
+	mi := &file_control_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -695,7 +823,7 @@ func (x *Channel) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Channel.ProtoReflect.Descriptor instead.
 func (*Channel) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{9}
+	return file_control_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *Channel) GetId() uint32 {
@@ -743,7 +871,7 @@ type Member struct {
 
 func (x *Member) Reset() {
 	*x = Member{}
-	mi := &file_control_proto_msgTypes[10]
+	mi := &file_control_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -755,7 +883,7 @@ func (x *Member) String() string {
 func (*Member) ProtoMessage() {}
 
 func (x *Member) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[10]
+	mi := &file_control_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -768,7 +896,7 @@ func (x *Member) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Member.ProtoReflect.Descriptor instead.
 func (*Member) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{10}
+	return file_control_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *Member) GetId() uint32 {
@@ -854,13 +982,14 @@ type State struct {
 	CanReorderChannels       bool                   `protobuf:"varint,16,opt,name=can_reorder_channels,json=canReorderChannels,proto3" json:"can_reorder_channels,omitempty"`
 	AccountUid               string                 `protobuf:"bytes,17,opt,name=account_uid,json=accountUid,proto3" json:"account_uid,omitempty"`
 	AccountName              string                 `protobuf:"bytes,18,opt,name=account_name,json=accountName,proto3" json:"account_name,omitempty"`
+	CanPoke                  bool                   `protobuf:"varint,19,opt,name=can_poke,json=canPoke,proto3" json:"can_poke,omitempty"`
 	unknownFields            protoimpl.UnknownFields
 	sizeCache                protoimpl.SizeCache
 }
 
 func (x *State) Reset() {
 	*x = State{}
-	mi := &file_control_proto_msgTypes[11]
+	mi := &file_control_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -872,7 +1001,7 @@ func (x *State) String() string {
 func (*State) ProtoMessage() {}
 
 func (x *State) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[11]
+	mi := &file_control_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -885,7 +1014,7 @@ func (x *State) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use State.ProtoReflect.Descriptor instead.
 func (*State) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{11}
+	return file_control_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *State) GetName() string {
@@ -1014,6 +1143,13 @@ func (x *State) GetAccountName() string {
 	return ""
 }
 
+func (x *State) GetCanPoke() bool {
+	if x != nil {
+		return x.CanPoke
+	}
+	return false
+}
+
 // VoiceState sets both flags; it is not a partial update. Missing flags mean false.
 type Command struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1031,7 +1167,7 @@ type Command struct {
 
 func (x *Command) Reset() {
 	*x = Command{}
-	mi := &file_control_proto_msgTypes[12]
+	mi := &file_control_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1043,7 +1179,7 @@ func (x *Command) String() string {
 func (*Command) ProtoMessage() {}
 
 func (x *Command) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[12]
+	mi := &file_control_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1056,7 +1192,7 @@ func (x *Command) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Command.ProtoReflect.Descriptor instead.
 func (*Command) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{12}
+	return file_control_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *Command) GetChannel() uint32 {
@@ -1125,7 +1261,7 @@ type Reply struct {
 
 func (x *Reply) Reset() {
 	*x = Reply{}
-	mi := &file_control_proto_msgTypes[13]
+	mi := &file_control_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1137,7 +1273,7 @@ func (x *Reply) String() string {
 func (*Reply) ProtoMessage() {}
 
 func (x *Reply) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[13]
+	mi := &file_control_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1150,7 +1286,7 @@ func (x *Reply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Reply.ProtoReflect.Descriptor instead.
 func (*Reply) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{13}
+	return file_control_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *Reply) GetCode() uint32 {
@@ -1186,7 +1322,7 @@ type Message struct {
 
 func (x *Message) Reset() {
 	*x = Message{}
-	mi := &file_control_proto_msgTypes[14]
+	mi := &file_control_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1198,7 +1334,7 @@ func (x *Message) String() string {
 func (*Message) ProtoMessage() {}
 
 func (x *Message) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[14]
+	mi := &file_control_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1211,7 +1347,7 @@ func (x *Message) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Message.ProtoReflect.Descriptor instead.
 func (*Message) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{14}
+	return file_control_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *Message) GetChannel() uint32 {
@@ -1306,7 +1442,7 @@ type ChatStatus struct {
 
 func (x *ChatStatus) Reset() {
 	*x = ChatStatus{}
-	mi := &file_control_proto_msgTypes[15]
+	mi := &file_control_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1318,7 +1454,7 @@ func (x *ChatStatus) String() string {
 func (*ChatStatus) ProtoMessage() {}
 
 func (x *ChatStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[15]
+	mi := &file_control_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1331,7 +1467,7 @@ func (x *ChatStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChatStatus.ProtoReflect.Descriptor instead.
 func (*ChatStatus) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{15}
+	return file_control_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ChatStatus) GetChannel() uint32 {
@@ -1393,7 +1529,7 @@ type ChatPage struct {
 
 func (x *ChatPage) Reset() {
 	*x = ChatPage{}
-	mi := &file_control_proto_msgTypes[16]
+	mi := &file_control_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1405,7 +1541,7 @@ func (x *ChatPage) String() string {
 func (*ChatPage) ProtoMessage() {}
 
 func (x *ChatPage) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[16]
+	mi := &file_control_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1418,7 +1554,7 @@ func (x *ChatPage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChatPage.ProtoReflect.Descriptor instead.
 func (*ChatPage) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{16}
+	return file_control_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ChatPage) GetChannel() uint32 {
@@ -1478,20 +1614,28 @@ const file_control_proto_rawDesc = "" +
 	"\x05Frame\x12+\n" +
 	"\x04kind\x18\x01 \x01(\x0e2\x17.resona.control.v1.KindR\x04kind\x12\x18\n" +
 	"\arequest\x18\x02 \x01(\rR\arequest\x12\x12\n" +
-	"\x04body\x18\x03 \x01(\fR\x04body\"\xb5\x01\n" +
+	"\x04body\x18\x03 \x01(\fR\x04body\":\n" +
+	"\x04Poke\x12\x16\n" +
+	"\x06target\x18\x01 \x01(\rR\x06target\x12\x1a\n" +
+	"\binstance\x18\x02 \x01(\tR\binstance\"W\n" +
+	"\x05Poked\x12\x16\n" +
+	"\x06sender\x18\x01 \x01(\rR\x06sender\x12\x1a\n" +
+	"\binstance\x18\x02 \x01(\tR\binstance\x12\x1a\n" +
+	"\bnickname\x18\x03 \x01(\tR\bnickname\"\xb5\x01\n" +
 	"\x0eAccountCommand\x12\x16\n" +
 	"\x06action\x18\x01 \x01(\tR\x06action\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\x12\x1a\n" +
 	"\bpassword\x18\x03 \x01(\tR\bpassword\x12\x14\n" +
 	"\x05token\x18\x04 \x01(\tR\x05token\x12!\n" +
 	"\fnew_password\x18\x05 \x01(\tR\vnewPassword\x12\x1a\n" +
-	"\bnickname\x18\x06 \x01(\tR\bnickname\"|\n" +
+	"\bnickname\x18\x06 \x01(\tR\bnickname\"\xa1\x01\n" +
 	"\x05Hello\x12\x1a\n" +
 	"\bnickname\x18\x01 \x01(\tR\bnickname\x12\x1a\n" +
 	"\bpassword\x18\x02 \x01(\tR\bpassword\x12\x1d\n" +
 	"\n" +
 	"public_key\x18\x03 \x01(\fR\tpublicKey\x12\x1c\n" +
-	"\tsignature\x18\x04 \x01(\fR\tsignature\"\"\n" +
+	"\tsignature\x18\x04 \x01(\fR\tsignature\x12#\n" +
+	"\rreceive_pokes\x18\x05 \x01(\bR\freceivePokes\"\"\n" +
 	"\n" +
 	"ClaimOwner\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\"_\n" +
@@ -1529,7 +1673,7 @@ const file_control_proto_rawDesc = "" +
 	"\vaccount_uid\x18\b \x01(\tR\n" +
 	"accountUid\x12\x1f\n" +
 	"\vserver_role\x18\t \x01(\tR\n" +
-	"serverRole\"\xbc\x05\n" +
+	"serverRole\"\xd7\x05\n" +
 	"\x05State\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04self\x18\x02 \x01(\rR\x04self\x12\x14\n" +
@@ -1552,7 +1696,8 @@ const file_control_proto_rawDesc = "" +
 	"\x14can_reorder_channels\x18\x10 \x01(\bR\x12canReorderChannels\x12\x1f\n" +
 	"\vaccount_uid\x18\x11 \x01(\tR\n" +
 	"accountUid\x12!\n" +
-	"\faccount_name\x18\x12 \x01(\tR\vaccountName\"\xd6\x01\n" +
+	"\faccount_name\x18\x12 \x01(\tR\vaccountName\x12\x19\n" +
+	"\bcan_poke\x18\x13 \x01(\bR\acanPoke\"\xd6\x01\n" +
 	"\aCommand\x12\x18\n" +
 	"\achannel\x18\x01 \x01(\rR\achannel\x12\x12\n" +
 	"\x04text\x18\x02 \x01(\tR\x04text\x12\x14\n" +
@@ -1602,7 +1747,7 @@ const file_control_proto_rawDesc = "" +
 	"\bmessages\x18\x05 \x03(\v2\x1a.resona.control.v1.MessageR\bmessages\x12\x1f\n" +
 	"\vnext_before\x18\x06 \x01(\x04R\n" +
 	"nextBefore\x12\x19\n" +
-	"\bhas_more\x18\a \x01(\bR\ahasMore*\x89\x03\n" +
+	"\bhas_more\x18\a \x01(\bR\ahasMore*\xa8\x03\n" +
 	"\x04Kind\x12\x14\n" +
 	"\x10KIND_UNSPECIFIED\x10\x00\x12\x0e\n" +
 	"\n" +
@@ -1626,7 +1771,10 @@ const file_control_proto_rawDesc = "" +
 	"\x10KIND_CHAT_STATUS\x10\x0f\x12\x18\n" +
 	"\x14KIND_REORDER_CHANNEL\x10\x10\x12\x10\n" +
 	"\fKIND_ACCOUNT\x10\x11\x12\x12\n" +
-	"\x0eKIND_CHAT_PAGE\x10\x12B3Z1github.com/tsukiyoz/resona/internal/nativewire/pbb\x06proto3"
+	"\x0eKIND_CHAT_PAGE\x10\x12\x12\r\n" +
+	"\tKIND_POKE\x10\x13\x12\x0e\n" +
+	"\n" +
+	"KIND_POKED\x10\x14B3Z1github.com/tsukiyoz/resona/internal/nativewire/pbb\x06proto3"
 
 var (
 	file_control_proto_rawDescOnce sync.Once
@@ -1641,32 +1789,34 @@ func file_control_proto_rawDescGZIP() []byte {
 }
 
 var file_control_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_control_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_control_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_control_proto_goTypes = []any{
 	(Kind)(0),              // 0: resona.control.v1.Kind
 	(*Frame)(nil),          // 1: resona.control.v1.Frame
-	(*AccountCommand)(nil), // 2: resona.control.v1.AccountCommand
-	(*Hello)(nil),          // 3: resona.control.v1.Hello
-	(*ClaimOwner)(nil),     // 4: resona.control.v1.ClaimOwner
-	(*CreateChannel)(nil),  // 5: resona.control.v1.CreateChannel
-	(*UpdateChannel)(nil),  // 6: resona.control.v1.UpdateChannel
-	(*DeleteChannel)(nil),  // 7: resona.control.v1.DeleteChannel
-	(*ReorderChannel)(nil), // 8: resona.control.v1.ReorderChannel
-	(*WatchResources)(nil), // 9: resona.control.v1.WatchResources
-	(*Channel)(nil),        // 10: resona.control.v1.Channel
-	(*Member)(nil),         // 11: resona.control.v1.Member
-	(*State)(nil),          // 12: resona.control.v1.State
-	(*Command)(nil),        // 13: resona.control.v1.Command
-	(*Reply)(nil),          // 14: resona.control.v1.Reply
-	(*Message)(nil),        // 15: resona.control.v1.Message
-	(*ChatStatus)(nil),     // 16: resona.control.v1.ChatStatus
-	(*ChatPage)(nil),       // 17: resona.control.v1.ChatPage
+	(*Poke)(nil),           // 2: resona.control.v1.Poke
+	(*Poked)(nil),          // 3: resona.control.v1.Poked
+	(*AccountCommand)(nil), // 4: resona.control.v1.AccountCommand
+	(*Hello)(nil),          // 5: resona.control.v1.Hello
+	(*ClaimOwner)(nil),     // 6: resona.control.v1.ClaimOwner
+	(*CreateChannel)(nil),  // 7: resona.control.v1.CreateChannel
+	(*UpdateChannel)(nil),  // 8: resona.control.v1.UpdateChannel
+	(*DeleteChannel)(nil),  // 9: resona.control.v1.DeleteChannel
+	(*ReorderChannel)(nil), // 10: resona.control.v1.ReorderChannel
+	(*WatchResources)(nil), // 11: resona.control.v1.WatchResources
+	(*Channel)(nil),        // 12: resona.control.v1.Channel
+	(*Member)(nil),         // 13: resona.control.v1.Member
+	(*State)(nil),          // 14: resona.control.v1.State
+	(*Command)(nil),        // 15: resona.control.v1.Command
+	(*Reply)(nil),          // 16: resona.control.v1.Reply
+	(*Message)(nil),        // 17: resona.control.v1.Message
+	(*ChatStatus)(nil),     // 18: resona.control.v1.ChatStatus
+	(*ChatPage)(nil),       // 19: resona.control.v1.ChatPage
 }
 var file_control_proto_depIdxs = []int32{
 	0,  // 0: resona.control.v1.Frame.kind:type_name -> resona.control.v1.Kind
-	10, // 1: resona.control.v1.State.channels:type_name -> resona.control.v1.Channel
-	11, // 2: resona.control.v1.State.members:type_name -> resona.control.v1.Member
-	15, // 3: resona.control.v1.ChatPage.messages:type_name -> resona.control.v1.Message
+	12, // 1: resona.control.v1.State.channels:type_name -> resona.control.v1.Channel
+	13, // 2: resona.control.v1.State.members:type_name -> resona.control.v1.Member
+	17, // 3: resona.control.v1.ChatPage.messages:type_name -> resona.control.v1.Message
 	4,  // [4:4] is the sub-list for method output_type
 	4,  // [4:4] is the sub-list for method input_type
 	4,  // [4:4] is the sub-list for extension type_name
@@ -1685,7 +1835,7 @@ func file_control_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_control_proto_rawDesc), len(file_control_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   17,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
