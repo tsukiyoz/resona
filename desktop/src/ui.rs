@@ -1,10 +1,12 @@
 use crate::{
+    components::{self, speaking_indicator},
     core::{CoreClient, Incoming},
     model::{
         AudioDevice, Capabilities, CredentialStatus, ServerProfile, User, VoiceState, Workspace,
     },
     preferences::{Preferences, ThemePreference},
-    theme::{self, rgb, rgba},
+    presentation::{self, ResourceState, ServerPage, can_show_session_channels, server_page},
+    theme::{self, Color, color},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::{DateTime, Local, Utc};
@@ -34,17 +36,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-const BG: u32 = 0x090a0c;
-const PANEL: u32 = 0x101214;
-const PANEL_2: u32 = 0x181a1d;
-const HOVER: u32 = 0x24272b;
-const LINE: u32 = 0x303337;
-const TEXT: u32 = 0xe9edf1;
-const MUTED: u32 = 0x929ca7;
-const ICE: u32 = 0x7db8e8;
-const MINT: u32 = 0x79c9ad;
-const AMBER: u32 = 0xd8aa5d;
-const RED: u32 = 0xe28282;
+const BG: Color = Color::Canvas;
+const PANEL: Color = Color::Panel;
+const PANEL_2: Color = Color::Raised;
+const HOVER: Color = Color::Hover;
+const LINE: Color = Color::Border;
+const TEXT: Color = Color::Text;
+const MUTED: Color = Color::Muted;
+const ICE: Color = Color::Speaking;
+const MINT: Color = Color::Success;
+const AMBER: Color = Color::Warning;
+const RED: Color = Color::Danger;
 
 const INCOMING_BATCH: usize = 64;
 const LOADING_NOTICE_DELAY: Duration = Duration::from_millis(300);
@@ -122,6 +124,7 @@ enum Pending {
     Credential(String, u64),
     Connect(String, bool, u64),
     Voice,
+    VoiceSnapshot,
     SettingsApply(String, u64),
     SettingsStatus(String, u64),
     VoicePreferences {
@@ -134,6 +137,7 @@ enum Pending {
     Capabilities,
     Notification,
     MicrophoneTest,
+    MicrophoneSnapshot,
     PushToTalk,
     Icon {
         session: String,
@@ -158,16 +162,57 @@ impl Pending {
     fn blocks(&self, connect_revision: u64) -> bool {
         self.connection()
             .is_none_or(|(_, revision)| revision == connect_revision)
-            && !matches!(
+            && matches!(
                 self,
-                Self::Notification
-                    | Self::ExportDiagnostics
-                    | Self::ResourceInterest(_)
-                    | Self::Icon { .. }
-                    | Self::PushToTalk
-                    | Self::ChannelOrder(_)
+                Self::Credential(..)
+                    | Self::Connect(..)
+                    | Self::VoicePreferences { .. }
+                    | Self::SaveServer(_)
+                    | Self::DeleteServer(_)
+                    | Self::Voice
+                    | Self::MicrophoneTest
+                    | Self::OutputGain(_)
+                    | Self::SettingsApply(..)
+                    | Self::SettingsStatus(..)
+                    | Self::Workspace(
+                        "SelectChannel"
+                            | "DisconnectServer"
+                            | "OpenPreview"
+                            | "LeavePreview"
+                            | "ForgetServerPassword"
+                    )
             )
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ReplyScope {
+    Application,
+    Session(String),
+    Chat(String, String, u32),
+    Microphone(String, u64),
+}
+
+impl ReplyScope {
+    fn accepts(&self, workspace: &Workspace, microphone_revision: u64) -> bool {
+        match self {
+            Self::Application => true,
+            Self::Session(session) => session == &workspace.session.id,
+            Self::Chat(session, channel, epoch) => {
+                session == &workspace.session.id
+                    && channel == &workspace.session.channel_id
+                    && *epoch == workspace.session.chat_epoch
+            }
+            Self::Microphone(session, revision) => {
+                session == &workspace.session.id && *revision == microphone_revision
+            }
+        }
+    }
+}
+
+struct PendingRequest {
+    action: Pending,
+    scope: ReplyScope,
 }
 
 #[derive(Clone, PartialEq)]
@@ -202,11 +247,11 @@ impl Render for ChannelDragPreview {
                     .flex()
                     .items_center()
                     .rounded(px(5.))
-                    .bg(rgb(PANEL_2))
+                    .bg(color(PANEL_2))
                     .border_1()
-                    .border_color(rgb(LINE))
+                    .border_color(color(LINE))
                     .text_sm()
-                    .text_color(rgb(TEXT))
+                    .text_color(color(TEXT))
                     .overflow_hidden()
                     .child(div().truncate().child(self.name.clone())),
             )
@@ -245,32 +290,6 @@ enum DetailChange {
     Keep,
     Clear,
     Refresh,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum ResourceState {
-    #[default]
-    Idle,
-    Syncing,
-    Ready,
-    Refreshing,
-    Failed,
-}
-
-impl ResourceState {
-    fn blocks(self) -> bool {
-        matches!(self, Self::Idle | Self::Syncing | Self::Failed)
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ServerPage {
-    Channels,
-    Offline,
-    Connecting,
-    Disconnecting,
-    ConnectionFailed,
-    ResourceFailed,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -369,6 +388,7 @@ pub struct ResonaApp {
     workspace: Workspace,
     voice: VoiceState,
     microphone_test: VoiceState,
+    microphone_revision: u64,
     capabilities: Capabilities,
     devices: Vec<AudioDevice>,
     icon_cache: HashMap<String, Arc<Image>>,
@@ -413,7 +433,7 @@ pub struct ResonaApp {
     seen_notifications: HashSet<String>,
     notification_order: VecDeque<String>,
     last_member_notification: Option<Instant>,
-    pending: HashMap<u64, Pending>,
+    pending: HashMap<u64, PendingRequest>,
     drafts: HashMap<String, String>,
     submitted_drafts: HashMap<String, (String, String)>,
     selected_server: String,
@@ -515,8 +535,7 @@ impl ResonaApp {
             window,
             |this, input, event: &InputEvent, window, cx| {
                 let pending = this
-                    .pending
-                    .values()
+                    .pending_actions()
                     .any(|p| matches!(p, Pending::UserPlayback(_)));
                 match event {
                     InputEvent::PressEnter {
@@ -710,6 +729,7 @@ impl ResonaApp {
             workspace: Workspace::default(),
             voice: VoiceState::default(),
             microphone_test: VoiceState::default(),
+            microphone_revision: 0,
             capabilities: Capabilities::default(),
             devices: Vec::new(),
             icon_cache: HashMap::new(),
@@ -858,8 +878,12 @@ impl ResonaApp {
                     json!({}),
                     Pending::Workspace("GetWorkspace"),
                 );
-                this.request("GetVoiceState", json!({}), Pending::Voice);
-                this.request("GetMicrophoneTestState", json!({}), Pending::MicrophoneTest);
+                this.request("GetVoiceState", json!({}), Pending::VoiceSnapshot);
+                this.request(
+                    "GetMicrophoneTestState",
+                    json!({}),
+                    Pending::MicrophoneSnapshot,
+                );
                 this.request("GetAudioDevices", json!({}), Pending::Devices);
                 this.request("GetCapabilities", json!({}), Pending::Capabilities);
                 this.request(
@@ -913,7 +937,33 @@ impl ResonaApp {
             });
         match result {
             Ok(id) => {
-                self.pending.insert(id, pending);
+                let scope = match &pending {
+                    Pending::Voice | Pending::VoiceSnapshot | Pending::PushToTalk => {
+                        ReplyScope::Session(self.workspace.session.id.clone())
+                    }
+                    Pending::Workspace(method) if *method != "GetWorkspace" => {
+                        ReplyScope::Session(self.workspace.session.id.clone())
+                    }
+                    Pending::MicrophoneTest | Pending::MicrophoneSnapshot => {
+                        ReplyScope::Microphone(
+                            self.workspace.session.id.clone(),
+                            self.microphone_revision,
+                        )
+                    }
+                    Pending::Send(_) => ReplyScope::Chat(
+                        self.workspace.session.id.clone(),
+                        self.workspace.session.channel_id.clone(),
+                        self.workspace.session.chat_epoch,
+                    ),
+                    _ => ReplyScope::Application,
+                };
+                self.pending.insert(
+                    id,
+                    PendingRequest {
+                        action: pending,
+                        scope,
+                    },
+                );
             }
             Err(error) => self.request_failed(pending, error),
         }
@@ -971,8 +1021,6 @@ impl ResonaApp {
             Pending::ChannelMutation { session, revision } => {
                 if self.channel_matches(&session, revision) {
                     self.channel_error = error;
-                } else if !self.closing && self.workspace.session.id == session {
-                    self.error = format!("频道操作：{error}");
                 }
             }
             Pending::ChannelOrder(session) => {
@@ -992,7 +1040,7 @@ impl ResonaApp {
                 self.icon_requested.remove(&reference);
                 self.icon_failures.insert(reference, error);
             }
-            Pending::MicrophoneTest => {
+            Pending::MicrophoneTest | Pending::MicrophoneSnapshot => {
                 self.microphone_test.busy = false;
                 self.microphone_test.error = error;
             }
@@ -1115,7 +1163,23 @@ impl ResonaApp {
                 }
             }
             Incoming::Response { id, result } => {
-                let pending = self.pending.remove(&id);
+                let Some(request) = self.pending.remove(&id) else {
+                    return;
+                };
+                if self.closing
+                    || !request
+                        .scope
+                        .accepts(&self.workspace, self.microphone_revision)
+                {
+                    self.flush_queued_voice(cx);
+                    self.sync_hotkey(cx);
+                    self.sync_loading_notices(window.is_window_active(), cx);
+                    if window.is_window_active() {
+                        cx.notify();
+                    }
+                    return;
+                }
+                let pending = Some(request.action);
                 match (pending, result) {
                     (Some(Pending::Account(session, revision)), result) => {
                         if session == self.workspace.session.id {
@@ -1185,10 +1249,6 @@ impl ResonaApp {
                             match result {
                                 Ok(_) => self.close_modal(window, cx),
                                 Err(error) => self.channel_error = error,
-                            }
-                        } else if !self.closing && self.workspace.session.id == session {
-                            if let Err(error) = result {
-                                self.error = format!("频道操作：{error}");
                             }
                         }
                     }
@@ -1312,7 +1372,7 @@ impl ResonaApp {
                         }
                         self.connect_error.clear();
                     }
-                    (Some(Pending::Voice), Ok(value)) => {
+                    (Some(Pending::Voice | Pending::VoiceSnapshot), Ok(value)) => {
                         self.apply_voice(value);
                     }
                     (Some(Pending::SettingsApply(session, revision)), result)
@@ -1425,7 +1485,7 @@ impl ResonaApp {
                     (Some(Pending::PushToTalk), Ok(value)) => {
                         self.apply_voice(value);
                     }
-                    (Some(Pending::MicrophoneTest), Ok(value)) => {
+                    (Some(Pending::MicrophoneTest | Pending::MicrophoneSnapshot), Ok(value)) => {
                         self.apply_microphone_test(value, window.is_window_active());
                     }
                     (Some(Pending::Icon { session, reference }), Ok(value)) => {
@@ -1473,7 +1533,7 @@ impl ResonaApp {
                         let workspace = self.workspace.clone();
                         self.update_icon_cache(&workspace);
                     }
-                    (Some(Pending::MicrophoneTest), Err(error)) => {
+                    (Some(Pending::MicrophoneTest | Pending::MicrophoneSnapshot), Err(error)) => {
                         self.microphone_test.busy = false;
                         self.microphone_test.error = error;
                     }
@@ -1552,12 +1612,10 @@ impl ResonaApp {
                             && matches!(self.modal, Some(Modal::Server { .. }))
                         {
                             self.server_error = error;
-                        } else {
-                            self.error = error;
                         }
                     }
-                    (Some(_), Err(error)) | (None, Err(error)) => self.error = error,
-                    (None, Ok(_)) => {}
+                    (Some(pending), Err(error)) => self.request_failed(pending, error),
+                    (None, _) => {}
                 }
             }
         }
@@ -1651,8 +1709,7 @@ impl ResonaApp {
             || self.voice.busy
             || !self.workspace.session.switching_channel_id.is_empty()
             || self
-                .pending
-                .values()
+                .pending_actions()
                 .any(|p| matches!(p, Pending::Voice | Pending::OutputGain(_)))
         {
             return;
@@ -2044,9 +2101,8 @@ impl ResonaApp {
             || !self.workspace.session.sending_message_id.is_empty()
             || self.workspace.session.channel_id == id
             || self
-                .pending
-                .values()
-                .any(|p| matches!(p, Pending::Workspace("SelectChannel")))
+                .pending_actions()
+                .any(|p| matches!(p, Pending::Workspace("SelectChannel") | Pending::Send(_)))
         {
             return;
         }
@@ -2139,11 +2195,10 @@ impl ResonaApp {
             &self.workspace,
             &self.selected_server,
             self.resource_state,
-            self.pending.values().any(|pending| {
+            self.pending_actions().any(|pending| {
                 connection_request_matches(pending, &self.selected_server, self.connect_revision)
             }),
-            self.pending
-                .values()
+            self.pending_actions()
                 .any(|pending| matches!(pending, Pending::Workspace("DisconnectServer"))),
         )
     }
@@ -2154,7 +2209,7 @@ impl ResonaApp {
                 self.workspace.session.mode.as_str(),
                 "connecting" | "reconnecting" | "connected"
             ))
-            || self.pending.values().any(|pending| {
+            || self.pending_actions().any(|pending| {
                 matches!(pending, Pending::Connect(id, _, revision)
                     if id == server_id && *revision == self.connect_revision)
             });
@@ -2171,17 +2226,26 @@ impl ResonaApp {
     }
 
     fn is_busy(&self) -> bool {
+        self.pending_actions()
+            .any(|pending| pending.blocks(self.connect_revision))
+    }
+
+    fn pending_actions(&self) -> impl Iterator<Item = &Pending> {
         self.pending
             .values()
-            .any(|pending| pending.blocks(self.connect_revision))
+            .filter(|request| {
+                request
+                    .scope
+                    .accepts(&self.workspace, self.microphone_revision)
+            })
+            .map(|request| &request.action)
     }
 
     fn speaking_transition_pending(&self) -> bool {
         if self.settings_apply.is_some() {
             return true;
         }
-        self.pending
-            .values()
+        self.pending_actions()
             .filter(|pending| pending.blocks(self.connect_revision))
             .any(|pending| match pending {
                 Pending::Voice
@@ -2211,8 +2275,7 @@ impl ResonaApp {
         self.icon_failures
             .retain(|reference, _| live.contains(reference));
         let mut pending = self
-            .pending
-            .values()
+            .pending_actions()
             .filter(|p| matches!(p, Pending::Icon { .. }))
             .count();
         for reference in workspace
@@ -2405,7 +2468,7 @@ impl ResonaApp {
     }
 
     fn channel_pending(&self) -> bool {
-        self.pending.values().any(|p| matches!(p, Pending::ChannelMutation { session, .. } | Pending::ChannelOrder(session) if *session == self.workspace.session.id))
+        self.pending_actions().any(|p| matches!(p, Pending::ChannelMutation { session, .. } | Pending::ChannelOrder(session) if *session == self.workspace.session.id))
     }
 
     fn channel_order_allowed(&self) -> bool {
@@ -2467,7 +2530,7 @@ impl ResonaApp {
                     zone.top_0().border_t_2()
                 }
             })
-            .border_color(rgba(0x00000000))
+            .border_color(color(Color::Transparent))
             .can_drop(move |value, _, cx| {
                 let Some(drag) = value.downcast_ref::<ChannelDrag>() else {
                     return false;
@@ -2482,7 +2545,7 @@ impl ResonaApp {
                     )
                     .is_some()
             })
-            .drag_over::<ChannelDrag>(|style, _, _, _| style.border_color(rgb(ICE)))
+            .drag_over::<ChannelDrag>(|style, _, _, _| style.border_color(color(ICE)))
             .on_drop(move |drag: &ChannelDrag, _, cx| {
                 entity.update(cx, |this, cx| {
                     this.reorder_channel(drag, &target, after, cx)
@@ -2622,7 +2685,7 @@ impl ResonaApp {
     }
 
     fn claim_owner_pending(&self) -> bool {
-        ownership_pending(self.pending.values(), &self.workspace.session.id)
+        ownership_pending(self.pending_actions(), &self.workspace.session.id)
     }
 
     fn open_ownership(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2734,8 +2797,7 @@ impl ResonaApp {
         let cancel_connect = matches!(&self.modal, Some(Modal::Password { .. }))
             && (self.workspace.session.mode == "connecting"
                 || self
-                    .pending
-                    .values()
+                    .pending_actions()
                     .any(|pending| matches!(pending, Pending::Connect(_, _, _))));
         if cancel_connect {
             let server_id = match &self.modal {
@@ -2773,9 +2835,9 @@ impl ResonaApp {
     ) {
         if !matches!(self.modal, Some(Modal::User))
             || !self.workspace.connected()
+            || !self.workspace.session.switching_channel_id.is_empty()
             || self
-                .pending
-                .values()
+                .pending_actions()
                 .any(|p| matches!(p, Pending::Account(..) | Pending::AccountToken(..)))
         {
             return;
@@ -2858,7 +2920,7 @@ impl ResonaApp {
         } else if self.device_menu.take().is_some() {
             self.focus.focus(window, cx);
             cx.notify();
-        } else if self.pending.values().any(|pending| {
+        } else if self.pending_actions().any(|pending| {
             matches!(
                 pending,
                 Pending::VoicePreferences {
@@ -3005,7 +3067,10 @@ impl ResonaApp {
         {
             return;
         }
-        if self.pending.values().any(|p| matches!(p, Pending::Send(_))) {
+        if self
+            .pending_actions()
+            .any(|p| matches!(p, Pending::Send(_)))
+        {
             return;
         }
         let text = self.chat_input.read(cx).value().to_string();
@@ -3122,8 +3187,7 @@ impl ResonaApp {
             self.audio_settings_pending = false;
         }
         let request_pending = self
-            .pending
-            .values()
+            .pending_actions()
             .any(|pending| matches!(pending, Pending::Voice | Pending::OutputGain(_)));
         if (self.voice.busy || request_pending) && !stopping {
             self.queued_voice = Some(next);
@@ -3254,7 +3318,7 @@ impl ResonaApp {
                         return false;
                     }
                     if this.settings_operation.is_some()
-                        && !this.pending.values().any(|p| matches!(p, Pending::SettingsStatus(_, pending_revision) if *pending_revision == revision))
+                        && !this.pending_actions().any(|p| matches!(p, Pending::SettingsStatus(_, pending_revision) if *pending_revision == revision))
                     {
                         this.request("GetVoiceState", json!({}), Pending::SettingsStatus(session.clone(), revision));
                     }
@@ -3383,7 +3447,7 @@ impl ResonaApp {
             || self.microphone_test.busy
             || self.audio_settings_pending
             || self.queued_voice.is_some()
-            || self.pending.values().any(|p| {
+            || self.pending_actions().any(|p| {
                 matches!(
                     p,
                     Pending::Voice | Pending::VoicePreferences { .. } | Pending::OutputGain(_)
@@ -3414,7 +3478,7 @@ impl ResonaApp {
             || self.microphone_test.busy
             || self.audio_settings_pending
             || self.queued_voice.is_some()
-            || self.pending.values().any(|p| {
+            || self.pending_actions().any(|p| {
                 matches!(
                     p,
                     Pending::Voice | Pending::VoicePreferences { .. } | Pending::OutputGain(_)
@@ -3477,7 +3541,7 @@ impl ResonaApp {
                                 "connecting" | "reconnecting" | "disconnecting"
                             )
                             || !this.workspace.session.switching_channel_id.is_empty()
-                            || this.pending.values().any(|p| {
+                            || this.pending_actions().any(|p| {
                                 matches!(
                                     p,
                                     Pending::Voice
@@ -3526,7 +3590,7 @@ impl ResonaApp {
             && !self.audio_settings_pending
             && self.queued_voice.is_none()
             && self.workspace.session.switching_channel_id.is_empty()
-            && !self.pending.values().any(|pending| {
+            && !self.pending_actions().any(|pending| {
                 matches!(
                     pending,
                     Pending::Voice
@@ -3552,6 +3616,7 @@ impl ResonaApp {
         config.enabled = enabled;
         config.muted = false;
         self.microphone_test.busy = true;
+        self.microphone_revision = self.microphone_revision.wrapping_add(1);
         self.request(
             "ConfigureMicrophoneTest",
             voice_params(&config),
@@ -3597,12 +3662,12 @@ impl ResonaApp {
                             .gap_2()
                             .rounded(px(6.))
                             .cursor_pointer()
-                            .bg(rgba(if self.selected_server == id {
-                                0xffffff14
+                            .bg(color(if self.selected_server == id {
+                                Color::HighlightOverlay
                             } else {
-                                0xffffff00
+                                Color::Transparent
                             }))
-                            .hover(|s| s.bg(rgb(HOVER)))
+                            .hover(|s| s.bg(color(HOVER)))
                             .tooltip(move |window, cx| {
                                 Tooltip::new(tooltip.clone()).build(window, cx)
                             })
@@ -3644,12 +3709,12 @@ impl ResonaApp {
                                     .size(px(24.))
                                     .flex_shrink_0()
                                     .rounded(px(5.))
-                                    .bg(rgb(0x303638))
+                                    .bg(color(Color::Avatar))
                                     .flex()
                                     .items_center()
                                     .justify_center()
                                     .text_xs()
-                                    .text_color(rgb(if online { MINT } else { TEXT }))
+                                    .text_color(color(if online { MINT } else { TEXT }))
                                     .child(server.name.chars().next().unwrap_or('?').to_string()),
                             )
                             .when(!collapsed, |row| {
@@ -3662,7 +3727,7 @@ impl ResonaApp {
                                         .child(server.name.clone()),
                                 )
                                 .when(online, |row| {
-                                    row.child(div().size(px(5.)).rounded_full().bg(rgb(MINT)))
+                                    row.child(div().size(px(5.)).rounded_full().bg(color(MINT)))
                                 })
                             })
                             .context_menu(move |menu, _, _| {
@@ -3753,9 +3818,9 @@ impl ResonaApp {
             .w(px(if collapsed { 52. } else { 172. }))
             .h_full()
             .flex_shrink_0()
-            .bg(rgb(0x111315))
+            .bg(color(Color::Sidebar))
             .border_r_1()
-            .border_color(rgb(LINE))
+            .border_color(color(LINE))
             .flex()
             .flex_col()
             .child(
@@ -3890,10 +3955,10 @@ impl ResonaApp {
                     .when(page == ServerPage::Channels, |name| name.child(
                         div()
                             .text_size(px(10.))
-                            .text_color(rgb(MUTED))
+                            .text_color(color(MUTED))
                             .truncate()
                             .child(if showing_session {
-                                if self.pending.values().any(|p| matches!(p, Pending::ChannelOrder(session) if *session == self.workspace.session.id)) {
+                                if self.pending_actions().any(|p| matches!(p, Pending::ChannelOrder(session) if *session == self.workspace.session.id)) {
                                     "正在保存频道顺序…".into()
                                 } else {
                                     self.session_label()
@@ -3928,9 +3993,9 @@ impl ResonaApp {
             .min_w_0()
             .h_full()
             .flex_shrink_0()
-            .bg(rgb(PANEL))
+            .bg(color(PANEL))
             .border_r_1()
-            .border_color(rgb(LINE))
+            .border_color(color(LINE))
             .flex()
             .flex_col()
             .child(header);
@@ -3946,7 +4011,7 @@ impl ResonaApp {
                     .py_2()
                     .flex_shrink_0()
                     .text_size(px(10.))
-                    .text_color(rgb(self.status_color()))
+                    .text_color(color(self.status_color()))
                     .child(self.status_detail()),
             );
         }
@@ -3975,7 +4040,7 @@ impl ResonaApp {
                             .flex()
                             .items_center()
                             .text_size(px(10.))
-                            .text_color(rgb(MUTED))
+                            .text_color(color(MUTED))
                             .child(repeated)
                             .into_any_element();
                     }
@@ -3983,10 +4048,10 @@ impl ResonaApp {
                     let text = || {
                         div()
                             .text_size(px(10.))
-                            .text_color(rgb(MUTED))
+                            .text_color(color(MUTED))
                             .child(label.clone())
                     };
-                    let line = || div().flex_1().h(px(1.)).bg(rgb(LINE));
+                    let line = || div().flex_1().h(px(1.)).bg(color(LINE));
                     return match channel.align.as_str() {
                         "left" => div()
                             .h(px(28.))
@@ -4067,12 +4132,12 @@ impl ResonaApp {
                                     .tab_index(0)
                                     .cursor_pointer()
                                     .border_l_2()
-                                    .border_color(rgba(if inspecting_user {
-                                        0x9dbdafaa
+                                    .border_color(color(if inspecting_user {
+                                        Color::SelectionBorder
                                     } else {
-                                        0x00000000
+                                        Color::Transparent
                                     }))
-                                    .hover(|s| s.bg(rgb(HOVER)))
+                                    .hover(|s| s.bg(color(HOVER)))
                                     .on_click(move |_, _, cx| {
                                         user_entity.update(cx, |this, cx| {
                                             this.select_details(
@@ -4088,7 +4153,7 @@ impl ResonaApp {
                                     .items_center()
                                     .gap_2()
                                     .text_size(px(11.))
-                                    .text_color(rgb(if speaking {
+                                    .text_color(color(if speaking {
                                         TEXT
                                     } else if user.is_self {
                                         MINT
@@ -4128,8 +4193,7 @@ impl ResonaApp {
                                                     .switching_channel_id
                                                     .is_empty()
                                                 && !this
-                                                    .pending
-                                                    .values()
+                                                    .pending_actions()
                                                     .any(|p| matches!(p, Pending::UserPlayback(_)));
                                             let volume = current
                                                 .map(|u| u.playback_volume.min(794))
@@ -4234,9 +4298,13 @@ impl ResonaApp {
                             .rounded(px(5.))
                             .cursor_pointer()
                             .border_l_2()
-                            .border_color(rgba(if inspecting { 0x9dbdafaa } else { 0x00000000 }))
-                            .bg(rgb(if selected { 0x2a2f31 } else { PANEL }))
-                            .hover(|s| s.bg(rgb(HOVER)))
+                            .border_color(color(if inspecting {
+                                Color::SelectionBorder
+                            } else {
+                                Color::Transparent
+                            }))
+                            .bg(color(if selected { Color::Selected } else { PANEL }))
+                            .hover(|s| s.bg(color(HOVER)))
                             .flex()
                             .items_center()
                             .gap_2()
@@ -4269,7 +4337,7 @@ impl ResonaApp {
                             } else {
                                 div()
                                     .w(px(17.))
-                                    .text_color(rgb(if selected { ICE } else { MUTED }))
+                                    .text_color(color(if selected { ICE } else { MUTED }))
                                     .child(if locked { "◆" } else { "#" })
                                     .into_any_element()
                             })
@@ -4279,13 +4347,17 @@ impl ResonaApp {
                                     .min_w_0()
                                     .truncate()
                                     .text_sm()
-                                    .text_color(rgb(if selected { TEXT } else { 0xc3c9cf }))
+                                    .text_color(color(if selected {
+                                        TEXT
+                                    } else {
+                                        Color::SecondaryText
+                                    }))
                                     .child(channel.name),
                             )
                             .child(
                                 div()
                                     .text_size(px(10.))
-                                    .text_color(rgb(if is_switching { AMBER } else { MUTED }))
+                                    .text_color(color(if is_switching { AMBER } else { MUTED }))
                                     .child(if is_switching {
                                         "…".into()
                                     } else {
@@ -4505,7 +4577,9 @@ impl ResonaApp {
                 self.workspace.session.chat_state.as_str(),
                 "loading" | "failed"
             )
-            && !self.pending.values().any(|p| matches!(p, Pending::Send(_)))
+            && !self
+                .pending_actions()
+                .any(|p| matches!(p, Pending::Send(_)))
     }
 
     fn emoji_context(&self) -> Option<(String, u32)> {
@@ -4604,7 +4678,7 @@ impl ResonaApp {
                             .flex()
                             .flex_col()
                             .gap_1()
-                            .child(div().text_xs().text_color(rgb(MUTED)).child(*name))
+                            .child(div().text_xs().text_color(color(MUTED)).child(*name))
                             .children(emojis.chunks(8).enumerate().map(|(row, emojis)| {
                                 div().flex().gap_1().children(emojis.iter().enumerate().map(
                                     |(col, emoji)| {
@@ -4713,7 +4787,7 @@ impl ResonaApp {
             || !session.chat_has_more
             || session.chat_before == 0
             || session.chat_history_limited
-            || self.pending.values().any(|p| {
+            || self.pending_actions().any(|p| {
                 matches!(p, Pending::ChatHistory(id,ch,epoch,generation)
                 if self.history_scope_matches(id,ch,*epoch,*generation))
             })
@@ -4742,7 +4816,7 @@ impl ResonaApp {
         let scrolled = view.downgrade();
         let history = view.clone();
         let items = view.clone();
-        let history_pending = self.pending.values().any(|p| {
+        let history_pending = self.pending_actions().any(|p| {
             matches!(p, Pending::ChatHistory(id,ch,epoch,generation)
             if self.history_scope_matches(id,ch,*epoch,*generation))
         });
@@ -4775,7 +4849,7 @@ impl ResonaApp {
         div()
             .w_full()
             .flex_shrink_0()
-            .bg(rgb(BG))
+            .bg(color(BG))
             .flex()
             .flex_col()
             .h(px(if self.chat_collapsed {
@@ -4790,9 +4864,9 @@ impl ResonaApp {
                     .w_full()
                     .flex_shrink_0()
                     .border_t_1()
-                    .border_color(rgb(LINE))
+                    .border_color(color(LINE))
                     .cursor_row_resize()
-                    .hover(|s| s.bg(rgba(0xffffff20)))
+                    .hover(|s| s.bg(color(Color::HoverOverlay)))
                     .on_mouse_down(gpui_kit::MouseButton::Left, move |event, _, cx| {
                         drag.update(cx, |this, cx| {
                             this.chat_collapsed = false;
@@ -4837,7 +4911,7 @@ impl ResonaApp {
                             .min_w_0()
                             .truncate()
                             .text_xs()
-                            .text_color(rgb(MUTED))
+                            .text_color(color(MUTED))
                             .child(format!("频道文字 · {}", channel.name)),
                     )
                     .when(self.chat_unread, |header| {
@@ -4871,7 +4945,7 @@ impl ResonaApp {
                             .overflow_hidden()
                             .relative()
                             .when(self.workspace.session.chat_state == "ready", |panel| panel.child(
-                                div().h(px(28.)).flex_shrink_0().flex().items_center().gap_2().overflow_hidden().text_xs().text_color(rgb(MUTED))
+                                div().h(px(28.)).flex_shrink_0().flex().items_center().gap_2().overflow_hidden().text_xs().text_color(color(MUTED))
                                     .when(history_pending, |row| row.child("正在加载更早消息…"))
                                     .when(!history_pending && self.workspace.session.chat_history_limited, |row| row.child("已达本地浏览上限，重新进入频道可查看最新消息"))
                                     .when(!history_pending && !self.workspace.session.chat_history_limited && !self.chat_history_error.is_empty(), |row|
@@ -4887,7 +4961,7 @@ impl ResonaApp {
                                     div()
                                         .py_2()
                                         .text_xs()
-                                        .text_color(rgb(MUTED))
+                                        .text_color(color(MUTED))
                                         .child("正在加载频道消息…"),
                                 )
                             })
@@ -4901,7 +4975,7 @@ impl ResonaApp {
                                         .child(
                                             div()
                                                 .text_xs()
-                                                .text_color(rgb(RED))
+                                                .text_color(color(RED))
                                                 .child("频道消息加载失败"),
                                         )
                                         .child(
@@ -4918,7 +4992,7 @@ impl ResonaApp {
                                                         let channel = this.workspace.session.channel_id.clone();
                                                         let epoch = this.workspace.session.chat_epoch;
                                                         this.workspace.session.chat_state = "loading".into();
-                                                        this.pending.retain(|_, pending| !matches!(pending, Pending::ChatRetry(..)));
+                                                        this.pending.retain(|_, pending| !matches!(pending.action, Pending::ChatRetry(..)));
                                                         this.request(
                                                             "RetryChannelChat",
                                                             json!({"sessionID": session, "channelID": channel}),
@@ -4936,7 +5010,7 @@ impl ResonaApp {
                                     div()
                                         .py_2()
                                         .text_xs()
-                                        .text_color(rgb(MUTED))
+                                        .text_color(color(MUTED))
                                         .child("暂无频道消息"),
                                 )
                             })
@@ -4951,7 +5025,7 @@ impl ResonaApp {
                                         let copy_text = message.text.clone();
                                         let local_time = message_datetime(&message.created_at, &Local);
                                         let row = div()
-                                            .hover(|s| s.bg(rgba(0xffffff14)))
+                                            .hover(|s| s.bg(color(Color::HighlightOverlay)))
                                             .context_menu(move |menu, _, _| {
                                                 let text = copy_text.clone();
                                                 menu.item(
@@ -4976,7 +5050,7 @@ impl ResonaApp {
                                                     .flex_shrink_0()
                                                     .whitespace_nowrap()
                                                     .text_xs()
-                                                    .text_color(rgb(MUTED))
+                                                    .text_color(color(MUTED))
                                                     .child(local_time.map(|time| time.format("%H:%M:%S").to_string())
                                                         .unwrap_or_else(|| "时间未知".into())),
                                             )
@@ -4987,7 +5061,7 @@ impl ResonaApp {
                                                     .flex()
                                                     .items_start()
                                                     .text_xs()
-                                                    .text_color(rgb(
+                                                    .text_color(color(
                                                         if message.author_id
                                                             == this.workspace.session.self_id
                                                             || message.author_id == this.workspace.session.identity_uid
@@ -5010,13 +5084,13 @@ impl ResonaApp {
                                                     .flex_1()
                                                     .min_w_0()
                                                     .text_sm()
-                                                    .text_color(rgb(TEXT))
+                                                    .text_color(color(TEXT))
                                                     .child(message.text.clone())
                                                     .when(!message.error.is_empty(), |body| {
                                                         body.child(
                                                             div()
                                                                 .text_xs()
-                                                                .text_color(rgb(RED))
+                                                                .text_color(color(RED))
                                                                 .child(message.error.clone()),
                                                         )
                                                     })
@@ -5029,7 +5103,7 @@ impl ResonaApp {
                                                             body.child(
                                                                 div()
                                                                     .text_xs()
-                                                                    .text_color(rgb(
+                                                                    .text_color(color(
                                                                         message_status_color(
                                                                             &message.status,
                                                                         ),
@@ -5101,11 +5175,11 @@ impl ResonaApp {
                                                         .justify_center()
                                                         .gap_2()
                                                         .text_xs()
-                                                        .text_color(rgb(MUTED))
-                                                        .child(div().w(px(32.)).h(px(1.)).bg(rgb(LINE)))
+                                                        .text_color(color(MUTED))
+                                                        .child(div().w(px(32.)).h(px(1.)).bg(color(LINE)))
                                                         .child(local_time.map(|time| time.format("%Y-%m-%d").to_string())
                                                             .unwrap_or_else(|| "日期未知".into()))
-                                                        .child(div().w(px(32.)).h(px(1.)).bg(rgb(LINE))),
+                                                        .child(div().w(px(32.)).h(px(1.)).bg(color(LINE))),
                                                 )
                                             })
                                             .child(row)
@@ -5124,8 +5198,8 @@ impl ResonaApp {
                             .relative()
                             .rounded(px(6.))
                             .border_1()
-                            .border_color(rgb(LINE))
-                            .bg(rgba(0xffffff06))
+                            .border_color(color(LINE))
+                            .bg(color(Color::SubtleOverlay))
                             .child(
                                 Textarea::new(&self.chat_input)
                                     .appearance(false)
@@ -5147,8 +5221,8 @@ impl ResonaApp {
                                     .size(px(28.))
                                     .rounded(px(5.))
                                     .border_1()
-                                    .border_color(rgba(0xffffff00))
-                                    .hover(|s| s.border_color(rgba(0xffffff40)))
+                                    .border_color(color(Color::Transparent))
+                                    .hover(|s| s.border_color(color(Color::ControlBorder)))
                                     .child(
                                         Button::new("send-message")
                                             .icon(IconName::ArrowUp)
@@ -5173,9 +5247,9 @@ impl ResonaApp {
             .w(px(280.))
             .h_full()
             .flex_shrink_0()
-            .bg(rgba(0x16181bed))
+            .bg(color(Color::Popover))
             .border_l_1()
-            .border_color(rgba(0xffffff22))
+            .border_color(color(Color::GlassBorder))
             .px_4()
             .child(self.render_selected_details(view))
             .overflow_y_scrollbar()
@@ -5247,14 +5321,14 @@ impl ResonaApp {
             .flex()
             .items_center()
             .gap_3()
-            .bg(rgba(0x141619f5))
+            .bg(color(Color::Toolbar))
             .border_t_1()
-            .border_color(rgba(0xffffff24))
+            .border_color(color(Color::GlassBorder))
             .child(
                 div()
                     .size(px(32.))
                     .rounded(px(6.))
-                    .bg(rgb(0x293735))
+                    .bg(color(Color::AvatarAccent))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -5286,7 +5360,7 @@ impl ResonaApp {
                                     .flex_1()
                                     .min_w_0()
                                     .text_xs()
-                                    .text_color(rgb(if local_speaking { TEXT } else { MUTED }))
+                                    .text_color(color(if local_speaking { TEXT } else { MUTED }))
                                     .truncate()
                                     .child(nickname),
                             ),
@@ -5294,7 +5368,7 @@ impl ResonaApp {
                     .child(
                         div()
                             .text_size(px(11.))
-                            .text_color(rgb(if self.voice.error.is_empty() {
+                            .text_color(color(if self.voice.error.is_empty() {
                                 MUTED
                             } else {
                                 RED
@@ -5361,7 +5435,7 @@ impl ResonaApp {
                         }
                     }),
             )
-            .child(div().w(px(1.)).h(px(22.)).bg(rgb(LINE)))
+            .child(div().w(px(1.)).h(px(22.)).bg(color(LINE)))
             .child(
                 Button::new("volume-down")
                     .icon(IconName::Minus)
@@ -5380,7 +5454,7 @@ impl ResonaApp {
                     .w(px(64.))
                     .text_center()
                     .text_xs()
-                    .text_color(rgb(MUTED))
+                    .text_color(color(MUTED))
                     .child(playback_label(if connected {
                         target.volume
                     } else {
@@ -5481,7 +5555,12 @@ impl ResonaApp {
             .flex()
             .flex_col()
             .gap_1()
-            .child(div().text_size(px(9.)).text_color(rgb(MUTED)).child(label))
+            .child(
+                div()
+                    .text_size(px(9.))
+                    .text_color(color(MUTED))
+                    .child(label),
+            )
             .child(
                 gpui_kit::canvas(
                     move |bounds, _, cx| {
@@ -5561,8 +5640,7 @@ impl ResonaApp {
             return;
         }
         if self
-            .pending
-            .values()
+            .pending_actions()
             .any(|pending| matches!(pending, Pending::UserPlayback(_)))
         {
             self.user_playback_failed(target, "请等待上一项收听调整完成".into());
@@ -5637,8 +5715,7 @@ impl ResonaApp {
             instance: user.instance.clone(),
         };
         let pending = self
-            .pending
-            .values()
+            .pending_actions()
             .any(|pending| matches!(pending, Pending::UserPlayback(_)));
         let unavailable = !self.capabilities.voice
             || user.instance.is_empty()
@@ -5646,15 +5723,14 @@ impl ResonaApp {
             || !self.workspace.session.switching_channel_id.is_empty();
         let disabled = pending || unavailable;
         let pending_current = self
-            .pending
-            .values()
+            .pending_actions()
             .any(|pending| matches!(pending, Pending::UserPlayback(current) if current == &target));
         let mut controls = div()
             .py_3()
             .flex()
             .flex_col()
             .gap_2()
-            .child(div().text_xs().text_color(rgb(MUTED)).child("收听音量"));
+            .child(div().text_xs().text_color(color(MUTED)).child("收听音量"));
         let mute = view.clone();
         let mute_target = target.clone();
         let volume = user.playback_volume.min(794);
@@ -5745,18 +5821,18 @@ impl ResonaApp {
             controls = controls.child(
                 div()
                     .text_xs()
-                    .text_color(rgb(RED))
+                    .text_color(color(RED))
                     .child(self.playback_input_error.clone()),
             );
         }
         if let Some((failed, error)) = &self.playback_error {
             if failed == &target {
                 controls =
-                    controls.child(div().text_xs().text_color(rgb(RED)).child(error.clone()));
+                    controls.child(div().text_xs().text_color(color(RED)).child(error.clone()));
             }
         }
         if pending || muted || unavailable {
-            controls = controls.child(div().text_xs().text_color(rgb(MUTED)).child(
+            controls = controls.child(div().text_xs().text_color(color(MUTED)).child(
                 if unavailable {
                     "仅当前频道成员可调节"
                 } else if pending_current {
@@ -5794,7 +5870,7 @@ impl ResonaApp {
         let mut section = div()
             .py_3()
             .border_b_1()
-            .border_color(rgb(LINE))
+            .border_color(color(LINE))
             .flex()
             .flex_col()
             .gap_2()
@@ -5819,7 +5895,7 @@ impl ResonaApp {
             );
         if !self.workspace.connected() {
             return section
-                .child(div().text_xs().text_color(rgb(MUTED)).child("已断开连接"))
+                .child(div().text_xs().text_color(color(MUTED)).child("已断开连接"))
                 .into_any_element();
         }
         if let DetailSelection::User(id) = selection {
@@ -5836,7 +5912,7 @@ impl ResonaApp {
                 .child(
                     div()
                         .text_xs()
-                        .text_color(rgb(AMBER))
+                        .text_color(color(AMBER))
                         .child(self.detail_error.clone()),
                 )
                 .child(
@@ -5856,7 +5932,7 @@ impl ResonaApp {
                     div()
                         .h(px(30.))
                         .text_xs()
-                        .text_color(rgb(MUTED))
+                        .text_color(color(MUTED))
                         .child("正在读取资料"),
                 )
                 .into_any_element();
@@ -5896,7 +5972,7 @@ impl ResonaApp {
                     .child(
                         div()
                             .text_size(px(10.))
-                            .text_color(rgb(MUTED))
+                            .text_color(color(MUTED))
                             .child(*label),
                     )
                     .child(div().min_w_0().overflow_hidden().text_xs().child(text)),
@@ -5931,8 +6007,7 @@ impl ResonaApp {
         let state = self.update_status["state"].as_str().unwrap_or("idle");
         let configured = self.update_status["configured"].as_bool().unwrap_or(false);
         let pending = self
-            .pending
-            .values()
+            .pending_actions()
             .any(|p| matches!(p, Pending::Update(_)));
         let busy = pending || state == "checking";
         let status = if !self.update_notice.is_empty() {
@@ -5998,8 +6073,8 @@ impl ResonaApp {
             .flex()
             .flex_col()
             .gap_2()
-            .child(div().h(px(1.)).w_full().bg(rgb(LINE)))
-            .child(div().text_xs().text_color(rgb(MUTED)).child(status))
+            .child(div().h(px(1.)).w_full().bg(color(LINE)))
+            .child(div().text_xs().text_color(color(MUTED)).child(status))
             .child(controls)
     }
 
@@ -6012,7 +6087,7 @@ impl ResonaApp {
             )
             || self.microphone_test.enabled
             || self.microphone_test.busy
-            || self.pending.values().any(|p| {
+            || self.pending_actions().any(|p| {
                 matches!(
                     p,
                     Pending::Voice
@@ -6042,7 +6117,7 @@ impl ResonaApp {
                 s.child(
                     div()
                         .text_xs()
-                        .text_color(rgb(AMBER))
+                        .text_color(color(AMBER))
                         .child("此构建不提供音频设备能力"),
                 )
             })
@@ -6106,7 +6181,7 @@ impl ResonaApp {
                 div()
                     .max_h(px(125.))
                     .border_1()
-                    .border_color(rgb(LINE))
+                    .border_color(color(LINE))
                     .p_2()
                     .flex()
                     .flex_col()
@@ -6145,7 +6220,7 @@ impl ResonaApp {
                         .flex()
                         .flex_col()
                         .gap_3()
-                        .child(div().text_xs().text_color(rgb(MUTED)).child("发言激活"))
+                        .child(div().text_xs().text_color(color(MUTED)).child("发言激活"))
                         .child(div().flex().flex_wrap().gap_2().children(mode_buttons)),
                 )
                 .when(self.editing_preferences().activation_mode == "ptt", |s| {
@@ -6179,7 +6254,7 @@ impl ResonaApp {
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(if self.hotkey_error.is_empty() {
+                            .text_color(color(if self.hotkey_error.is_empty() {
                                 MUTED
                             } else {
                                 AMBER
@@ -6251,7 +6326,7 @@ impl ResonaApp {
             content = content.child(
                 div()
                     .border_t_1()
-                    .border_color(rgb(LINE))
+                    .border_color(color(LINE))
                     .pt_4()
                     .flex()
                     .flex_col()
@@ -6305,7 +6380,7 @@ impl ResonaApp {
                     .child(
                         div()
                             .border_t_1()
-                            .border_color(rgb(LINE))
+                            .border_color(color(LINE))
                             .pt_4()
                             .text_sm()
                             .child("收听处理"),
@@ -6380,7 +6455,7 @@ impl ResonaApp {
             content = content.child(
                 div()
                     .border_t_1()
-                    .border_color(rgb(LINE))
+                    .border_color(color(LINE))
                     .pt_3()
                     .flex()
                     .flex_col()
@@ -6422,11 +6497,11 @@ impl ResonaApp {
                             .items_center()
                             .gap_3()
                             .child(
-                                div().flex_1().min_w_0().h(px(8.)).bg(rgb(LINE)).child(
+                                div().flex_1().min_w_0().h(px(8.)).bg(color(LINE)).child(
                                     div()
                                         .w(gpui_kit::relative((level + 60) as f32 / 60.))
                                         .h_full()
-                                        .bg(rgb(if level > -6 { AMBER } else { MINT })),
+                                        .bg(color(if level > -6 { AMBER } else { MINT })),
                                 ),
                             )
                             .child(
@@ -6441,7 +6516,7 @@ impl ResonaApp {
                         div()
                             .min_h(px(18.))
                             .text_xs()
-                            .text_color(rgb(if self.microphone_test.error.is_empty() {
+                            .text_color(color(if self.microphone_test.error.is_empty() {
                                 MUTED
                             } else {
                                 RED
@@ -6467,7 +6542,7 @@ impl ResonaApp {
             content = content.child(
                 div()
                     .text_xs()
-                    .text_color(rgb(RED))
+                    .text_color(color(RED))
                     .child(self.input_gain_error.clone()),
             );
         }
@@ -6475,7 +6550,7 @@ impl ResonaApp {
             content = content.child(
                 div()
                     .text_xs()
-                    .text_color(rgb(RED))
+                    .text_color(color(RED))
                     .child(self.voice.error.clone()),
             );
         }
@@ -6483,7 +6558,7 @@ impl ResonaApp {
             content = content.child(
                 div()
                     .text_xs()
-                    .text_color(rgb(RED))
+                    .text_color(color(RED))
                     .child(self.error.clone()),
             );
         }
@@ -6547,38 +6622,12 @@ impl ResonaApp {
         } else {
             "ans"
         };
-        let options = self
-            .capabilities
-            .audio_processors
-            .iter()
-            .filter(|option| option.phase == phase && option.name == name)
-            .cloned()
-            .collect::<Vec<_>>();
-        let mut description = options
-            .iter()
-            .filter(|option| option.id != "none")
-            .map(|option| format!("{}：{}", option.display_name, option.description))
-            .collect::<Vec<_>>()
-            .join("\n");
-        if description.is_empty() {
-            description = "音频处理器信息尚未就绪；若持续不可用，请重启应用。".into();
-        }
-        let selected_label = options
-            .iter()
-            .find(|option| option.id == selected.backend)
-            .map(|option| option.display_name.clone())
-            .unwrap_or_else(|| {
-                if options.is_empty() {
-                    format!("{}（信息未获取）", selected.backend)
-                } else {
-                    format!("{}（当前不可用）", selected.backend)
-                }
-            });
-        let selected_description = options
-            .iter()
-            .find(|option| option.id == selected.backend)
-            .map(|option| option.description.clone())
-            .unwrap_or_else(|| "此处理器当前不可用，请检查安装是否完整并重启应用。".into());
+        let presentation::ProcessorMenu {
+            options,
+            description,
+            selected_label,
+            selected_description,
+        } = presentation::processor_menu(&self.capabilities, phase, name, &selected.backend);
         let selected_backend = selected.backend.clone();
         let entity = view.clone();
         div()
@@ -6590,7 +6639,7 @@ impl ResonaApp {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(div().text_xs().text_color(rgb(MUTED)).child(label))
+                    .child(div().text_xs().text_color(color(MUTED)).child(label))
                     .child(
                         div()
                             .id(SharedString::from(format!("{id}-help")))
@@ -6606,7 +6655,7 @@ impl ResonaApp {
                                 svg()
                                     .path(IconName::Info.path())
                                     .size(px(12.))
-                                    .text_color(rgb(MUTED)),
+                                    .text_color(color(MUTED)),
                             ),
                     ),
             )
@@ -6847,8 +6896,8 @@ impl ResonaApp {
                         .p_5()
                         .rounded(px(7.))
                         .border_1()
-                        .border_color(rgb(LINE))
-                        .bg(rgb(PANEL_2))
+                        .border_color(color(LINE))
+                        .bg(color(PANEL_2))
                         .shadow_lg()
                         .flex()
                         .flex_col()
@@ -6867,12 +6916,12 @@ impl ResonaApp {
                             )))
                         })
                         .when(!delete, |card| {
-                            card.child(div().text_xs().text_color(rgb(MUTED)).child("名称"))
+                            card.child(div().text_xs().text_color(color(MUTED)).child("名称"))
                                 .child(
                                     Input::new(&self.channel_name_input)
                                         .disabled(pending || unavailable),
                                 )
-                                .child(div().text_xs().text_color(rgb(MUTED)).child("描述"))
+                                .child(div().text_xs().text_color(color(MUTED)).child("描述"))
                                 .child(
                                     Textarea::new(&self.channel_description_input)
                                         .h(px(110.))
@@ -6943,7 +6992,7 @@ impl ResonaApp {
                                 card.child(
                                     div()
                                         .text_xs()
-                                        .text_color(rgb(MUTED))
+                                        .text_color(color(MUTED))
                                         .child("服务器不支持音质设置"),
                                 )
                             },
@@ -6952,7 +7001,7 @@ impl ResonaApp {
                             card.child(
                                 div()
                                     .text_sm()
-                                    .text_color(rgb(RED))
+                                    .text_color(color(RED))
                                     .child("频道已不存在，或当前不允许删除"),
                             )
                         })
@@ -6960,7 +7009,7 @@ impl ResonaApp {
                             card.child(
                                 div()
                                     .text_sm()
-                                    .text_color(rgb(RED))
+                                    .text_color(color(RED))
                                     .child(self.channel_error.clone()),
                             )
                         })
@@ -7010,8 +7059,8 @@ impl ResonaApp {
                         .p_5()
                         .rounded(px(7.))
                         .border_1()
-                        .border_color(rgb(LINE))
-                        .bg(rgb(PANEL_2))
+                        .border_color(color(LINE))
+                        .bg(color(PANEL_2))
                         .shadow_lg()
                         .flex()
                         .flex_col()
@@ -7024,7 +7073,7 @@ impl ResonaApp {
                                 .child(self.workspace.session.server_name.clone()),
                         )
                         .child(div().text_sm().child(format!("当前角色：{role}")))
-                        .child(div().text_xs().text_color(rgb(MUTED)).child("身份 ID"))
+                        .child(div().text_xs().text_color(color(MUTED)).child("身份 ID"))
                         .child(
                             div()
                                 .text_size(px(10.))
@@ -7056,7 +7105,7 @@ impl ResonaApp {
                             card.child(
                                 div()
                                     .text_sm()
-                                    .text_color(rgb(MUTED))
+                                    .text_color(color(MUTED))
                                     .child("正在确认所有权…"),
                             )
                         })
@@ -7064,7 +7113,7 @@ impl ResonaApp {
                             card.child(
                                 div()
                                     .text_sm()
-                                    .text_color(rgb(RED))
+                                    .text_color(color(RED))
                                     .child(self.ownership_error.clone()),
                             )
                         })
@@ -7115,8 +7164,8 @@ impl ResonaApp {
                         .p_5()
                         .rounded(px(7.))
                         .border_1()
-                        .border_color(rgb(LINE))
-                        .bg(rgb(PANEL_2))
+                        .border_color(color(LINE))
+                        .bg(color(PANEL_2))
                         .shadow_lg()
                         .flex()
                         .flex_col()
@@ -7131,9 +7180,9 @@ impl ResonaApp {
                                 div()
                                     .p_3()
                                     .rounded(px(5.))
-                                    .bg(rgb(0x40282b))
+                                    .bg(color(Color::DangerSurface))
                                     .text_xs()
-                                    .text_color(rgb(RED))
+                                    .text_color(color(RED))
                                     .child(self.server_error.clone()),
                             )
                         })
@@ -7187,8 +7236,8 @@ impl ResonaApp {
                     .p_5()
                     .rounded(px(7.))
                     .border_1()
-                    .border_color(rgb(LINE))
-                    .bg(rgb(PANEL_2))
+                    .border_color(color(LINE))
+                    .bg(color(PANEL_2))
                     .shadow_lg()
                     .flex()
                     .flex_col()
@@ -7199,9 +7248,9 @@ impl ResonaApp {
                             div()
                                 .p_3()
                                 .rounded(px(5.))
-                                .bg(rgb(0x40282b))
+                                .bg(color(Color::DangerSurface))
                                 .text_xs()
-                                .text_color(rgb(RED))
+                                .text_color(color(RED))
                                 .child(self.connect_error.clone()),
                         )
                     })
@@ -7228,7 +7277,7 @@ impl ResonaApp {
                         c.child(
                             div()
                                 .text_xs()
-                                .text_color(rgb(AMBER))
+                                .text_color(color(AMBER))
                                 .child("此平台暂不保存密码，本次连接仍可使用输入的密码。"),
                         )
                     })
@@ -7292,7 +7341,7 @@ impl ResonaApp {
                     )
             }
             Modal::Delete { server_id } => {
-                let deleting = self.pending.values().any(
+                let deleting = self.pending_actions().any(
                     |pending| matches!(pending, Pending::DeleteServer(id) if id == &server_id),
                 );
                 let name = self
@@ -7307,21 +7356,21 @@ impl ResonaApp {
                     .p_5()
                     .rounded(px(7.))
                     .border_1()
-                    .border_color(rgb(LINE))
-                    .bg(rgb(PANEL_2))
+                    .border_color(color(LINE))
+                    .bg(color(PANEL_2))
                     .shadow_lg()
                     .flex()
                     .flex_col()
                     .gap_4()
                     .child(modal_title("删除服务器书签"))
-                    .child(div().text_sm().text_color(rgb(MUTED)).child(format!(
+                    .child(div().text_sm().text_color(color(MUTED)).child(format!(
                         "将删除“{name}”及其已保存密码、本地登录凭据。此操作无法撤销。"
                     )))
                     .when(deleting, |card| {
                         card.child(
                             div()
                                 .text_xs()
-                                .text_color(rgb(MUTED))
+                                .text_color(color(MUTED))
                                 .child("正在清理本地凭据并删除书签。关闭此窗口不会取消操作。"),
                         )
                     })
@@ -7329,7 +7378,7 @@ impl ResonaApp {
                         card.child(
                             div()
                                 .text_xs()
-                                .text_color(rgb(RED))
+                                .text_color(color(RED))
                                 .child(format!("删除未完成，书签已保留。{}", self.server_error)),
                         )
                     })
@@ -7380,8 +7429,8 @@ impl ResonaApp {
                     .p_5()
                     .rounded(px(7.))
                     .border_1()
-                    .border_color(rgb(LINE))
-                    .bg(rgb(PANEL_2))
+                    .border_color(color(LINE))
+                    .bg(color(PANEL_2))
                     .shadow_lg()
                     .flex()
                     .flex_col()
@@ -7390,7 +7439,7 @@ impl ResonaApp {
                     .child(
                         div()
                             .text_sm()
-                            .text_color(rgb(MUTED))
+                            .text_color(color(MUTED))
                             .child("上一条相同消息的发送结果未知，继续可能产生重复消息。"),
                     )
                     .child(
@@ -7463,7 +7512,7 @@ impl ResonaApp {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(div().text_xs().text_color(rgb(MUTED)).child("提示音量"))
+                            .child(div().text_xs().text_color(color(MUTED)).child("提示音量"))
                             .child(
                                 Button::new("notification-volume-down")
                                     .icon(IconName::Minus)
@@ -7488,7 +7537,7 @@ impl ResonaApp {
                                     .flex_1()
                                     .h(px(4.))
                                     .rounded_full()
-                                    .bg(rgb(0x303840))
+                                    .bg(color(Color::Meter))
                                     .child(
                                         div()
                                             .h_full()
@@ -7496,7 +7545,7 @@ impl ResonaApp {
                                                 as f32
                                                 * 2.))
                                             .rounded_full()
-                                            .bg(rgb(ICE)),
+                                            .bg(color(ICE)),
                                     ),
                             )
                             .child(
@@ -7504,7 +7553,7 @@ impl ResonaApp {
                                     .w(px(28.))
                                     .text_right()
                                     .text_xs()
-                                    .text_color(rgb(TEXT))
+                                    .text_color(color(TEXT))
                                     .child(
                                         self.editing_preferences().notification_volume.to_string(),
                                     ),
@@ -7547,7 +7596,7 @@ impl ResonaApp {
                     .flex()
                     .flex_col()
                     .gap_4()
-                    .child(div().text_sm().text_color(rgb(MUTED)).child("界面主题"))
+                    .child(div().text_sm().text_color(color(MUTED)).child("界面主题"))
                     .child(
                         div()
                             .flex()
@@ -7572,40 +7621,42 @@ impl ResonaApp {
                 let connected = self.workspace.connected();
                 let logged = !self.workspace.session.account_uid.is_empty();
                 let busy = self
-                    .pending
-                    .values()
+                    .pending_actions()
                     .any(|p| matches!(p, Pending::Account(..) | Pending::AccountToken(..)));
                 let session = &self.workspace.session;
-                let mut page = div()
-                    .w_full()
-                    .max_w(px(400.))
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap_5()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .font_weight(gpui_kit::FontWeight::MEDIUM)
-                                    .child(if connected {
-                                        session.server_name.clone()
+                let mut page =
+                    div()
+                        .w_full()
+                        .max_w(px(400.))
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap_5()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_weight(gpui_kit::FontWeight::MEDIUM)
+                                        .child(if connected {
+                                            session.server_name.clone()
+                                        } else {
+                                            "未连接服务器".into()
+                                        }),
+                                )
+                                .child(div().text_xs().text_color(color(MUTED)).child(
+                                    if !connected {
+                                        "连接服务器后可管理账号"
+                                    } else if logged {
+                                        "当前服务器账号"
                                     } else {
-                                        "未连接服务器".into()
-                                    }),
-                            )
-                            .child(div().text_xs().text_color(rgb(MUTED)).child(if !connected {
-                                "连接服务器后可管理账号"
-                            } else if logged {
-                                "当前服务器账号"
-                            } else {
-                                "当前以游客身份连接"
-                            })),
-                    );
+                                        "当前以游客身份连接"
+                                    },
+                                )),
+                        );
                 if connected && !logged {
                     if self.account_mode == "token" {
                         page = page.child(field(
@@ -7653,7 +7704,7 @@ impl ResonaApp {
                             .child(
                                 Button::new("account-register-mode")
                                     .label(switch_label)
-                                    .text_color(rgb(MUTED))
+                                    .text_color(color(MUTED))
                                     .ghost()
                                     .compact()
                                     .disabled(busy)
@@ -7699,7 +7750,7 @@ impl ResonaApp {
                                     })
                                     .ghost()
                                     .compact()
-                                    .text_color(rgb(MUTED))
+                                    .text_color(color(MUTED))
                                     .disabled(busy)
                                     .on_click(move |_, window, cx| {
                                         entity.update(cx, |this, cx| {
@@ -7720,7 +7771,7 @@ impl ResonaApp {
                             div()
                                 .id("account-uid")
                                 .text_xs()
-                                .text_color(rgb(MUTED))
+                                .text_color(color(MUTED))
                                 .child(format!("UID {}", session.account_uid))
                                 .overflow_hidden()
                                 .text_ellipsis()
@@ -7811,7 +7862,7 @@ impl ResonaApp {
                             .gap_2()
                             .pt_4()
                             .border_t_1()
-                            .border_color(rgb(LINE))
+                            .border_color(color(LINE))
                             .child(
                                 Button::new("account-change-password")
                                     .label("修改密码")
@@ -7881,7 +7932,7 @@ impl ResonaApp {
                                 page.child(
                                     div()
                                         .text_sm()
-                                        .text_color(rgb(MUTED))
+                                        .text_color(color(MUTED))
                                         .child(self.account_notice.clone()),
                                 )
                             },
@@ -7890,8 +7941,7 @@ impl ResonaApp {
             }
             Modal::Diagnostics => {
                 let exporting = self
-                    .pending
-                    .values()
+                    .pending_actions()
                     .any(|p| matches!(p, Pending::ExportDiagnostics));
                 div()
                     .w_full()
@@ -7910,9 +7960,9 @@ impl ResonaApp {
                     .flex()
                     .flex_col()
                     .gap_5()
-                    .child(div().text_sm().text_color(rgb(MUTED)).child("本地配置"))
+                    .child(div().text_sm().text_color(color(MUTED)).child("本地配置"))
                     .child(
-                        div().text_xs().text_color(rgb(TEXT)).child(
+                        div().text_xs().text_color(color(TEXT)).child(
                             self.preference_error.as_ref().map(|error| format!(
                                 "偏好未加载或未保存：{error}。原文件保留，本次修改不保存；修复配置后重启应用。"
                             )).unwrap_or_else(|| format!("偏好格式 v{}", crate::preferences::SCHEMA_VERSION)),
@@ -7931,8 +7981,8 @@ impl ResonaApp {
                                 }
                             }),
                     )
-                    .child(div().w_full().h(px(1.)).bg(rgb(LINE)))
-                    .child(div().text_sm().text_color(rgb(MUTED)).child("本机诊断"))
+                    .child(div().w_full().h(px(1.)).bg(color(LINE)))
+                    .child(div().text_sm().text_color(color(MUTED)).child("本机诊断"))
                     .child(
                         Button::new("export-diagnostics")
                             .label(if exporting {
@@ -7958,7 +8008,7 @@ impl ResonaApp {
                                 }
                             }),
                     )
-                    .child(div().text_xs().text_color(rgb(0xe57878)).child(self.diagnostic_error.clone()))
+                    .child(div().text_xs().text_color(color(Color::Danger)).child(self.diagnostic_error.clone()))
                     )
                     )
             }
@@ -7984,7 +8034,7 @@ impl ResonaApp {
                             .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                             .child("Resona"),
                     )
-                    .child(div().w_full().h(px(1.)).bg(rgb(LINE)))
+                    .child(div().w_full().h(px(1.)).bg(color(LINE)))
                     .child(
                         div()
                             .flex()
@@ -8037,7 +8087,7 @@ impl ResonaApp {
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(0xe57878))
+                            .text_color(color(Color::Danger))
                             .child(self.build_info_error.clone()),
                     )
                     .child(self.render_updates(&entity))
@@ -8053,8 +8103,8 @@ impl ResonaApp {
                 .rounded(px(8.))
                 .overflow_hidden()
                 .border_1()
-                .border_color(rgba(0xffffff38))
-                .bg(rgba(0x17191df5))
+                .border_color(color(Color::ModalBorder))
+                .bg(color(Color::Modal))
                 .shadow_lg()
                 .child(
                     div()
@@ -8065,9 +8115,9 @@ impl ResonaApp {
                         .flex()
                         .flex_col()
                         .gap_3()
-                        .bg(rgba(0x080a0d55))
+                        .bg(color(Color::SidebarShade))
                         .border_r_1()
-                        .border_color(rgba(0xffffff14))
+                        .border_color(color(Color::HighlightOverlay))
                         .child(
                             div()
                                 .py_3()
@@ -8253,7 +8303,7 @@ impl ResonaApp {
                                 .flex_shrink_0()
                                 .px_5()
                                 .border_b_1()
-                                .border_color(rgb(LINE))
+                                .border_color(color(LINE))
                                 .flex()
                                 .items_center()
                                 .gap_3()
@@ -8280,7 +8330,10 @@ impl ResonaApp {
                                     audio_page && (self.audio_settings_pending || self.voice.busy),
                                     |s| {
                                         s.child(
-                                            div().text_xs().text_color(rgb(MUTED)).child("应用中"),
+                                            div()
+                                                .text_xs()
+                                                .text_color(color(MUTED))
+                                                .child("应用中"),
                                         )
                                     },
                                 )
@@ -8309,7 +8362,7 @@ impl ResonaApp {
                                     .flex_shrink_0()
                                     .px_4()
                                     .border_t_1()
-                                    .border_color(rgb(LINE))
+                                    .border_color(color(LINE))
                                     .flex()
                                     .items_center()
                                     .gap_2()
@@ -8318,7 +8371,7 @@ impl ResonaApp {
                                             .flex_1()
                                             .min_w_0()
                                             .text_xs()
-                                            .text_color(rgb(AMBER))
+                                            .text_color(color(AMBER))
                                             .child(if self.settings_discard {
                                                 "放弃未应用的修改？".to_owned()
                                             } else {
@@ -8409,7 +8462,7 @@ impl ResonaApp {
                 .id("modal-scrim")
                 .absolute()
                 .inset_0()
-                .bg(rgba(0x00000066))
+                .bg(color(Color::Scrim))
                 .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
                     cx.stop_propagation()
                 })
@@ -8427,95 +8480,28 @@ impl ResonaApp {
     }
 
     fn session_label(&self) -> String {
-        match self.workspace.session.mode.as_str() {
-            "preview" => "本地预览",
-            "connecting" | "reconnecting" => "未连接",
-            "connected" => "在线",
-            "disconnecting" => "正在断开",
-            "failed" => "离线",
-            _ => "离线",
-        }
-        .into()
+        presentation::session_status(&self.workspace).label.into()
     }
 
-    fn status_color(&self) -> u32 {
-        match self.workspace.session.mode.as_str() {
-            "connected" => MINT,
-            "preview" | "connecting" | "reconnecting" | "disconnecting" => AMBER,
-            "failed" => RED,
-            _ => MUTED,
-        }
+    fn status_color(&self) -> Color {
+        presentation::session_status(&self.workspace).tone
     }
 
     fn status_detail(&self) -> String {
-        if !self.workspace.session.error.is_empty() {
-            return self.workspace.session.error.clone();
-        }
-        if !self.workspace.session.credential_error.is_empty() {
-            return self.workspace.session.credential_error.clone();
-        }
-        if self.workspace.session.member_sync_state == "limited" {
-            return format!(
-                "成员范围受限 · {}",
-                self.workspace.session.member_sync_error
-            );
-        }
-        if self.workspace.session.member_sync_state == "pending" && self.workspace.connected() {
-            return "正在同步可见成员".into();
-        }
-        self.workspace.session.server_name.clone()
+        presentation::session_status(&self.workspace).detail
     }
 
     fn render_server_entry(&self, page: ServerPage, view: &Entity<Self>) -> AnyElement {
         let profile = self.selected_profile().cloned();
-        let failed = matches!(
+        let entry = presentation::server_entry(
+            &self.workspace,
+            &self.selected_server,
             page,
-            ServerPage::ConnectionFailed | ServerPage::ResourceFailed
+            &self.resource_error,
+            profile.is_some(),
         );
-        let waiting = matches!(page, ServerPage::Connecting | ServerPage::Disconnecting);
-        let title = match page {
-            ServerPage::ConnectionFailed => "连接失败",
-            ServerPage::ResourceFailed => "无法加载服务器信息",
-            _ if self.selected_server == "__preview__" && self.workspace.connected() => {
-                "断开当前连接后可进入本地预览"
-            }
-            _ if profile.is_none() => "选择或添加服务器",
-            _ => "此服务器尚未连接",
-        };
-        let detail = match page {
-            ServerPage::ConnectionFailed if self.workspace.session.mode == "reconnecting" => {
-                "连接已中断，正在后台尝试恢复。你可以重新连接或取消。"
-            }
-            ServerPage::ConnectionFailed if self.workspace.session.error.is_empty() => {
-                "无法连接服务器，请检查网络和服务器设置后重试。"
-            }
-            ServerPage::ConnectionFailed => self.workspace.session.error.as_str(),
-            ServerPage::ResourceFailed => self.resource_error.as_str(),
-            _ => "",
-        };
-        let mut body = div()
-            .w_full()
-            .max_w(px(380.))
-            .flex()
-            .flex_col()
-            .items_center()
-            .gap_3()
-            .child(
-                div()
-                    .h(px(20.))
-                    .text_sm()
-                    .text_color(rgb(if failed { RED } else { MUTED }))
-                    .child(if waiting { "" } else { title }),
-            )
-            .when(!detail.is_empty(), |body| {
-                body.child(
-                    div()
-                        .w_full()
-                        .text_xs()
-                        .text_color(rgb(MUTED))
-                        .child(detail.to_owned()),
-                )
-            });
+        let waiting = entry.waiting;
+        let mut body = components::server_entry_contents(&entry);
         if let Some(profile) = profile {
             let entity = view.clone();
             let resource_failed = page == ServerPage::ResourceFailed;
@@ -8523,13 +8509,7 @@ impl ResonaApp {
                 Button::new("connect-selected-server")
                     .w(px(148.))
                     .h(px(32.))
-                    .label(match page {
-                        ServerPage::Connecting => "正在连接…",
-                        ServerPage::Disconnecting => "正在取消…",
-                        ServerPage::ConnectionFailed | ServerPage::ResourceFailed => "重试连接",
-                        _ if self.workspace.connected() => "切换连接",
-                        _ => "连接服务器",
-                    })
+                    .label(entry.action)
                     .primary()
                     .disabled(waiting || self.is_busy() || self.closing)
                     .on_click(move |_, _, cx| {
@@ -8800,8 +8780,8 @@ impl Render for ResonaApp {
             } else {
                 ".SystemUIFont"
             })
-            .text_color(rgb(TEXT))
-            .bg(rgb(BG))
+            .text_color(color(TEXT))
+            .bg(color(BG))
             .flex()
             .flex_col()
             .when(self.preference_error.is_some(), |root| {
@@ -8812,9 +8792,9 @@ impl Render for ResonaApp {
                         .px_3()
                         .py_2()
                         .border_b_1()
-                        .border_color(rgb(LINE))
+                        .border_color(color(LINE))
                         .text_xs()
-                        .text_color(rgb(AMBER))
+                        .text_color(color(AMBER))
                         .child(
                             "偏好未加载或未保存，本次修改不保存；请在设置 → 诊断查看并修复后重启。",
                         ),
@@ -8866,8 +8846,8 @@ impl Render for ResonaApp {
                         .p_3()
                         .rounded(px(5.))
                         .border_1()
-                        .border_color(rgb(0x724146))
-                        .bg(rgb(0x3b2528))
+                        .border_color(color(Color::DangerBorder))
+                        .bg(color(Color::DangerSurface))
                         .shadow_md()
                         .flex()
                         .items_center()
@@ -8876,7 +8856,7 @@ impl Render for ResonaApp {
                             div()
                                 .flex_1()
                                 .text_xs()
-                                .text_color(rgb(RED))
+                                .text_color(color(RED))
                                 .child(display_error.clone()),
                         )
                         .child(
@@ -8900,7 +8880,7 @@ impl Render for ResonaApp {
                     div()
                         .absolute()
                         .inset_0()
-                        .bg(rgba(0x101214ed))
+                        .bg(color(Color::Toast))
                         .flex()
                         .items_center()
                         .justify_center()
@@ -8912,11 +8892,11 @@ impl Render for ResonaApp {
             .h(window.viewport_size().height)
             .flex()
             .flex_col()
-            .bg(rgb(PANEL))
+            .bg(color(PANEL))
             .when(cfg!(target_os = "macos"), |root| {
                 root.child(
                     gpui_kit::component::TitleBar::new()
-                        .bg(rgb(PANEL))
+                        .bg(color(PANEL))
                         .border_b_0(),
                 )
             })
@@ -9074,54 +9054,8 @@ fn parse_playback_volume(value: &str) -> Result<u16, &'static str> {
     }))
 }
 
-fn can_show_session_channels(workspace: &Workspace, selected: &str) -> bool {
-    if workspace.channels.is_empty() {
-        return false;
-    }
-    if workspace.session.mode == "preview" {
-        return selected == "__preview__" || !workspace.servers.iter().any(|s| s.id == selected);
-    }
-    workspace.connected() && selected == workspace.session.server_id
-}
-
 fn connection_request_matches(pending: &Pending, server: &str, revision: u64) -> bool {
     pending.connection() == Some((server, revision))
-}
-
-fn server_page(
-    workspace: &Workspace,
-    selected: &str,
-    resources: ResourceState,
-    preparing: bool,
-    disconnecting: bool,
-) -> ServerPage {
-    if preparing {
-        return if disconnecting {
-            ServerPage::Disconnecting
-        } else {
-            ServerPage::Connecting
-        };
-    }
-    if workspace.session.mode == "preview" && can_show_session_channels(workspace, selected) {
-        return ServerPage::Channels;
-    }
-    if selected != workspace.session.server_id {
-        return ServerPage::Offline;
-    }
-    if disconnecting || workspace.session.mode == "disconnecting" {
-        return ServerPage::Disconnecting;
-    }
-    match workspace.session.mode.as_str() {
-        "reconnecting" if workspace.session.connection_retry_slow => ServerPage::ConnectionFailed,
-        "connecting" | "reconnecting" => ServerPage::Connecting,
-        "connected" => match resources {
-            ResourceState::Failed => ServerPage::ResourceFailed,
-            ResourceState::Idle | ResourceState::Syncing => ServerPage::Connecting,
-            ResourceState::Ready | ResourceState::Refreshing => ServerPage::Channels,
-        },
-        "failed" => ServerPage::ConnectionFailed,
-        _ => ServerPage::Offline,
-    }
 }
 
 fn visible_text_channel<'a>(
@@ -9393,7 +9327,12 @@ fn settings_nav_contents(label: &'static str, icon: impl IconNamed) -> AnyElemen
                 .flex_shrink_0()
                 .flex()
                 .justify_center()
-                .child(svg().path(icon.path()).size(px(16.)).text_color(rgb(MUTED))),
+                .child(
+                    svg()
+                        .path(icon.path())
+                        .size(px(16.))
+                        .text_color(color(MUTED)),
+                ),
         )
         .child(div().text_sm().child(label))
         .into_any_element()
@@ -9404,7 +9343,7 @@ fn field(label: &'static str, input: impl IntoElement) -> AnyElement {
         .flex()
         .flex_col()
         .gap_2()
-        .child(div().text_xs().text_color(rgb(MUTED)).child(label))
+        .child(div().text_xs().text_color(color(MUTED)).child(label))
         .child(input)
         .into_any_element()
 }
@@ -9413,7 +9352,7 @@ fn modal_title(title: impl Into<SharedString>) -> AnyElement {
     div()
         .text_lg()
         .font_weight(gpui_kit::FontWeight::BOLD)
-        .text_color(rgb(TEXT))
+        .text_color(color(TEXT))
         .child(title.into())
         .into_any_element()
 }
@@ -9448,64 +9387,6 @@ fn user_is_speaking(
                 .iter()
                 .any(|client_id| client_id == &user.id)
     }
-}
-
-fn speaking_indicator(
-    user: &User,
-    voice: &VoiceState,
-    speaking: bool,
-    location: &'static str,
-) -> AnyElement {
-    let locally_muted = !user.is_self && user.playback_muted;
-    let input_muted = if user.is_self {
-        voice.muted
-    } else {
-        user.voice_state_known && user.input_muted
-    };
-    let output_muted = if user.is_self {
-        voice.deafened
-    } else {
-        user.voice_state_known && user.output_muted
-    };
-    let (icon, tooltip) = if locally_muted {
-        (Some("headphones-off.svg"), "已在本机静音")
-    } else if input_muted {
-        (Some("mic-off.svg"), "麦克风已静音")
-    } else if speaking && user.is_self {
-        (None, "正在发送语音")
-    } else if speaking {
-        (None, "正在播放语音")
-    } else if output_muted {
-        (Some("headphones-off.svg"), "收听已关闭")
-    } else {
-        (None, "未在说话")
-    };
-    let tooltip: SharedString = tooltip.into();
-    div()
-        .id(SharedString::from(format!(
-            "speaking-{location}-{}",
-            user.id
-        )))
-        .size(px(16.))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-        .child(if let Some(path) = icon {
-            svg()
-                .path(path)
-                .text_color(rgb(if locally_muted { AMBER } else { MUTED }))
-                .size(px(14.))
-                .into_any_element()
-        } else {
-            div()
-                .size(px(if speaking { 12. } else { 8. }))
-                .rounded_full()
-                .bg(rgb(if speaking { ICE } else { 0x66717c }))
-                .into_any_element()
-        })
-        .into_any_element()
 }
 
 fn message_datetime(
@@ -9560,7 +9441,7 @@ fn message_status_label(status: &str) -> &'static str {
         _ => "",
     }
 }
-fn message_status_color(status: &str) -> u32 {
+fn message_status_color(status: &str) -> Color {
     match status {
         "sent" => MINT,
         "failed" => RED,
@@ -9659,6 +9540,50 @@ fn ordered_channels(channels: &[crate::model::Channel]) -> Vec<(crate::model::Ch
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn read_only_requests_do_not_block_unrelated_actions() {
+        use super::Pending;
+        for request in [
+            Pending::VoiceSnapshot,
+            Pending::MicrophoneSnapshot,
+            Pending::Devices,
+            Pending::Capabilities,
+            Pending::CoreInfo,
+            Pending::Workspace("GetWorkspace"),
+            Pending::Update("GetUpdateStatus"),
+            Pending::ChatHistory("session".into(), "channel".into(), 1, 1),
+        ] {
+            assert!(!request.blocks(1));
+        }
+        for request in [
+            Pending::Voice,
+            Pending::MicrophoneTest,
+            Pending::Workspace("SelectChannel"),
+            Pending::SaveServer(1),
+        ] {
+            assert!(request.blocks(1));
+        }
+    }
+
+    #[test]
+    fn replies_cannot_cross_session_channel_or_monitor_lifetimes() {
+        use super::{ReplyScope, Workspace};
+        let mut workspace = Workspace::default();
+        workspace.session.id = "session".into();
+        workspace.session.channel_id = "channel".into();
+        workspace.session.chat_epoch = 2;
+        let session = ReplyScope::Session("session".into());
+        let chat = ReplyScope::Chat("session".into(), "channel".into(), 2);
+        assert!(session.accepts(&workspace, 0));
+        assert!(chat.accepts(&workspace, 0));
+        workspace.session.chat_epoch = 3;
+        assert!(!chat.accepts(&workspace, 0));
+        workspace.session.id = "new-session".into();
+        assert!(!session.accepts(&workspace, 0));
+        assert!(ReplyScope::Microphone("new-session".into(), 2).accepts(&workspace, 2));
+        assert!(!ReplyScope::Microphone("new-session".into(), 1).accepts(&workspace, 2));
+        assert!(!ReplyScope::Microphone("session".into(), 2).accepts(&workspace, 2));
+    }
     #[test]
     fn message_datetime_includes_local_date_and_seconds() {
         let timezone = chrono::FixedOffset::east_opt(8 * 3600).unwrap();

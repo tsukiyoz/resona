@@ -7,6 +7,7 @@ COPY cmd/resona-server/ cmd/resona-server/
 COPY internal/nativewire/ internal/nativewire/
 COPY internal/noiseudp/ internal/noiseudp/
 COPY internal/server/ internal/server/
+COPY internal/accounts/ internal/accounts/
 COPY internal/nativeidentity/ internal/nativeidentity/
 COPY internal/version/ internal/version/
 COPY VERSION ./VERSION
@@ -28,4 +29,4 @@ ENV XDG_CONFIG_HOME=/data
 USER 10001:10001
 EXPOSE 9988/udp
 ENTRYPOINT ["/usr/local/bin/server-entrypoint"]
-CMD ["--listen", "0.0.0.0:9988"]
+CMD ["serve", "--listen", "0.0.0.0:9988"]

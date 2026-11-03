@@ -42,7 +42,7 @@ func TestOfflineAdminCredentialBindsExistingOwnerAndUsesAccessLock(t *testing.T)
 		t.Fatal(err)
 	}
 	store.Close()
-	out, err := executeTest(t, "--access-dir", dir, "admin", "token", "--label", "Laptop", "--expires", "24h")
+	out, err := executeTest(t, "admin", "token", "--access-dir", dir, "--label", "Laptop", "--expires", "24h")
 	if err != nil || len(strings.TrimSpace(out)) < 32 {
 		t.Fatal("credential provisioning failed", err)
 	}
@@ -59,27 +59,27 @@ func TestOfflineAdminCredentialBindsExistingOwnerAndUsesAccessLock(t *testing.T)
 		t.Fatal(err)
 	}
 	defer lock.Close()
-	if _, err = executeTest(t, "--access-dir", dir, "admin", "token"); err == nil {
+	if _, err = executeTest(t, "admin", "token", "--access-dir", dir); err == nil {
 		t.Fatal("live store lock bypassed")
 	}
 }
 
 func TestCommandHelpVersionAndInvalidInputDoNotStartServer(t *testing.T) {
-	for _, args := range [][]string{{"--help"}, {"serve", "--help"}, {"owner", "--help"}, {"version"}, {"--version"}} {
+	for _, args := range [][]string{nil, {"--help"}, {"serve", "--help"}, {"owner", "--help"}, {"version"}, {"--version"}} {
 		out, err := executeTest(t, args...)
 		if err != nil || !strings.Contains(out, "resona-server") {
 			t.Fatalf("%v: %s %v", args, out, err)
 		}
 	}
-	for _, args := range [][]string{{"unknown"}, {"serve", "extra"}, {"--no-such-flag"}, {"--init-key", "--init-owner"}, {"identity", "init", "--init-owner"}} {
+	for _, args := range [][]string{{"unknown"}, {"serve", "extra"}, {"--no-such-flag"}, {"--init-key"}, {"--init-owner"}, {"--reset-owner-claim"}, {"--listen", "127.0.0.1:0"}, {"identity", "init", "--init-owner"}, {"identity", "init", "--listen", "127.0.0.1:0"}, {"admin", "token", "--noise-key", "unused"}} {
 		if _, err := executeTest(t, args...); err == nil {
 			t.Fatalf("accepted %v", args)
 		}
 	}
 }
 
-func TestIdentityInitNeverOverwritesAndLegacyFlagWorks(t *testing.T) {
-	for _, args := range [][]string{{"identity", "init"}, {"--init-key"}} {
+func TestIdentityInitNeverOverwrites(t *testing.T) {
+	for _, args := range [][]string{{"identity", "init"}} {
 		path := filepath.Join(t.TempDir(), "noise.key")
 		args = append(args, "--noise-key", path)
 		out, err := executeTest(t, args...)
@@ -102,15 +102,14 @@ func TestIdentityInitNeverOverwritesAndLegacyFlagWorks(t *testing.T) {
 
 func TestOfflineOwnerCommandsUseSameStoreAndLock(t *testing.T) {
 	dir := t.TempDir()
-	args := []string{"--access-dir", dir}
-	old, err := executeTest(t, append(args, "owner", "init")...)
+	old, err := executeTest(t, "owner", "init", "--access-dir", dir)
 	if err != nil || len(strings.TrimSpace(old)) != 64 {
 		t.Fatalf("owner init: %v", err)
 	}
-	if _, err = executeTest(t, append(args, "--init-owner")...); err == nil {
+	if _, err = executeTest(t, "owner", "init", "--access-dir", dir); err == nil {
 		t.Fatal("existing claim overwritten")
 	}
-	fresh, err := executeTest(t, append(args, "owner", "reset-claim")...)
+	fresh, err := executeTest(t, "owner", "reset-claim", "--access-dir", dir)
 	if err != nil || fresh == old {
 		t.Fatalf("reset: %v", err)
 	}
@@ -119,7 +118,21 @@ func TestOfflineOwnerCommandsUseSameStoreAndLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer lock.Close()
-	if _, err = executeTest(t, append(args, "owner", "reset-claim")...); err == nil {
+	if _, err = executeTest(t, "owner", "reset-claim", "--access-dir", dir); err == nil {
 		t.Fatal("live access lock bypassed")
+	}
+}
+
+func TestReadOnlyCommandsAndInvalidRecoveryHaveNoStoreSideEffects(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("HOME", dir)
+	t.Setenv("AppData", dir)
+	for _, args := range [][]string{nil, {"version"}, {"serve", "--help"}, {"account", "reset-password", "--username", "alice", "--access-dir", filepath.Join(dir, "access")}} {
+		_, _ = executeTest(t, args...)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("non-executing commands created server data: %v %v", entries, err)
 	}
 }

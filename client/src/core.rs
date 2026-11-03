@@ -1477,6 +1477,35 @@ mod tests {
         (directory, core)
     }
     #[tokio::test]
+    async fn capabilities_advertise_only_available_audio_processors() {
+        let (_directory, core) = test_core().await;
+        let capabilities: model::Capabilities = serde_json::from_value(
+            core.handle
+                .request("GetCapabilities", json!({}))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        // Core is only compiled with native audio; optional libraries may be absent.
+        assert!(capabilities.voice);
+        for (phase, name) in [
+            ("preprocess", "aec"),
+            ("preprocess", "ans"),
+            ("postprocess", "agc"),
+        ] {
+            let options = capabilities
+                .audio_processors
+                .iter()
+                .filter(|option| option.phase == phase && option.name == name)
+                .collect::<Vec<_>>();
+            assert_eq!(options.len(), 2);
+            assert!(options.iter().any(|option| option.id == "none"));
+            assert!(options.iter().any(|option| option.id == "speex"));
+            assert!(options.iter().all(|option| !option.description.is_empty()));
+        }
+        core.close().await;
+    }
+    #[tokio::test]
     async fn stopped_monitor_reply_is_independent_of_restored_voice() {
         let (_directory, core) = test_core().await;
         let handle = core.handle.clone();

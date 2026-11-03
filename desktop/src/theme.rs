@@ -88,47 +88,130 @@ fn apply_titlebar(mode: ThemeMode, window: &Window) {
     }
 }
 
-pub fn rgb(dark: u32) -> Rgba {
-    if !is_light() {
-        return gpui_rgb(dark);
-    }
-    let light = match dark {
-        0x090a0c => 0xf6f8fa,
-        0x101214 | 0x111315 => 0xffffff,
-        0x181a1d => 0xf0f3f5,
-        0x24272b | 0x2a2f31 => 0xe8eef1,
-        0x303337 | 0x303638 | 0x303840 => 0xd8dfe4,
-        0xe9edf1 => 0x1e2930,
-        0x929ca7 => 0x64727d,
-        0x7db8e8 => 0x216894,
-        0x79c9ad => 0x276d56,
-        0xd8aa5d => 0x8d6022,
-        0xe28282 => 0xa63840,
-        0x40282b | 0x3b2528 => 0xffecee,
-        0x724146 => 0xe5aeb4,
-        0x293735 => 0xe5f1ed,
-        _ => dark,
-    };
-    gpui_rgb(light)
+// Exhaustive semantic roles: adding a role requires an explicit pair of palettes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Color {
+    Canvas,
+    Panel,
+    Raised,
+    Hover,
+    Border,
+    Text,
+    SecondaryText,
+    Muted,
+    Speaking,
+    Idle,
+    Success,
+    Warning,
+    Danger,
+    DangerSurface,
+    DangerBorder,
+    Avatar,
+    AvatarAccent,
+    Sidebar,
+    Selected,
+    Meter,
+    Transparent,
+    SelectionBorder,
+    SubtleOverlay,
+    HighlightOverlay,
+    HoverOverlay,
+    ControlBorder,
+    GlassBorder,
+    ModalBorder,
+    Popover,
+    Toolbar,
+    Modal,
+    SidebarShade,
+    Toast,
+    Scrim,
 }
 
-pub fn rgba(dark: u32) -> Rgba {
-    if !is_light() || dark == 0x00000066 || dark == 0x00000000 {
-        return gpui_rgba(dark);
+impl Color {
+    fn palette(self, light: bool) -> u32 {
+        let (dark, light_color) = match self {
+            Self::Canvas => (0x090a0cff, 0xf6f8faff),
+            Self::Panel => (0x101214ff, 0xffffffff),
+            Self::Raised => (0x181a1dff, 0xf0f3f5ff),
+            Self::Hover => (0x24272bff, 0xe8eef1ff),
+            Self::Border => (0x303337ff, 0xd8dfe4ff),
+            Self::Text => (0xe9edf1ff, 0x1e2930ff),
+            Self::SecondaryText => (0xc3c9cfff, 0x46535eff),
+            Self::Muted => (0x929ca7ff, 0x5d6a75ff),
+            Self::Speaking => (0x7db8e8ff, 0x216894ff),
+            Self::Idle => (0x66717cff, 0x74818cff),
+            Self::Success => (0x79c9adff, 0x276d56ff),
+            Self::Warning => (0xd8aa5dff, 0x8d6022ff),
+            Self::Danger => (0xe28282ff, 0xa63840ff),
+            Self::DangerSurface => (0x40282bff, 0xffeceeff),
+            Self::DangerBorder => (0x724146ff, 0xe5aeb4ff),
+            Self::Avatar => (0x303638ff, 0xd8dfe4ff),
+            Self::AvatarAccent => (0x293735ff, 0xe5f1edff),
+            Self::Sidebar => (0x111315ff, 0xffffffff),
+            Self::Selected => (0x2a2f31ff, 0xe8eef1ff),
+            Self::Meter => (0x303840ff, 0xd8dfe4ff),
+            Self::Transparent => (0x00000000, 0x00000000),
+            Self::SelectionBorder => (0x9dbdafaa, 0x36765caa),
+            Self::SubtleOverlay => (0xffffff06, 0x00000006),
+            Self::HighlightOverlay => (0xffffff14, 0x0000000d),
+            Self::HoverOverlay => (0xffffff20, 0x00000010),
+            Self::ControlBorder => (0xffffff40, 0x00000028),
+            Self::GlassBorder => (0xffffff22, 0x00000016),
+            Self::ModalBorder => (0xffffff38, 0x00000028),
+            Self::Popover => (0x16181bed, 0xffffffff),
+            Self::Toolbar => (0x141619f5, 0xffffffff),
+            Self::Modal => (0x17191df5, 0xffffffff),
+            Self::SidebarShade => (0x080a0d55, 0xe8edf080),
+            Self::Toast => (0x101214ed, 0xfffffff0),
+            Self::Scrim => (0x00000066, 0x00000066),
+        };
+        if light { light_color } else { dark }
     }
-    let light = match dark {
-        0xffffff00 => 0x00000000,
-        0xffffff06 => 0x00000006,
-        0xffffff14 => 0x0000000d,
-        0xffffff20 => 0x00000010,
-        0xffffff22 | 0xffffff24 => 0x00000016,
-        0xffffff38 | 0xffffff40 => 0x00000028,
-        0x9dbdafaa => 0x36765caa,
-        0x16181bed | 0x141619f5 | 0x17191df5 => 0xffffffff,
-        0x101214ed => 0xfffffff0,
-        0x080a0d55 => 0xe8edf080,
-        0x08090bdd => 0xffffffdd,
-        _ => dark,
-    };
-    gpui_rgba(light)
+}
+
+pub fn color(role: Color) -> Rgba {
+    gpui_rgba(role.palette(is_light()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Color;
+
+    fn contrast(foreground: u32, background: u32) -> f64 {
+        let luminance = |color: u32| {
+            let component = |shift: u32| {
+                let c = f64::from((color >> shift) & 255_u32) / 255.;
+                if c <= 0.04045 {
+                    c / 12.92
+                } else {
+                    ((c + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * component(24) + 0.7152 * component(16) + 0.0722 * component(8)
+        };
+        let (a, b) = (luminance(foreground), luminance(background));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn text_and_status_remain_readable_in_both_palettes() {
+        for light in [false, true] {
+            for role in [
+                Color::Text,
+                Color::SecondaryText,
+                Color::Muted,
+                Color::Danger,
+                Color::Warning,
+                Color::Success,
+                Color::Speaking,
+            ] {
+                for surface in [Color::Canvas, Color::Panel, Color::Raised] {
+                    assert!(
+                        contrast(role.palette(light), surface.palette(light)) >= 4.5,
+                        "{role:?} on {surface:?}, light={light}"
+                    );
+                }
+            }
+        }
+    }
 }

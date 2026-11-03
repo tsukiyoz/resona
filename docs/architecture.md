@@ -112,6 +112,8 @@ macOS Keychain / Windows Credential Manager 的独立账号项中，按书签、
 
 ## 桌面状态
 
+呈现分为三个小模块：`theme` 以穷举颜色角色维护深浅调色板，`presentation` 以无副作用函数派生连接页面、状态和 Core 处理器菜单，`components` 共享实际渲染。调试专用 `--showcase` 只使用这些模块和本地 fixture，不初始化客户端运行时。正式 GUI 的请求记录持有会话/频道/试听操作范围，成功与失败都先核对归属；后台查询与真实修改分开，只有冲突命令影响全局等待，不增加闲置轮询或后台动画。
+
 2026-10-21：发送 ANS 增加上游 RNNoise regular 可选实现，保留 Speex 默认和
 已保存选择。与 WebRTC 共用已有原生音频动态库，C ABI 2 的 kind 4 按两个 10ms
 子帧处理；控制端准备、编码 worker 独占替换/销毁，不新增线程、PCM IPC 或后台

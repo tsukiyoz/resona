@@ -62,7 +62,7 @@ docker run -d --name "$container" --cidfile "$backup_dir/new.cid" --restart unle
   --log-driver json-file --log-opt max-size=5m --log-opt max-file=2 \
   --env-file "$backup_dir/environment" \
   -p "$bind_ip:$port:9988/udp" -v "$root/data:/data:ro" -v "$root/access:/access" \
-  "$image" --noise-key /data/noise.key --listen 0.0.0.0:9988 --access-dir /access >/dev/null
+  "$image" serve --noise-key /data/noise.key --listen 0.0.0.0:9988 --access-dir /access >/dev/null
 sleep "$wait_seconds"
 test "$(docker inspect "$container" --format '{{.State.Running}}')" = true
 trap - EXIT HUP INT TERM

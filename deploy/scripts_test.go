@@ -88,6 +88,36 @@ func TestPackageRejectsInvalidInputs(t *testing.T) {
 	}
 }
 
+func TestEntrypointPreservesExplicitSubcommands(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX deployment script")
+	}
+	for _, args := range [][]string{nil, {"--version"}, {"owner", "init", "--help"}, {"serve", "--listen", "127.0.0.1:0"}} {
+		root := t.TempDir()
+		log := filepath.Join(root, "commands")
+		program := "#!/bin/sh\nfor arg in \"$@\"; do printf '%s\\n' \"$arg\"; done >> \"$COMMAND_LOG\"\nprintf '%s\\n' END >> \"$COMMAND_LOG\"\n"
+		if err := os.WriteFile(filepath.Join(root, "resona-server"), []byte(program), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command("sh", append([]string{"server-entrypoint.sh"}, args...)...)
+		cmd.Env = append(os.Environ(), "PATH="+root+":"+os.Getenv("PATH"), "COMMAND_LOG="+log)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v %s", args, err, out)
+		}
+		calls, err := os.ReadFile(log)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(args) > 0 && args[0] == "serve" {
+			if !strings.HasSuffix(string(calls), "serve\n--noise-key\n/data/noise.key\n--listen\n127.0.0.1:0\nEND\n") {
+				t.Fatalf("serve command lost: %s", calls)
+			}
+		} else if string(calls) != strings.Join(append(append([]string(nil), args...), "END", ""), "\n") {
+			t.Fatalf("non-serving command initialized an identity: %s", calls)
+		}
+	}
+}
+
 func TestPackagePreservesUnknownOutputAndGenerationLock(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX deployment script")
@@ -154,6 +184,7 @@ case "$1" in
       *) touch "$FAKE_STATE/backup" ;;
     esac ;;
   run)
+    case "$*" in *'resona-test:local serve --noise-key '*) ;; *) echo 'missing explicit serve command' >&2; exit 2 ;; esac
     while [ "$#" -gt 0 ]; do
       if [ "$1" = --cidfile ]; then shift; printf '%s' new-id > "$1"; fi
       shift

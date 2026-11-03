@@ -6,3 +6,4 @@ USER 10001:10001
 ENV XDG_CONFIG_HOME=/data
 EXPOSE 9988/udp
 ENTRYPOINT ["/resona-server"]
+CMD ["serve"]

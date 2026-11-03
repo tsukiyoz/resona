@@ -1,0 +1,55 @@
+package main
+
+import (
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+
+	"github.com/spf13/cobra"
+	"github.com/tsukiyoz/resona/internal/noiseudp"
+	"github.com/tsukiyoz/resona/internal/server"
+	"github.com/tsukiyoz/resona/internal/version"
+)
+
+func newServeCommand(configDir string) *cobra.Command {
+	var store storeOptions
+	var address, name, keyPath, adminListen, adminOrigin string
+	var maxClients int
+	cmd := &cobra.Command{
+		Use: "serve", Short: "Run the voice server", Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			key, err := os.ReadFile(keyPath)
+			if err != nil {
+				return fmt.Errorf("load Noise identity (run identity init first): %w", err)
+			}
+			if len(key) != 32 {
+				return errors.New("invalid Noise identity file")
+			}
+			return store.withStore(func(store *server.Store) error {
+				s, err := server.Listen(address, server.Config{
+					Store: store, NoiseKey: key,
+					Name: name, Password: os.Getenv("RESONA_SERVER_PASSWORD"), MaxClients: maxClients,
+				})
+				if err != nil {
+					return err
+				}
+				slog.Info("server listening", "address", s.Addr().String(), "version", version.Current().String())
+				pub, _ := noiseudp.PublicKey(key)
+				slog.Info("server identity", "public_key", hex.EncodeToString(pub))
+				return s.ServeWithAdmin(cmd.Context(), adminListen, adminOrigin)
+			})
+		},
+	}
+	store.flags(cmd, configDir)
+	f := cmd.Flags()
+	f.StringVar(&address, "listen", "127.0.0.1:9988", "UDP listen address")
+	f.StringVar(&name, "name", "Resona", "server display name")
+	f.StringVar(&keyPath, "noise-key", filepath.Join(configDir, "noise.key"), "Noise X25519 private key file")
+	f.IntVar(&maxClients, "max-clients", 64, "maximum simultaneous connections (1-64)")
+	f.StringVar(&adminListen, "admin-listen", "", "optional HTTP management bind address")
+	f.StringVar(&adminOrigin, "admin-origin", "", "browser origin; public origins require HTTPS")
+	return cmd
+}

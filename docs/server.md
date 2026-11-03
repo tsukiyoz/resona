@@ -12,7 +12,7 @@ build/bin/resona-server serve --listen 127.0.0.1:9988
 ```
 
 CLI 使用 Cobra；`--help`、`serve --help`、`owner --help` 查看命令。
-初始化私钥不会覆盖已有文件。`identity init` 输出公钥，客户端添加地址和公钥后连接。`owner init` 输出一次性认领码，不写日志；用户在客户端认领成为 owner。共享连接密码通过 `RESONA_SERVER_PASSWORD` 环境变量配置，缺省为空。旧的根命令启动方式和 `--init-key`、`--init-owner`、`--reset-owner-claim` 保留，现有 service/container 参数仍可使用。
+初始化私钥不会覆盖已有文件。`identity init` 输出公钥，客户端添加地址和公钥后连接。`owner init` 输出一次性认领码，不写日志；用户在客户端认领成为 owner。共享连接密码通过 `RESONA_SERVER_PASSWORD` 环境变量配置，缺省为空。所有操作使用显式子命令；根命令只显示帮助，不启动服务。参数放在对应叶子命令之后，例如 `serve --listen ...` 或 `owner init --access-dir ...`。旧初始化 flags 和根命令启动方式已移除，更新自定义 service/container 时须同步修改启动参数。
 
 `--noise-key` 指定 32 字节服务器私钥；默认位于系统用户配置目录的 `resona-server/noise.key`。`--access-dir` 指定数据访问锁和旧配置导入目录，默认 `resona-server/access`。配置与聊天共用该目录下 `chat/` 中的一个内置 JetStream，也可用 `--chat-dir` 显式指定完整 JetStream 目录。备份私钥和完整数据目录，不提交仓库；定制 `--chat-dir` 时它也必须进入备份。
 
@@ -62,7 +62,7 @@ CLI 使用 Cobra；`--help`、`serve --help`、`owner --help` 查看命令。
 忘记密码时，停止服务并对同一数据目录执行（新密码从 stdin 输入，不作命令参数）：
 
 ```sh
-build/bin/resona-server --access-dir /path/to/access account reset-password --username alice --password-stdin
+build/bin/resona-server account reset-password --access-dir /path/to/access --username alice --password-stdin
 ```
 
 输入新密码并结束 stdin；需要至少 8 字节、最多 256 字节。UID、昵称和角色保留，
@@ -85,7 +85,7 @@ build/bin/resona-server serve --admin-listen 127.0.0.1:9989
 还可停止服务，使用**同一数据目录**生成独立管理 Token 后重启：
 
 ```sh
-build/bin/resona-server --access-dir /path/to/access admin token --label laptop --expires 720h
+build/bin/resona-server admin token --access-dir /path/to/access --label laptop --expires 720h
 ```
 
 定制 `--chat-dir` 时也须向此命令传入相同目录。命令默认关联已有 owner；

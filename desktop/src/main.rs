@@ -1,9 +1,13 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app_icon;
+mod components;
 mod core;
 mod model;
 mod preferences;
+mod presentation;
+#[cfg(debug_assertions)]
+mod showcase;
 mod theme;
 mod ui;
 
@@ -87,6 +91,12 @@ fn main() -> Result<()> {
             }
         })
         .detach();
+        #[cfg(debug_assertions)]
+        if std::env::args().nth(1).as_deref() == Some("--showcase") {
+            showcase::open(cx);
+            cx.activate(true);
+            return;
+        }
         gpui_kit::open_window(
             WindowOptions {
                 titlebar: Some(gpui_kit::TitlebarOptions {

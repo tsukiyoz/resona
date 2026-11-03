@@ -1362,10 +1362,45 @@ mod tests {
             // A second transition returns to the first channel without toggling audio.
             next.channel = 1;
             next.epoch += 1;
-            engine.handle.route(next, None).unwrap();
+            engine.handle.route(next.clone(), None).unwrap();
             wait_for_audio(&engine, &latest).await;
             assert_eq!(opens.load(Ordering::SeqCst), 1);
             assert_eq!(original.discards.load(Ordering::SeqCst), 2);
+            // Hot DSP changes and failed replacements must not strand the route
+            // during repeated channel changes or reopen an unchanged device.
+            let mut processed = config.clone();
+            processed.processing.preprocess[1].name = "ans".into();
+            processed.processing.preprocess[1].backend = "speex".into();
+            engine
+                .handle
+                .configure(processed.clone(), false)
+                .await
+                .unwrap();
+            let mut invalid = processed.clone();
+            invalid.processing.preprocess[1].backend = "unavailable".into();
+            assert!(engine.handle.configure(invalid, false).await.is_err());
+            assert_eq!(engine.handle.state.borrow().config, processed);
+            for channel in [2, 1, 2, 1] {
+                next.channel = channel;
+                next.epoch += 1;
+                let writes = original.writes.load(Ordering::SeqCst);
+                engine.handle.route(next.clone(), None).unwrap();
+                wait_for_audio(&engine, &latest).await;
+                tokio::time::timeout(Duration::from_secs(1), async {
+                    while original.writes.load(Ordering::SeqCst) == writes {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                })
+                .await
+                .expect("audio stopped after a channel/DSP transition");
+            }
+            engine
+                .handle
+                .configure(config.clone(), false)
+                .await
+                .unwrap();
+            assert_eq!(opens.load(Ordering::SeqCst), 1);
+            assert!(Arc::ptr_eq(&original, &latest.lock().unwrap()));
             // Reopening on the same route also needs the current capture epoch.
             engine
                 .handle
