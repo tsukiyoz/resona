@@ -4435,11 +4435,63 @@ impl ResonaApp {
                     .into_any_element()
             })
             .collect::<Vec<_>>();
+        let menu_entity = view.clone();
+        let menu_session = self.workspace.session.id.clone();
+        let empty_space = div()
+            .id("channel-list-empty-space")
+            .flex_1()
+            .min_h(px(40.))
+            .map(|space| {
+                if !native_session {
+                    return space.into_any_element();
+                }
+                space
+                    .context_menu(move |mut menu, _, cx| {
+                        let current = menu_entity.read(cx);
+                        let enabled = current.workspace.connected()
+                            && current.workspace.session.id == menu_session
+                            && current.selected_server == current.workspace.session.server_id
+                            && current.workspace.session.can_manage_channels
+                            && !current.resources_blocked()
+                            && !current.channel_pending()
+                            && !current.closing;
+                        if !current.workspace.session.can_manage_channels {
+                            menu = menu.label("服务器未授权频道管理");
+                        } else if current.channel_pending() {
+                            menu = menu.label("频道操作正在进行");
+                        }
+                        let create = menu_entity.clone();
+                        let session = menu_session.clone();
+                        menu.item(PopupMenuItem::new("新建频道").disabled(!enabled).on_click(
+                            move |_, window, cx| {
+                                create.update(cx, |this, cx| {
+                                    if this.selected_server == this.workspace.session.server_id {
+                                        this.open_channel_form(
+                                            session.clone(),
+                                            String::new(),
+                                            false,
+                                            window,
+                                            cx,
+                                        );
+                                    }
+                                });
+                            },
+                        ))
+                    })
+                    .into_any_element()
+            });
         div()
             .flex_1()
             .min_h_0()
             .p_2()
-            .children(rows)
+            .child(
+                div()
+                    .min_h_full()
+                    .flex()
+                    .flex_col()
+                    .child(div().flex_shrink_0().children(rows))
+                    .child(empty_space),
+            )
             .overflow_y_scrollbar()
             .into_any_element()
     }
@@ -4920,7 +4972,7 @@ impl ResonaApp {
                                             .gap_1()
                                             .child(
                                                 div()
-                                                    .w(px(58.))
+                                                    .w(px(52.))
                                                     .flex_shrink_0()
                                                     .whitespace_nowrap()
                                                     .text_xs()
@@ -4932,7 +4984,8 @@ impl ResonaApp {
                                                 div()
                                                     .max_w(px(100.))
                                                     .flex_shrink_0()
-                                                    .truncate()
+                                                    .flex()
+                                                    .items_start()
                                                     .text_xs()
                                                     .text_color(rgb(
                                                         if message.author_id
@@ -4944,7 +4997,13 @@ impl ResonaApp {
                                                             ICE
                                                         },
                                                     ))
-                                                    .child(message.author.clone()),
+                                                    .child(
+                                                        div()
+                                                            .min_w_0()
+                                                            .truncate()
+                                                            .child(message.author.clone()),
+                                                    )
+                                                    .child(div().flex_shrink_0().child(":")),
                                             )
                                             .child(
                                                 div()
