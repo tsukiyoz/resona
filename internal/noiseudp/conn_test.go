@@ -4,14 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
-func pair(t *testing.T) (*Conn, *Conn, chan []byte, chan []byte) {
+func pair(t testing.TB) (*Conn, *Conn, chan []byte, chan []byte) {
 	t.Helper()
 	key, err := GenerateKey()
 	if err != nil {
@@ -41,6 +43,63 @@ func pair(t *testing.T) (*Conn, *Conn, chan []byte, chan []byte) {
 	c2 := newConn(ba, ab, addr, addr, func(p []byte) error { q2 <- append([]byte(nil), p...); return nil }, nil)
 	t.Cleanup(func() { c1.fail(net.ErrClosed); c2.fail(net.ErrClosed); <-c1.done; <-c2.done })
 	return c1, c2, q1, q2
+}
+
+func BenchmarkSendDatagram(b *testing.B) {
+	for _, size := range []int{80, 1037} {
+		b.Run(fmt.Sprint(size), func(b *testing.B) {
+			a, _, _, _ := pair(b)
+			a.sendRaw = func([]byte) error { return nil }
+			data := make([]byte, size)
+			b.ReportAllocs()
+			b.SetBytes(int64(size))
+			for b.Loop() {
+				if err := a.SendDatagram(data); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func TestConcurrentDatagramSendPreservesPayloadsAndNonces(t *testing.T) {
+	a, b, out, _ := pair(t)
+	var writers sync.WaitGroup
+	for i := 1; i <= 64; i++ {
+		writers.Go(func() {
+			data := bytes.Repeat([]byte{byte(i)}, i*16)
+			if err := a.SendDatagram(data); err != nil {
+				t.Error(err)
+			}
+			if !bytes.Equal(data, bytes.Repeat([]byte{byte(i)}, i*16)) {
+				t.Error("send mutated caller payload")
+			}
+		})
+	}
+	writers.Wait()
+	seen := make(map[byte]bool)
+	for counter := uint32(1); counter <= 64; counter++ {
+		packet := takePacket(t, out)
+		if binary.BigEndian.Uint32(packet[1:5]) != counter {
+			t.Fatal("concurrent sends reused or reordered a nonce")
+		}
+		data, _, _, ok := b.decryptPacket(packet, time.Now())
+		if !ok || len(data) == 0 || seen[data[0]] || len(data) != int(data[0])*16 || !bytes.Equal(data, bytes.Repeat(data[:1], len(data))) {
+			t.Fatal("encrypted send buffer was overwritten or payload corrupted")
+		}
+		seen[data[0]] = true
+	}
+	data := bytes.Repeat([]byte{0xa5}, maxPacket-21)
+	if err := a.SendDatagram(data); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _, ok := b.decryptPacket(takePacket(t, out), time.Now())
+	if !ok || !bytes.Equal(got, data) {
+		t.Fatal("maximum packet corrupted")
+	}
+	if err := a.SendDatagram(append(data, 0)); err == nil || len(out) != 0 {
+		t.Fatal("oversized datagram sent")
+	}
 }
 
 func TestDatagramsAuthenticateReorderAndReplay(t *testing.T) {

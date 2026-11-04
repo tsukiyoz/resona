@@ -14,7 +14,7 @@ for probe_round in 1 2 3; do
     for probe_gc in $probe_modes; do
         RESONA_SERVER_GC_PROBE=1 RESONA_GC_SECONDS=10 \
         RESONA_GC_MEMBERS=64 RESONA_GC_ROOMS=4 \
-        RESONA_GC_CHURN=0 RESONA_GC_DIAGNOSTIC=0 \
+        RESONA_GC_CHURN=0 RESONA_GC_PROFILE= \
         RESONA_GC_PERCENT="$probe_gc" \
         RESONA_GC_OUTPUT="$probe_output/ab-$probe_round-$probe_gc" \
         "$probe_output/server-probe.test" -test.run='^TestServerGCProbe$' \

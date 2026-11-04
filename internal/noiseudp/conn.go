@@ -54,10 +54,12 @@ func (r *replayWindow) add(n uint32) {
 }
 
 type Conn struct {
-	binding               [32]byte
-	ctx                   context.Context
-	cancel                context.CancelFunc
+	binding [32]byte
+	ctx     context.Context
+	cancel  context.CancelFunc
+	// sendRaw consumes its argument synchronously; sendMu owns the reusable buffer.
 	sendRaw               func([]byte) error
+	sendBuffer            [maxPacket]byte
 	onClose               func()
 	local, remote         net.Addr
 	tx, rx                noise.Cipher
@@ -190,7 +192,7 @@ func (c *Conn) sendLocked(kind byte, body []byte) error {
 		return errors.New("noiseudp: datagram too large")
 	}
 	c.counter++
-	header := make([]byte, 5, 5+len(body)+16)
+	header := c.sendBuffer[:5]
 	header[0] = kind | byte(c.txEpoch&1)*keyPhase
 	binary.BigEndian.PutUint32(header[1:], c.counter)
 	packet := c.tx.Encrypt(header, packetNonce(c.txEpoch, c.counter), header, body)

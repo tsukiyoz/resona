@@ -300,6 +300,90 @@ func probePauses() ([]float64, []uint64) {
 	return append([]float64(nil), h.Buckets...), append([]uint64(nil), h.Counts...)
 }
 
+func probeProfileMode(t *testing.T) string {
+	t.Helper()
+	mode := os.Getenv("RESONA_GC_PROFILE")
+	switch mode {
+	case "", "cpu", "memory", "mutex", "block", "trace":
+		return mode
+	default:
+		t.Fatalf("invalid RESONA_GC_PROFILE: %q", mode)
+		return ""
+	}
+}
+
+// Each diagnostic runs separately so CPU, blocking and tracing overheads do not
+// contaminate baseline latency runs or each other's profiles.
+func startProbeProfile(t *testing.T, dir, mode string) func() {
+	t.Helper()
+	var active *os.File
+	if mode == "cpu" || mode == "trace" {
+		name := "cpu.pprof"
+		if mode == "trace" {
+			name = "trace.out"
+		}
+		var err error
+		active, err = os.Create(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mode == "cpu" {
+			err = pprof.StartCPUProfile(active)
+		} else {
+			err = trace.Start(active)
+		}
+		if err != nil {
+			active.Close()
+			t.Fatal(err)
+		}
+	}
+	var mutexFraction int
+	switch mode {
+	case "mutex":
+		mutexFraction = runtime.SetMutexProfileFraction(1)
+	case "block":
+		runtime.SetBlockProfileRate(1_000_000)
+	}
+	return func() {
+		switch mode {
+		case "cpu":
+			pprof.StopCPUProfile()
+		case "trace":
+			trace.Stop()
+		case "mutex":
+			runtime.SetMutexProfileFraction(mutexFraction)
+		case "block":
+			runtime.SetBlockProfileRate(0)
+		}
+		if active != nil {
+			if err := active.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var names []string
+		switch mode {
+		case "memory":
+			// The measured interval has ended; collect unreachable warm-up objects
+			// before the live-heap snapshot without counting this forced GC.
+			runtime.GC()
+			names = []string{"heap", "allocs"}
+		case "mutex", "block":
+			names = []string{mode}
+		}
+		for _, name := range names {
+			f, err := os.Create(filepath.Join(dir, name+".pprof"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = pprof.Lookup(name).WriteTo(f, 0)
+			closeErr := f.Close()
+			if err != nil || closeErr != nil {
+				t.Fatalf("write %s: %v %v", name, err, closeErr)
+			}
+		}
+	}
+}
+
 // Run only as a child of TestServerGCProbe. stdin is a private local control
 // pipe; no profiling port, credential file or user server is used.
 func TestGCProbeServer(t *testing.T) {
@@ -307,6 +391,7 @@ func TestGCProbeServer(t *testing.T) {
 		t.Skip("private probe subprocess")
 	}
 	dir := os.Getenv("RESONA_GC_OUTPUT")
+	mode := probeProfileMode(t)
 	key, e := noiseudp.GenerateKey()
 	if e != nil {
 		t.Fatal(e)
@@ -335,23 +420,7 @@ func TestGCProbeServer(t *testing.T) {
 	// Remove bootstrap garbage before every mode, including the bounded GC-off
 	// diagnostic. This forced collection is outside all measured intervals.
 	runtime.GC()
-	var cpuFile, traceFile *os.File
-	if os.Getenv("RESONA_GC_DIAGNOSTIC") == "1" {
-		cpuFile, e = os.Create(filepath.Join(dir, "cpu.pprof"))
-		if e != nil {
-			t.Fatal(e)
-		}
-		if e = pprof.StartCPUProfile(cpuFile); e != nil {
-			t.Fatal(e)
-		}
-		traceFile, e = os.Create(filepath.Join(dir, "trace.out"))
-		if e != nil {
-			t.Fatal(e)
-		}
-		if e = trace.Start(traceFile); e != nil {
-			t.Fatal(e)
-		}
-	}
+	stopProfile := startProbeProfile(t, dir, mode)
 	windowFile, e := os.Create(filepath.Join(dir, "windows.jsonl"))
 	if e != nil {
 		t.Fatal(e)
@@ -436,20 +505,7 @@ func TestGCProbeServer(t *testing.T) {
 			}
 		}
 	}
-	if traceFile != nil {
-		trace.Stop()
-		traceFile.Close()
-		pprof.StopCPUProfile()
-		cpuFile.Close()
-		f, e := os.Create(filepath.Join(dir, "allocs.pprof"))
-		if e != nil {
-			t.Fatal(e)
-		}
-		if e = pprof.Lookup("allocs").WriteTo(f, 0); e != nil {
-			t.Fatal(e)
-		}
-		f.Close()
-	}
+	stopProfile()
 	cancel()
 	if e = <-done; e != nil {
 		t.Fatal(e)
@@ -482,6 +538,8 @@ func TestServerGCProbe(t *testing.T) {
 	rooms := probeInt(t, "RESONA_GC_ROOMS", 1, 1, 4)
 	speakers := probeInt(t, "RESONA_GC_SPEAKERS_PER_ROOM", 4, 1, 4)
 	seconds := probeInt(t, "RESONA_GC_SECONDS", 30, 1, 1800)
+	warmup := probeInt(t, "RESONA_GC_WARMUP_SECONDS", 3, 0, 30)
+	mode := probeProfileMode(t)
 	if members%rooms != 0 || members/rooms <= speakers {
 		t.Fatal("need equal rooms with at least one listener")
 	}
@@ -575,6 +633,22 @@ func TestServerGCProbe(t *testing.T) {
 		time.Sleep(120 * time.Millisecond)
 	}
 	time.Sleep(time.Second)
+	if warmup > 0 {
+		ticker := time.NewTicker(20 * time.Millisecond)
+		var payload [80]byte
+		for frame := 0; frame < warmup*50; frame++ {
+			<-ticker.C
+			for _, sender := range senders {
+				if err := sender.SendVoice(payload[:]); err != nil {
+					ticker.Stop()
+					t.Fatal(err)
+				}
+			}
+		}
+		ticker.Stop()
+		// Drain the warm-up packets before opening the measurement window.
+		time.Sleep(200 * time.Millisecond)
+	}
 	fmt.Fprintln(stdin, "start")
 	var started map[string]bool
 	if e = dec.Decode(&started); e != nil || !started["started"] {
@@ -676,7 +750,11 @@ func TestServerGCProbe(t *testing.T) {
 	result["expected_stable_deliveries"] = expectedStable
 	result["received_stable_deliveries"] = stableReceived.Load()
 	result["end_to_end"] = e2e.summary()
-	result["diagnostic"] = os.Getenv("RESONA_GC_DIAGNOSTIC") == "1"
+	result["profile"] = mode
+	result["warmup_seconds"] = warmup
+	result["go_version"] = runtime.Version()
+	result["gomaxprocs"] = runtime.GOMAXPROCS(0)
+	result["payload_bytes"] = 80
 	b, e := json.MarshalIndent(result, "", "  ")
 	if e != nil {
 		t.Fatal(e)
