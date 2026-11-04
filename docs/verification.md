@@ -1112,3 +1112,28 @@ cargo fmt --check、make test-build、git diff --check 通过。Opus 构建及�
 make build-desktop 使用 v0.2.4 成功，Info.plist 和深度严格签名校验通过。
 发布元数据只更新版本，没有改动依赖解析；产品与发布范围审查未发现阻塞问题。
 Windows、Intel macOS 及远端发布清单以 tag Actions 为准，本地检查不代表其构建已成功。
+
+## 2026-11-04 服务端发送分配第一轮
+
+共享 UDP 写入门争用时复用独占 timer，每连接在已有 sendMu 下复用 1200 字节
+密文输出数组；同步 socket 写完才覆盖。保留原有 250ms 等待、取消、nonce、
+换钥和队列语义，不新增 writer 任务。64 个连接增加约 75 KiB 固定缓冲。
+
+Apple M2 / Go 1.27.1 / GOMAXPROCS=4，64 成员、4 频道、各 4 发言者、
+50Hz/80 字节、预热 3 秒后测 30 秒。独立前后二进制交替各两轮，无同时编译和
+profiler。分配从平均 5.628 降至 1.440 MiB/s（约 74.4%），GC 从 32–33 次
+降至 9 次。CPU 和尾延迟没有稳定改善，优化一轮缺收更多、另一轮更少；不宣称
+降低延迟、丢包或游戏干扰。另完成 30 秒 14 次重连负载与独立 memory profile。
+累计分配仍包含启动和预热，剩余持续热点为 EncodeVoice 和 Noise nonce。
+
+Go internal 全量、Noise/server race、make lint、31 项真实 Rust/Go audio
+互通通过；gofumpt、脚本语法和 diff 检查通过。未验证 Linux 等负载性能、Windows
+实机及长时间稳定性。探针 PASS 不表示零丢包；此前出现过的 session expired
+尚未归因，本轮未修改超时。原始结果、官方 pprof 火焰图和详细说明在本机忽略目录
+build/server-pprof/20261104-round1/，复现方式见 test/server-perf/README.md。
+
+预发 tsukiyo 更新至 v0.3.0-alloc1-20261104（未提交开发快照），停服后备份
+data/access 并保留旧容器；沿用原私有环境、启动参数、公网 UDP 9988 及仅本机
+TCP 9989。容器运行、重启次数 0、管理页 HTTP 200；未进入用户频道或做远端压测。
+本轮未修改/重打包桌面，现有路径 desktop/dist/Resona.app。预发 Go 从 1.26.2
+升至构建机 1.27.1，尚无同负载 Linux 前后性能对比。未提交、推送或打 tag。

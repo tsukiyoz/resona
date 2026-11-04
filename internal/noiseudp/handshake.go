@@ -156,6 +156,7 @@ type Listener struct {
 	cancel      context.CancelFunc
 	done        chan struct{}
 	writeGate   chan struct{}
+	writeTimers sync.Pool
 	limit       int
 	lastDH      time.Time
 	dhTokens    float64
@@ -223,13 +224,20 @@ func (l *Listener) write(b []byte, addr *net.UDPAddr) error {
 	if l.ctx.Err() != nil {
 		return net.ErrClosed
 	}
-	// Most writes acquire the gate immediately; allocate a timer only when
-	// another sender owns the socket. The contended wait remains bounded.
+	// Each waiting writer exclusively owns its timer until stopped and returned.
 	select {
 	case l.writeGate <- struct{}{}:
 	default:
-		t := time.NewTimer(250 * time.Millisecond)
-		defer t.Stop()
+		t, _ := l.writeTimers.Get().(*time.Timer)
+		if t == nil {
+			t = time.NewTimer(250 * time.Millisecond)
+		} else {
+			t.Reset(250 * time.Millisecond)
+		}
+		defer func() {
+			t.Stop()
+			l.writeTimers.Put(t)
+		}()
 		select {
 		case l.writeGate <- struct{}{}:
 		case <-l.ctx.Done():
