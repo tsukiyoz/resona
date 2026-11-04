@@ -120,7 +120,9 @@ try {
     $env:OPUS_STATIC = '1'
     $env:RESONA_TEST_NATIVE_AUDIO = '1'
     if (-not $SkipTests) {
-        Invoke-Checked cargo @("test", "--locked", "--manifest-path", "client/Cargo.toml", "--features", "audio")
+        # Each interop test starts a durable JetStream server. Avoid competing
+        # disk syncs on Windows runners; concurrency inside each test is retained.
+        Invoke-Checked cargo @("test", "--locked", "--manifest-path", "client/Cargo.toml", "--features", "audio", "--", "--test-threads=1")
         Invoke-Checked cargo @("test", "--locked", "--manifest-path", "desktop/Cargo.toml", "--target", "x86_64-pc-windows-msvc")
     }
     $Artifacts = & cargo test --locked --manifest-path client/Cargo.toml --features audio --no-run --message-format=json

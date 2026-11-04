@@ -57,7 +57,13 @@ jobs:
       - name: Lint complete Rust audio core
         run: cargo clippy --locked --manifest-path client/Cargo.toml --features audio --all-targets -- -D warnings
       - name: Test Rust and real Go loopback peers
-        run: cargo test --locked --manifest-path client/Cargo.toml --features audio
+        run: |
+          args=()
+          # Durable JetStream fixtures must not compete for Windows runner I/O.
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            args=(-- --test-threads=1)
+          fi
+          cargo test --locked --manifest-path client/Cargo.toml --features audio "${args[@]}"
       - name: Test Rust listening sources against isolated Go server
         run: |
           CGO_ENABLED=0 go build -o "build/bin/listening-server$(go env GOEXE)" ./tools/listening-bot/server

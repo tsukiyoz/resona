@@ -34,6 +34,10 @@ needed; never force-push shared main.
   loopback interoperability (including application login/chat). Go is required
   for fixtures; CGO/audio hardware and external NATS are not. Run
   `cargo clippy --locked --manifest-path client/Cargo.toml --all-targets -- -D warnings`.
+- Windows client checks use `-- --test-threads=1`: separate interoperability cases
+  start real durable JetStream servers and must not compete for runner disk syncs.
+  Concurrency within each case, voice delivery assertions and production storage
+  deadlines stay unchanged. Other platforms keep the normal test parallelism.
 - Protocol: regenerate protobuf via `go generate ./internal/nativewire/pb`, test
   the Noise transport and document compatibility/migration.
 - Keep credentials, identities, local test data and build artifacts out of Git.
