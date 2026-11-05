@@ -1,0 +1,93 @@
+package noiseudp
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"sync/atomic"
+	"time"
+
+	"golang.org/x/net/ipv4"
+)
+
+const experimentBatchLimit = 32
+
+var experimentBatchSizes [experimentBatchLimit + 1]atomic.Uint64
+var experimentBatchCalls, experimentBatchSent, experimentBatchErrors atomic.Uint64
+
+func ExperimentWriterStats() map[string]uint64 {
+	stats := map[string]uint64{
+		"write_batch_calls": experimentBatchCalls.Load(),
+		"datagrams_sent":    experimentBatchSent.Load(),
+		"write_errors":      experimentBatchErrors.Load(),
+	}
+	for i := 1; i <= experimentBatchLimit; i++ {
+		stats[fmt.Sprintf("batch_size_%02d", i)] = experimentBatchSizes[i].Load()
+	}
+	return stats
+}
+
+// Preallocated messages borrow ciphertext until WriteBatch returns. Partial
+// writes advance only the successful prefix; an error rejects the unsent suffix.
+func newBatchWriter(ctx context.Context, send func([]ipv4.Message) (int, error)) *soloWriter {
+	return newSocketWriter(ctx, experimentBatchLimit, newBatchSender(ctx, send))
+}
+
+func newBatchSender(ctx context.Context, send func([]ipv4.Message) (int, error)) func([]*socketRequest) {
+	messages := make([]ipv4.Message, experimentBatchLimit)
+	buffers := make([][1][]byte, experimentBatchLimit)
+	for i := range messages {
+		messages[i].Buffers = buffers[i][:]
+	}
+	return func(rs []*socketRequest) {
+		experimentBatchSizes[len(rs)].Add(1)
+		for i, r := range rs {
+			messages[i].Buffers[0], messages[i].Addr = r.data, r.addr
+		}
+		completed := 0
+		var err error
+		for completed < len(rs) {
+			if ctx.Err() != nil {
+				err = ctx.Err()
+				break
+			}
+			experimentBatchCalls.Add(1)
+			n, writeErr := send(messages[completed:len(rs)])
+			if n < 0 || n > len(rs)-completed {
+				err = fmt.Errorf("invalid batch completion count %d", n)
+				break
+			}
+			completed += n
+			experimentBatchSent.Add(uint64(n))
+			if writeErr != nil {
+				err = writeErr
+				break
+			}
+			if n == 0 {
+				err = io.ErrNoProgress
+				break
+			}
+		}
+		if err != nil {
+			experimentBatchErrors.Add(1)
+		}
+		for i, r := range rs {
+			messages[i].Buffers[0], messages[i].Addr = nil, nil
+			if i < completed {
+				r.done <- nil
+			} else {
+				r.done <- err
+			}
+		}
+	}
+}
+
+func (l *Listener) startWriterExperiment() {
+	packet := ipv4.NewPacketConn(l.u)
+	l.experimentWriter = newBatchWriter(l.ctx, func(messages []ipv4.Message) (int, error) {
+		if err := l.u.SetWriteDeadline(time.Now().Add(250 * time.Millisecond)); err != nil {
+			return 0, err
+		}
+		return packet.WriteBatch(messages, 0)
+	})
+}

@@ -1,0 +1,164 @@
+package noiseudp
+
+import (
+	"context"
+	"errors"
+	"io"
+	"net"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"golang.org/x/net/ipv4"
+)
+
+func TestBatchWriterPartialCompletion(t *testing.T) {
+	failed := errors.New("unsent suffix")
+	for _, mode := range []string{"partial", "error", "zero"} {
+		t.Run(mode, func(t *testing.T) {
+			requests := make([]*socketRequest, 4)
+			for i := range requests {
+				requests[i] = &socketRequest{data: []byte{byte(i)}, done: make(chan error, 1)}
+			}
+			calls, next := 0, 0
+			send := newBatchSender(context.Background(), func(ms []ipv4.Message) (int, error) {
+				calls++
+				if int(ms[0].Buffers[0][0]) != next {
+					t.Fatal("successful prefix was retransmitted")
+				}
+				next++
+				switch mode {
+				case "error":
+					return 1, failed
+				case "zero":
+					return 0, nil
+				default:
+					return 1, nil
+				}
+			})
+			send(requests)
+			for i, r := range requests {
+				err := <-r.done
+				var want error
+				if mode == "error" && i > 0 {
+					want = failed
+				} else if mode == "zero" {
+					want = io.ErrNoProgress
+				}
+				if !errors.Is(err, want) {
+					t.Fatalf("request %d: %v, want %v", i, err, want)
+				}
+			}
+			if mode == "partial" && calls != 4 || mode != "partial" && calls != 1 {
+				t.Fatalf("calls=%d", calls)
+			}
+		})
+	}
+}
+
+func TestBatchWriterBorrowingAndShutdown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var count, active atomic.Int32
+	w := newBatchWriter(ctx, func(ms []ipv4.Message) (int, error) {
+		if active.Add(1) != 1 {
+			t.Error("parallel socket ownership")
+		}
+		defer active.Add(-1)
+		for _, m := range ms {
+			data := m.Buffers[0]
+			if len(data) != 1200 || data[0] != data[1199] {
+				t.Error("ciphertext buffer reused early")
+			}
+		}
+		count.Add(int32(len(ms)))
+		return len(ms), nil
+	})
+	var callers sync.WaitGroup
+	for i := 0; i < 64; i++ {
+		callers.Go(func() {
+			var data [1200]byte
+			for j := 0; j < 100; j++ {
+				data[0], data[1199] = byte(j), byte(j)
+				if err := w.write(data[:], &net.UDPAddr{}); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		})
+	}
+	callers.Wait()
+	cancel()
+	<-w.done
+	if count.Load() != 6400 {
+		t.Fatalf("sent %d", count.Load())
+	}
+	if err := w.write([]byte("after close"), nil); !errors.Is(err, net.ErrClosed) {
+		t.Fatal(err)
+	}
+
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+	entered := make(chan struct{})
+	w = newBatchWriter(ctx, func([]ipv4.Message) (int, error) {
+		close(entered)
+		<-ctx.Done()
+		return 0, net.ErrClosed
+	})
+	done := make(chan error, 1)
+	go func() { done <- w.write([]byte("borrowed"), nil) }()
+	<-entered
+	if err := w.write([]byte("pending"), nil); err == nil || err.Error() != "UDP writer busy" {
+		t.Fatalf("admission: %v", err)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, net.ErrClosed) {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("socket owner did not release caller")
+	}
+	<-w.done
+}
+
+func TestBatchUDPMultipleDestinations(t *testing.T) {
+	sender, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sender.Close()
+	var receivers []*net.UDPConn
+	var messages []ipv4.Message
+	for i := 0; i < 3; i++ {
+		receiver, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer receiver.Close()
+		receivers = append(receivers, receiver)
+		messages = append(messages, ipv4.Message{Buffers: [][]byte{{byte(i)}}, Addr: receiver.LocalAddr()})
+	}
+	packet := ipv4.NewPacketConn(sender)
+	remaining := messages
+	for len(remaining) > 0 {
+		n, err := packet.WriteBatch(remaining, 0)
+		if err != nil || n == 0 {
+			t.Fatalf("batch write %d: %v", n, err)
+		}
+		t.Logf("WriteBatch submitted=%d completed=%d", len(remaining), n)
+		remaining = remaining[n:]
+	}
+	for i, receiver := range receivers {
+		if err := receiver.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		var data [8]byte
+		n, _, err := receiver.ReadFromUDP(data[:])
+		if err != nil || n != 1 || data[0] != byte(i) {
+			t.Fatalf("destination %d: n=%d data=%v err=%v", i, n, data, err)
+		}
+	}
+}

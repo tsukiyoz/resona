@@ -1,3 +1,5 @@
+//go:build darwin || linux
+
 package server
 
 import (
@@ -30,6 +32,25 @@ import (
 
 type probeProfile struct {
 	Address, ServerPublicKey string
+}
+
+type probeQueueCounters struct {
+	Enqueued, Overwritten, Expired, Pending, Closed uint64
+	Capacity                                        int
+}
+
+// An optional build-overlay fixture supplies counters without product hot-path hooks.
+var probeQueueSnapshot = func(*Server) probeQueueCounters { return probeQueueCounters{} }
+
+var probeWriterSnapshot = func() map[string]uint64 { return nil }
+
+var probeReceiveDrops func() uint64
+
+func receiveDropSnapshot() uint64 {
+	if probeReceiveDrops != nil {
+		return probeReceiveDrops()
+	}
+	return 0
 }
 
 // This load generator deliberately owns no audio devices, codecs, preferences
@@ -428,6 +449,9 @@ func TestGCProbeServer(t *testing.T) {
 	defer windowFile.Close()
 	windowBuffer := bufio.NewWriterSize(windowFile, 65536)
 	windowEncoder := json.NewEncoder(windowBuffer)
+	queueBefore := probeQueueSnapshot(s)
+	writerBefore := probeWriterSnapshot()
+	receiveDropsBefore := receiveDropSnapshot()
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
 	base := probeMetrics()
@@ -491,7 +515,30 @@ func TestGCProbeServer(t *testing.T) {
 		maxPause = max(maxPause, n)
 	}
 	result := map[string]any{"seconds": elapsed, "cpu_percent_one_core": cpu / elapsed * 100, "alloc_mib_per_second": float64(after.TotalAlloc-before.TotalAlloc) / (1 << 20) / elapsed, "heap_end_mib": float64(after.HeapAlloc) / (1 << 20), "gc_cycles": after.NumGC - before.NumGC, "gc_pause_total_ms": float64(after.PauseTotalNs-before.PauseTotalNs) / 1e6, "gc_pause_max_last256_ms": float64(maxPause) / 1e6, "gc_pause_last256_ns": pauses, "gc_assist_ms": 1000 * (end["/cpu/classes/gc/mark/assist:cpu-seconds"] - base["/cpu/classes/gc/mark/assist:cpu-seconds"]), "gc_cpu_ms": 1000 * (end["/cpu/classes/gc/total:cpu-seconds"] - base["/cpu/classes/gc/total:cpu-seconds"]), "forward": hist.summary()}
+	if queueBefore.Capacity != 0 {
+		queueAfter := probeQueueSnapshot(s)
+		result["voice_queue"] = map[string]any{
+			"capacity_per_peer": queueBefore.Capacity,
+			"enqueued":          queueAfter.Enqueued - queueBefore.Enqueued,
+			"overwritten":       queueAfter.Overwritten - queueBefore.Overwritten,
+			"expired":           queueAfter.Expired - queueBefore.Expired,
+			"pending_start":     queueBefore.Pending,
+			"pending_end":       queueAfter.Pending,
+			"closed_start":      queueBefore.Closed,
+			"closed_end":        queueAfter.Closed,
+		}
+	}
 	var pauseCount uint64
+	if probeReceiveDrops != nil {
+		result["server_transport_voice_dropped"] = probeReceiveDrops() - receiveDropsBefore
+	}
+	if writerBefore != nil {
+		writerAfter := probeWriterSnapshot()
+		for key, value := range writerBefore {
+			writerAfter[key] -= value
+		}
+		result["socket_writer"] = writerAfter
+	}
 	for _, n := range pauseAfter {
 		pauseCount += n
 	}
@@ -536,7 +583,7 @@ func TestServerGCProbe(t *testing.T) {
 	}
 	members := probeInt(t, "RESONA_GC_MEMBERS", 16, 4, 64)
 	rooms := probeInt(t, "RESONA_GC_ROOMS", 1, 1, 4)
-	speakers := probeInt(t, "RESONA_GC_SPEAKERS_PER_ROOM", 4, 1, 4)
+	speakers := probeInt(t, "RESONA_GC_SPEAKERS_PER_ROOM", 4, 1, w.MaxMembers-1)
 	seconds := probeInt(t, "RESONA_GC_SECONDS", 30, 1, 1800)
 	warmup := probeInt(t, "RESONA_GC_WARMUP_SECONDS", 3, 0, 30)
 	mode := probeProfileMode(t)
@@ -655,6 +702,7 @@ func TestServerGCProbe(t *testing.T) {
 		t.Fatalf("start: %v", e)
 	}
 	measure.Store(true)
+	receiveDropsBefore := receiveDropSnapshot()
 	var churnWG sync.WaitGroup
 	churnStop := make(chan struct{})
 	churnError := make(chan error, 1)
@@ -742,6 +790,9 @@ func TestServerGCProbe(t *testing.T) {
 	result["churn_reconnects"] = churnCount.Load()
 	result["sent_voice"] = attempts
 	result["received_voice"] = received.Load()
+	if probeReceiveDrops != nil {
+		result["client_transport_voice_dropped"] = probeReceiveDrops() - receiveDropsBefore
+	}
 	result["expected_without_churn"] = attempts * (members/rooms - 1)
 	expectedStable := attempts * (members/rooms - 1)
 	if churn {
@@ -755,6 +806,12 @@ func TestServerGCProbe(t *testing.T) {
 	result["go_version"] = runtime.Version()
 	result["gomaxprocs"] = runtime.GOMAXPROCS(0)
 	result["payload_bytes"] = 80
+	result["target_source_pps"] = rooms * speakers * 50
+	result["target_forward_pps"] = rooms * speakers * 50 * (members/rooms - 1)
+	elapsed := result["seconds"].(float64)
+	result["source_pps"] = float64(attempts) / elapsed
+	result["expected_forward_pps"] = float64(attempts*(members/rooms-1)) / elapsed
+	result["receive_pps"] = float64(received.Load()) / elapsed
 	b, e := json.MarshalIndent(result, "", "  ")
 	if e != nil {
 		t.Fatal(e)

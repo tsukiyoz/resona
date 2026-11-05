@@ -1,0 +1,54 @@
+package nativewire
+
+import (
+	"context"
+	"testing"
+	"time"
+)
+
+func TestExperimentQueueCounters(t *testing.T) {
+	for _, capacity := range []int{4, 16} {
+		q := NewVoiceRing(capacity)
+		for i := 0; i < capacity+3; i++ {
+			if !q.Push(QueuedVoice{Data: []byte{byte(i)}}) {
+				t.Fatal("open queue rejected input")
+			}
+		}
+		enqueued, overwritten, pending, actual, closed := q.ExperimentQueueStats()
+		if enqueued != uint64(capacity+3) || overwritten != 3 || pending != uint64(capacity) || actual != capacity || closed {
+			t.Fatalf("capacity=%d: %d %d %d %d", capacity, enqueued, overwritten, pending, actual)
+		}
+		packet, ok := q.pop(context.Background())
+		if !ok || packet.Data[0] != 3 {
+			t.Fatal("counter overlay changed oldest-first consumption")
+		}
+		q.Close()
+		if q.Push(QueuedVoice{}) {
+			t.Fatal("closed queue accepted input")
+		}
+		n, dropped, left, _, closed := q.ExperimentQueueStats()
+		if n != enqueued || dropped != overwritten || left != 0 || !closed {
+			t.Fatal("closed queue changed counters or retained packets")
+		}
+	}
+}
+
+func TestExperimentExpiryCounter(t *testing.T) {
+	before := ExperimentExpiredVoice()
+	queue := make(chan QueuedVoice, 2)
+	queue <- QueuedVoice{Data: []byte{1}, At: time.Now().Add(-time.Second)}
+	queue <- QueuedVoice{Data: []byte{2}, At: time.Now()}
+	close(queue)
+	sends := 0
+	c := &voiceTestConnection{ctx: context.Background(), send: func(data []byte) error {
+		if len(data) != 1 || data[0] != 2 {
+			t.Fatal("expired data reached transport")
+		}
+		sends++
+		return nil
+	}}
+	SendVoiceQueue(c, queue)
+	if sends != 1 || ExperimentExpiredVoice()-before != 1 {
+		t.Fatal("expiry overlay did not count exactly the discarded packet")
+	}
+}

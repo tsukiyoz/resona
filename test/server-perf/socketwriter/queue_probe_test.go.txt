@@ -1,0 +1,28 @@
+//go:build darwin || linux
+
+package server
+
+import (
+	"testing"
+
+	w "github.com/tsukiyoz/resona/internal/nativewire"
+)
+
+func TestExperimentQueueSnapshotRetainsDepartedPeers(t *testing.T) {
+	q := w.NewVoiceRing(4)
+	s := &Server{peers: map[uint16]*peer{1: {voiceOut: q}}}
+	snapshot := newExperimentQueueSnapshot(s)
+	for i := 0; i < 5; i++ {
+		q.Push(w.QueuedVoice{Data: []byte{byte(i)}})
+	}
+	before := snapshot()
+	s.mu.Lock()
+	delete(s.peers, 1)
+	s.mu.Unlock()
+	q.Close()
+	after := snapshot()
+	if before.Enqueued != 5 || before.Overwritten != 1 || before.Pending != 4 || before.Closed != 0 ||
+		after.Enqueued != 5 || after.Overwritten != 1 || after.Pending != 0 || after.Closed != 1 {
+		t.Fatalf("lost departed peer counters: before=%+v after=%+v", before, after)
+	}
+}

@@ -16,6 +16,22 @@ CLI 使用 Cobra；`--help`、`serve --help`、`owner --help` 查看命令。
 
 `--noise-key` 指定 32 字节服务器私钥；默认位于系统用户配置目录的 `resona-server/noise.key`。`--access-dir` 指定数据访问锁和旧配置导入目录，默认 `resona-server/access`。配置与聊天共用该目录下 `chat/` 中的一个内置 JetStream，也可用 `--chat-dir` 显式指定完整 JetStream 目录。备份私钥和完整数据目录，不提交仓库；定制 `--chat-dir` 时它也必须进入备份。
 
+`serve --voice-queue-slots 16` 配置每位收听者的语音待发队列，默认 16，允许 1–256，
+重启生效，不存入管理资源 KV。启动日志通过 `voice_queue_slots` 显示实际配置。
+队列满时覆盖最旧包，发送前仍丢弃等待超过 100 ms 的包；增大容量不保证不丢包，
+也不改变 Noise 接收队列。正式实现保留直接 socket 写入模型，不启用实验 batch writer。
+
+### 连接与身份日志
+
+`client connected` 是设备进入服务器的时刻，此时身份为 `identity_type=guest`，
+`connection_name` 保存握手昵称；`name` 是事件发生时的当前昵称。账号在连接后恢复，
+因此该条游客记录本身不是登录失败。成功注册或密码/Token 登录后另记
+`client authenticated`，包含 `auth_method`、`account_uid`、`account_name` 及账号昵称。
+改昵称记 `client profile updated`（含 `previous_name`），退出账号记 `client logged out`
+并标识退出的账号；`client disconnected` 使用退出连接时的最新身份和昵称。
+通过相同的 `session`、`member_id`、远端地址关联这些事件，不用昵称充当身份 ID。
+不记录密码、Token 或私钥；这些低频日志在资源锁外输出，没有语音逐包日志。
+
 ## 管理资源 KV
 
 频道、单调递增的频道 ID、owner/admin 身份、认领码摘要/有效期、封禁、管理凭据摘要和在线设置保存在

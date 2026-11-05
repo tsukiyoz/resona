@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +27,21 @@ func executeTest(t *testing.T, args ...string) (string, error) {
 	cmd.SetArgs(args)
 	err = cmd.Execute()
 	return out.String(), err
+}
+
+func TestInvalidVoiceQueueSlotsDoNotReadKeysOrCreateData(t *testing.T) {
+	dir := t.TempDir()
+	for _, slots := range []int{-1, 0, server.MaxVoiceQueueSlots + 1} {
+		_, err := executeTest(t, "serve", "--voice-queue-slots", strconv.Itoa(slots),
+			"--noise-key", filepath.Join(dir, "missing.key"), "--access-dir", filepath.Join(dir, "access"))
+		if err == nil || !strings.Contains(err.Error(), "--voice-queue-slots") {
+			t.Fatalf("invalid capacity did not fail before file access: %v", err)
+		}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("invalid queue configuration created files: %v", err)
+	}
 }
 
 func TestOfflineAdminCredentialBindsExistingOwnerAndUsesAccessLock(t *testing.T) {

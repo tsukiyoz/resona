@@ -1,0 +1,14 @@
+package noiseudp
+
+import (
+	"net"
+	"time"
+)
+
+func (l *Listener) startWriterExperiment() {
+	l.experimentWriter = newSoloWriter(l.ctx, func(data []byte, addr *net.UDPAddr) error {
+		_ = l.u.SetWriteDeadline(time.Now().Add(250 * time.Millisecond))
+		_, err := l.u.WriteToUDP(data, addr)
+		return err
+	})
+}

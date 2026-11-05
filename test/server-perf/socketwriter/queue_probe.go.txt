@@ -1,0 +1,40 @@
+//go:build darwin || linux
+
+package server
+
+import w "github.com/tsukiyoz/resona/internal/nativewire"
+
+func init() {
+	var snapshot func() probeQueueCounters
+	probeQueueSnapshot = func(s *Server) probeQueueCounters {
+		if snapshot == nil {
+			snapshot = newExperimentQueueSnapshot(s)
+		}
+		return snapshot()
+	}
+}
+
+func newExperimentQueueSnapshot(s *Server) func() probeQueueCounters {
+	s.mu.Lock()
+	queues := make([]*w.VoiceRing, 0, len(s.peers))
+	for _, p := range s.peers {
+		queues = append(queues, p.voiceOut)
+	}
+	s.mu.Unlock()
+	// Retain the initial queues so peer cleanup cannot remove measured counters.
+	return func() probeQueueCounters {
+		var total probeQueueCounters
+		for _, q := range queues {
+			enqueued, overwritten, pending, capacity, closed := q.ExperimentQueueStats()
+			total.Enqueued += enqueued
+			total.Overwritten += overwritten
+			total.Pending += pending
+			total.Capacity = capacity
+			if closed {
+				total.Closed++
+			}
+		}
+		total.Expired = w.ExperimentExpiredVoice()
+		return total
+	}
+}

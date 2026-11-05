@@ -106,10 +106,13 @@ func (s *Server) accountCommand(p *peer, f w.Frame) bool {
 		a, err = store.UpdateProfile(ctx, previous.Account, cmd.Nickname)
 		if err == nil {
 			s.mu.Lock()
+			previousName := p.member.Nickname
 			p.account.Account = a
 			p.member.Nickname = a.Nickname
 			s.broadcastLocked(nil)
+			logger := p.identityLoggerLocked()
 			s.mu.Unlock()
+			logger.Info("client profile updated", "previous_name", previousName)
 		}
 		s.accountReply(p, f.Request, accountCode(err), "")
 		return true
@@ -119,6 +122,7 @@ func (s *Server) accountCommand(p *peer, f w.Frame) bool {
 		}
 		if err == nil {
 			s.mu.Lock()
+			logger := p.identityLoggerLocked()
 			p.account = accounts.Proof{}
 			p.accountExpires = time.Time{}
 			p.member.Muted = true
@@ -127,6 +131,9 @@ func (s *Server) accountCommand(p *peer, f w.Frame) bool {
 			s.restartChatLocked(p)
 			s.broadcastLocked(nil)
 			s.mu.Unlock()
+			if previous.UID != "" {
+				logger.Info("client logged out")
+			}
 		}
 		s.accountReply(p, f.Request, accountCode(err), "")
 		return true
@@ -181,7 +188,9 @@ func (s *Server) accountCommand(p *peer, f w.Frame) bool {
 	s.restartChatLocked(p)
 	s.broadcastLocked(nil)
 	s.enqueueLocked(p, w.ReplyKind, f.Request, w.Reply{Code: w.OK, AccountToken: secret})
+	logger := p.identityLoggerLocked()
 	s.mu.Unlock()
+	logger.Info("client authenticated", "auth_method", cmd.Action)
 	for _, old := range replaced {
 		if old.voiceOut != nil {
 			old.voiceOut.Close()

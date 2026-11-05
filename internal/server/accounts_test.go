@@ -3,16 +3,21 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"log/slog"
 	"testing"
 
 	w "github.com/tsukiyoz/resona/internal/nativewire"
 )
 
 func TestAccountAdmissionProfileReplacementAndGuestSeparation(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
 	store := testStore(t, t.TempDir())
 	s := &Server{config: Config{Store: store, Name: "Test"}, peers: make(map[uint16]*peer), accountGate: make(chan struct{}, 1)}
 	newPeer := func(id uint16, nickname string) *peer {
 		p := &peer{
+			logger:   logger.With("member_id", id, "connection_name", nickname),
 			identity: string(bytes.Repeat([]byte{'a' + byte(id)}, 64)), conn: &chatTestConnection{ctx: context.Background()},
 			member: w.Member{ID: id, Channel: 1, Nickname: nickname, Epoch: 1}, epoch: 1, out: make(chan []byte, 32), chatWake: make(chan struct{}, 1),
 		}
@@ -86,6 +91,31 @@ func TestAccountAdmissionProfileReplacementAndGuestSeparation(t *testing.T) {
 	}
 	if r := call(c, w.AccountCommand{Action: "logout"}); r.Code != w.OK || c.principal() != "" {
 		t.Fatal("logout retained account")
+	}
+	if bytes.Contains(logs.Bytes(), []byte(registered.AccountToken)) || bytes.Contains(logs.Bytes(), []byte(logged.AccountToken)) || bytes.Contains(logs.Bytes(), []byte("correct horse battery staple")) {
+		t.Fatal("account credentials leaked into lifecycle logs")
+	}
+	decoder := json.NewDecoder(&logs)
+	counts := make(map[string]int)
+	for decoder.More() {
+		var event map[string]any
+		if err := decoder.Decode(&event); err != nil {
+			t.Fatal(err)
+		}
+		message, _ := event["msg"].(string)
+		counts[message]++
+		if event["account_uid"] != uid || event["account_name"] != "alice" || event["identity_type"] != "account" {
+			t.Fatalf("account event lost its identity: %v", event)
+		}
+		if message == "client authenticated" && event["member_id"] == float64(1) && event["auth_method"] != "register" {
+			t.Fatal("registration not identified in logs")
+		}
+		if message == "client logged out" && event["name"] != "改名玩家🙂" {
+			t.Fatal("logout did not identify the departing account")
+		}
+	}
+	if counts["client authenticated"] != 3 || counts["client profile updated"] != 1 || counts["client logged out"] != 1 {
+		t.Fatalf("unexpected successful account events: %v", counts)
 	}
 }
 

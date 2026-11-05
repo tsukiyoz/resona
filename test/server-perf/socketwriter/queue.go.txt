@@ -1,0 +1,13 @@
+package nativewire
+
+import "sync/atomic"
+
+var experimentExpired atomic.Uint64
+
+func (q *VoiceRing) ExperimentQueueStats() (enqueued, overwritten, pending uint64, capacity int, closed bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.experimentEnqueued, q.experimentOverwritten, uint64(q.size), len(q.items), q.closed
+}
+
+func ExperimentExpiredVoice() uint64 { return experimentExpired.Load() }
