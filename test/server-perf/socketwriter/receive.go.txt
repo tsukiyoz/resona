@@ -1,0 +1,7 @@
+package noiseudp
+
+import "sync/atomic"
+
+var experimentReceiveDrops atomic.Uint64
+
+func ExperimentReceiveDrops() uint64 { return experimentReceiveDrops.Load() }

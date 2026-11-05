@@ -1,0 +1,86 @@
+package noiseudp
+
+import (
+	"context"
+	"errors"
+	"net"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+func TestSoloWriterSerializesAndKeepsBorrowedBuffer(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var active, maxActive, count atomic.Int32
+	w := newSoloWriter(ctx, func(data []byte, _ *net.UDPAddr) error {
+		n := active.Add(1)
+		maxActive.Store(max(maxActive.Load(), n))
+		defer active.Add(-1)
+		if len(data) != 1200 || data[0] != data[1199] {
+			t.Error("borrowed buffer changed before write completed")
+		}
+		count.Add(1)
+		return nil
+	})
+	var clients sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		clients.Go(func() {
+			var data [1200]byte
+			for n := 1; n <= 100; n++ {
+				data[0], data[1199] = byte(n), byte(n)
+				if err := w.write(data[:], &net.UDPAddr{}); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		})
+	}
+	clients.Wait()
+	cancel()
+	<-w.done
+	if count.Load() != 1600 || maxActive.Load() != 1 {
+		t.Fatalf("writes=%d concurrent=%d", count.Load(), maxActive.Load())
+	}
+}
+
+func TestSoloWriterTimeoutCancellationAndShutdown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan struct{})
+	var calls atomic.Int32
+	w := newSoloWriter(ctx, func([]byte, *net.UDPAddr) error {
+		calls.Add(1)
+		close(started)
+		<-ctx.Done()
+		return net.ErrClosed
+	})
+	first := make(chan error, 1)
+	go func() { first <- w.write([]byte("in flight"), nil) }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("writer did not start")
+	}
+	if err := w.write([]byte("must not be submitted"), nil); err == nil || err.Error() != "UDP writer busy" {
+		t.Fatalf("admission timeout: %v", err)
+	}
+	second := make(chan error, 1)
+	go func() { second <- w.write([]byte("waiting"), nil) }()
+	cancel()
+	for _, done := range []<-chan error{first, second} {
+		select {
+		case err := <-done:
+			if !errors.Is(err, net.ErrClosed) {
+				t.Fatalf("close: %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("write retained during shutdown")
+		}
+	}
+	<-w.done
+	if calls.Load() != 1 {
+		t.Fatal("a timed out or cancelled packet was sent")
+	}
+}

@@ -1,6 +1,6 @@
 # Local server profiling
 
-The opt-in macOS probe in `internal/server/gcprobe_darwin_test.go` runs the real
+The opt-in macOS/Linux probe in `internal/server/gcprobe_unix_test.go` runs the real
 server in a child process and minimal protocol clients in its parent. It binds
 only loopback, creates a temporary JetStream/SQLite store, uses random identities
 and never joins an existing server. No public profiling endpoint is needed.
@@ -22,7 +22,7 @@ Use a different output directory for each run. Parameters:
 | --- | --- | --- |
 | `RESONA_GC_MEMBERS` | 16 | Total connected members, 4-64 |
 | `RESONA_GC_ROOMS` | 1 | Equal-sized channels, 1-4; must divide members |
-| `RESONA_GC_SPEAKERS_PER_ROOM` | 4 | Simultaneous speakers in each channel, 1-4; fewer than members per channel |
+| `RESONA_GC_SPEAKERS_PER_ROOM` | 4 | Simultaneous speakers in each channel, 1-63; fewer than members per channel |
 | `RESONA_GC_SECONDS` | 30 | Measured duration in 50 Hz frames, 1-1800 seconds |
 | `RESONA_GC_WARMUP_SECONDS` | 3 | Actual voice traffic before measurement, 0-30 seconds |
 | `RESONA_GC_CHURN` | unset | `1` reconnects one listener every two seconds |
@@ -48,6 +48,11 @@ No churn loss rate should be computed from `expected_without_churn`; use stable
 members' counts instead. Warm-up, admission and shutdown are outside the window.
 Baseline runs still include the diagnostic timestamp wrappers, atomic counters
 and 100 ms metric sampling; they are not zero-overhead production measurements.
+The target source/forward packet rates and achieved source/expected-forward/
+receive rates are recorded separately. If the generator falls behind its ticks,
+use actual elapsed time and achieved rates rather than assuming the target load
+was sustained. Increasing simultaneous speakers stresses the existing sixteen-slot
+voice queues; their capacity, freshness rules and timeouts remain unchanged.
 
 Repeat a baseline without profiling before interpreting results. Run each
 diagnostic separately using `RESONA_GC_PROFILE` and a fresh output directory:
@@ -73,9 +78,14 @@ go tool pprof -top build/server-perf/block/block.pprof
 ```
 
 Server and generator have separate Go heaps/profiles but share the same host CPU
-and loopback networking. These are macOS diagnostics, not production Linux
-capacity, Windows audio quality, network RTT or gaming interference guarantees.
+and loopback networking. Record the host OS and container limits. Loopback tests
+are not production capacity, Windows audio quality, network RTT or gaming
+interference guarantees; Linux inside Docker on macOS also includes VM scheduling.
 Raw profiles, traces, logs and generated reports belong under ignored `build/`.
+
+The isolated [single socket writer experiment](socketwriter/README.md) compares
+the current socket gate with an owner goroutine using a Go build overlay. It is
+not included in product builds and is not a deployable transport option.
 
 For allocation changes, retain separate test binaries from before and after the
 change, alternate baseline/optimized runs with identical parameters, and compare

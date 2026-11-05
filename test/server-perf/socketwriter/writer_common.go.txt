@@ -1,0 +1,114 @@
+package noiseudp
+
+import (
+	"context"
+	"errors"
+	"net"
+	"sync"
+	"time"
+)
+
+type socketRequest struct {
+	data []byte
+	addr *net.UDPAddr
+	done chan error
+}
+
+// The rendezvous channel holds no packets. Each connection keeps its sendMu
+// until the socket write completes, so its ciphertext buffer cannot be reused.
+type soloWriter struct {
+	ctx      context.Context
+	requests chan *socketRequest
+	done     chan struct{}
+	pool     sync.Pool
+	timers   sync.Pool
+}
+
+func newSoloWriter(ctx context.Context, send func([]byte, *net.UDPAddr) error) *soloWriter {
+	return newSocketWriter(ctx, 1, func(rs []*socketRequest) {
+		r := rs[0]
+		r.done <- send(r.data, r.addr)
+	})
+}
+
+func newSocketWriter(ctx context.Context, limit int, send func([]*socketRequest)) *soloWriter {
+	w := &soloWriter{ctx: ctx, requests: make(chan *socketRequest), done: make(chan struct{})}
+	go func() {
+		defer close(w.done)
+		batch := make([]*socketRequest, 0, limit)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case r := <-w.requests:
+				batch = append(batch[:0], r)
+			gather:
+				for len(batch) < limit {
+					select {
+					case next := <-w.requests:
+						batch = append(batch, next)
+					default:
+						break gather
+					}
+				}
+				if ctx.Err() != nil {
+					for _, request := range batch {
+						request.done <- net.ErrClosed
+					}
+				} else {
+					send(batch)
+				}
+				clear(batch)
+			}
+		}
+	}()
+	return w
+}
+
+func (w *soloWriter) write(data []byte, addr *net.UDPAddr) error {
+	if w.ctx.Err() != nil {
+		return net.ErrClosed
+	}
+	r, _ := w.pool.Get().(*socketRequest)
+	if r == nil {
+		r = &socketRequest{done: make(chan error, 1)}
+	}
+	r.data, r.addr = data, addr
+	defer func() {
+		r.data, r.addr = nil, nil
+		w.pool.Put(r)
+	}()
+	select {
+	case w.requests <- r:
+		return <-r.done
+	default:
+	}
+	t, _ := w.timers.Get().(*time.Timer)
+	if t == nil {
+		t = time.NewTimer(250 * time.Millisecond)
+	} else {
+		t.Reset(250 * time.Millisecond)
+	}
+	defer func() {
+		t.Stop()
+		w.timers.Put(t)
+	}()
+	select {
+	case w.requests <- r:
+		// Stop the admission timeout before waiting on the bounded socket write.
+		t.Stop()
+		return <-r.done
+	case <-w.ctx.Done():
+		return net.ErrClosed
+	case <-t.C:
+		return errors.New("UDP writer busy")
+	}
+}
+
+func (l *Listener) write(data []byte, addr *net.UDPAddr) error {
+	if l.experimentWriter != nil {
+		return l.experimentWriter.write(data, addr)
+	}
+	// Existing gate unit tests construct a Listener without starting its loops.
+	return l.writeDirect(data, addr)
+}
