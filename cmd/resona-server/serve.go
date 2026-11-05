@@ -17,10 +17,13 @@ import (
 func newServeCommand(configDir string) *cobra.Command {
 	var store storeOptions
 	var address, name, keyPath, adminListen, adminOrigin string
-	var maxClients int
+	var maxClients, voiceQueueSlots int
 	cmd := &cobra.Command{
 		Use: "serve", Short: "Run the voice server", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if voiceQueueSlots < 1 || voiceQueueSlots > server.MaxVoiceQueueSlots {
+				return fmt.Errorf("--voice-queue-slots must be between 1 and %d", server.MaxVoiceQueueSlots)
+			}
 			key, err := os.ReadFile(keyPath)
 			if err != nil {
 				return fmt.Errorf("load Noise identity (run identity init first): %w", err)
@@ -32,11 +35,12 @@ func newServeCommand(configDir string) *cobra.Command {
 				s, err := server.Listen(address, server.Config{
 					Store: store, NoiseKey: key,
 					Name: name, Password: os.Getenv("RESONA_SERVER_PASSWORD"), MaxClients: maxClients,
+					VoiceQueueSlots: voiceQueueSlots,
 				})
 				if err != nil {
 					return err
 				}
-				slog.Info("server listening", "address", s.Addr().String(), "version", version.Current().String())
+				slog.Info("server listening", "address", s.Addr().String(), "version", version.Current().String(), "voice_queue_slots", voiceQueueSlots)
 				pub, _ := noiseudp.PublicKey(key)
 				slog.Info("server identity", "public_key", hex.EncodeToString(pub))
 				return s.ServeWithAdmin(cmd.Context(), adminListen, adminOrigin)
@@ -49,6 +53,7 @@ func newServeCommand(configDir string) *cobra.Command {
 	f.StringVar(&name, "name", "Resona", "server display name")
 	f.StringVar(&keyPath, "noise-key", filepath.Join(configDir, "noise.key"), "Noise X25519 private key file")
 	f.IntVar(&maxClients, "max-clients", 64, "maximum simultaneous connections (1-64)")
+	f.IntVar(&voiceQueueSlots, "voice-queue-slots", server.DefaultVoiceQueueSlots, "pending voice packets per recipient (1-256; restart to apply)")
 	f.StringVar(&adminListen, "admin-listen", "", "optional HTTP management bind address")
 	f.StringVar(&adminOrigin, "admin-origin", "", "browser origin; public origins require HTTPS")
 	return cmd

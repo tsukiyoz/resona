@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"reflect"
@@ -21,14 +22,20 @@ import (
 	w "github.com/tsukiyoz/resona/internal/nativewire"
 )
 
+const (
+	DefaultVoiceQueueSlots = 16
+	MaxVoiceQueueSlots     = 256
+)
+
 type Config struct {
-	Chat       ChatConfig
-	Store      *Store
-	NoiseKey   []byte
-	Name       string
-	Password   string
-	Channels   []w.Channel
-	MaxClients int
+	Chat            ChatConfig
+	Store           *Store
+	NoiseKey        []byte
+	Name            string
+	Password        string
+	Channels        []w.Channel
+	MaxClients      int
+	VoiceQueueSlots int
 }
 type Server struct {
 	accountGate       chan struct{}
@@ -48,6 +55,7 @@ type Server struct {
 	pendingMaxClients int
 }
 type peer struct {
+	logger         *slog.Logger
 	receivePokes   bool
 	pokeSend       bucket
 	pokeReceive    bucket
@@ -94,6 +102,12 @@ func (b *bucket) take(rate, burst float64) bool {
 }
 
 func Listen(address string, cfg Config) (*Server, error) {
+	if cfg.VoiceQueueSlots == 0 {
+		cfg.VoiceQueueSlots = DefaultVoiceQueueSlots
+	}
+	if cfg.VoiceQueueSlots < 1 || cfg.VoiceQueueSlots > MaxVoiceQueueSlots {
+		return nil, fmt.Errorf("voice queue slots must be between 1 and %d", MaxVoiceQueueSlots)
+	}
 	if cfg.Store != nil {
 		cfg.Channels = cfg.Store.snapshot().Channels.Channels
 	}
@@ -214,7 +228,7 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 		return
 	}
 	_ = stream.SetDeadline(time.Time{})
-	p := &peer{conn: c, stream: stream, epoch: 1, out: make(chan []byte, 16), voiceOut: w.NewVoiceRing(4), done: make(chan struct{}), chatWake: make(chan struct{}, 1), chatOut: make(chan []byte, 4)}
+	p := &peer{conn: c, stream: stream, epoch: 1, out: make(chan []byte, 16), voiceOut: w.NewVoiceRing(s.config.VoiceQueueSlots), done: make(chan struct{}), chatWake: make(chan struct{}, 1), chatOut: make(chan []byte, 4)}
 	p.identity = nativeidentity.UID(hello.PublicKey)
 	p.receivePokes = hello.ReceivePokes
 	// Bootstrap only the current channel; the client explicitly lists what its UI needs.
@@ -243,21 +257,13 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 	}
 	s.next++
 	p.member = w.Member{ID: uint16(s.next), Channel: s.defaultChannel, Nickname: hello.Nickname, Instance: rand.Text(), Muted: true, Epoch: 1}
+	p.logger = connectionLogger(c, p.member)
 	s.peers[p.member.ID] = p
 	s.sendStateLocked(p, w.WelcomeKind, true)
 	s.restartChatLocked(p)
 	s.broadcastLocked(p)
-	member := p.member
+	logger := p.identityLoggerLocked()
 	s.mu.Unlock()
-	remoteAddr, remoteIP := "unknown", "unknown"
-	if remote, ok := c.(interface{ RemoteAddr() net.Addr }); ok && remote.RemoteAddr() != nil {
-		remoteAddr = remote.RemoteAddr().String()
-		if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
-			remoteIP = host
-		}
-	}
-	logger := slog.With("remote_addr", remoteAddr, "remote_ip", remoteIP,
-		"name", member.Nickname, "member_id", member.ID, "session", member.Instance)
 	connectedAt := time.Now()
 	logger.Info("client connected")
 	var workers sync.WaitGroup
@@ -272,6 +278,7 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 		close(p.done)
 		workers.Wait()
 		s.mu.Lock()
+		logger := p.identityLoggerLocked()
 		delete(s.peers, p.member.ID)
 		s.broadcastLocked(nil)
 		s.mu.Unlock()
