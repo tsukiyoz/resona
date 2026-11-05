@@ -1,6 +1,6 @@
 # Resona Noise UDP experiment
 
-Version/prologue: `resona-noise-exp-6` (bounded channel chat and stable message identity; matching client/server required). Noise suite:
+Version/prologue: `resona-noise-exp-7` (channel-bound password authentication; matching client/server required). Noise suite:
 `Noise_NK_25519_ChaChaPoly_SHA256`. The server relays plaintext Opus between
 separately encrypted client/server sessions; this is hop encryption, not E2EE.
 All Resona multi-byte header integers are big-endian. Noise primitives use the
@@ -9,29 +9,46 @@ passed as uint64. The generation is reconstructed locally, not added to each pac
 
 ## Handshake
 
-1. Client sends `RN06 | type=1:u8 | cookie:20 | NK message1:48` (73 bytes).
+0. Without a configured pin, client sends `RN07 | type=0:u8 | padding:68`
+   (73 bytes). Server replies `RN07 | type=0:u8 | public key:32` (37 bytes),
+   from a cached public response, without allocating a peer. This key is UNTRUSTED
+   until the channel-bound PAKE below succeeds; discovery establishes no identity.
+1. Client sends `RN07 | type=1:u8 | cookie:20 | NK message1:48` (73 bytes).
    Initially cookie is zero. NK payload is empty; no password or audio is sent.
-2. Server sends `RN06 | type=2:u8 | cookie:20` (25 bytes), without allocating
+2. Server sends `RN07 | type=2:u8 | cookie:20 | public key:32` (57 bytes), without allocating
    a session or performing DH. Cookie is `timeSlot:u32 | HMAC-SHA256[:16]`,
    bound to protocol, source IP/port, slot and exact NK message. Slots are
    30 seconds; current/previous slots are accepted. Cookie secret is generated
    per server start. It is distinct from the Noise private key.
 3. Client repeats message1 with that cookie. Server checks it, connection cap
    and global handshake budget (10/s, burst 20), then performs Noise NK.
-4. Server replies `RN06 | type=3:u8 | NK message2:48` (53 bytes). Identical
+4. Server replies `RN07 | type=3:u8 | NK message2:48` (53 bytes). Identical
    message1 retries on an existing endpoint receive the cached identical reply,
    never a reset or second session. An established session is not replaced by
    an unauthenticated new handshake.
-5. Client verifies the response against the configured server public key,
-   then both sides use directional transport keys. The normal framed Hello
-   (nickname/password/Ed25519 public key/signature) and Welcome travel over
-   encrypted reliable control. Signature binds to the completed NK handshake
-   hash; mandatory verification precedes membership admission. See native-protocol.md.
+5. If a pin is configured, it must match; it is never silently replaced. Both
+   sides establish provisional directional transport keys. Before any Hello,
+   identity or account token, perform OPAQUE over encrypted reliable control.
+6. Server writes one byte: 0 for public, 1 for password. Mode 0 is accepted only
+   with a supplied pin and no expected password. Mode 1 exchanges client KE1
+   (96 bytes), server KE2 (320), client KE3 (64), server acceptance byte 1.
+   It uses RFC 9807 Ristretto255 OPRF/AKE, TripleDH/SHA-512, Identity KSF,
+   client ID `resona-guest`, server ID `resona-server`, and context
+   `resona-server-password-v1\0 || Noise handshake hash:32`. These are fixed raw
+   bytes before normal length-prefixed Protobuf framing. A peer cannot relay
+   proofs between two different Noise connections. Wrong password, malformed
+   proofs, wrong binding and replay fail closed, without protocol fallback.
+7. Only then send Hello (nickname/Ed25519 public key/signature) and Welcome.
+   Hello no longer carries a shared password; field 2 is reserved. The client
+   signature binds to the completed NK handshake hash. Membership additionally
+   checks that the accepted password registration has not rotated meanwhile.
+   See native-protocol.md and ADR-0036 for dependency and security boundaries.
 
 Client handshake retry is 200 ms with a 5-second/context bound. Application
 authentication has a 5-second read deadline after server acceptance. The server
-public key must be acquired through a trusted channel; an unknown key is never
-learned automatically. Source endpoint changes require reconnect; this version
+public key is authenticated either by a supplied pin or by the shared password
+PAKE. Public servers require a trusted invite pin; an address alone is insufficient.
+Discovered keys stay attempt-local, preserving bookmark credential keys. Source endpoint changes require reconnect; this version
 has no NAT rebinding or migration. Fresh sockets and fresh ephemeral keys are
 used on reconnect. Private identity files are never overwritten by initialization.
 
@@ -105,7 +122,7 @@ Unconfirmed updates fail closed after 30 seconds. The hard limit remains
 the control stream, user identity, channel, mute settings, or socket. This does
 not rotate the server's static public key or add fresh DH entropy.
 
-Server voice egress uses a four-slot per-recipient mutex MPSC ring, plus at most
+Server voice egress uses a sixteen-slot (configurable 1–256) per-recipient mutex MPSC ring, plus at most
 one packet in the send worker. Overflow replaces the oldest queued voice. Packets
 older than 100 ms since source receipt are discarded before sending. Control is
 not subject to this overwrite policy; the client capture queue is unchanged.

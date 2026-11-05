@@ -62,7 +62,12 @@ impl ServerProfile {
     }
 
     pub fn validate(&self) -> Result<()> {
-        self.public_key()?;
+        if !self.supports_connection() {
+            return Err("此书签协议不受支持");
+        }
+        if !self.server_public_key.is_empty() {
+            self.public_key()?;
+        }
         for (value, limit) in [(&self.name, 100), (&self.nickname, 30)] {
             if value.trim().is_empty()
                 || value.chars().count() > limit
@@ -405,5 +410,13 @@ mod tests {
         assert!(p.validate().is_err());
         p.server_public_key = "é".repeat(32);
         assert!(p.public_key().is_err());
+        p.server_public_key.clear();
+        p.address = "localhost:9988".into();
+        p.validate().unwrap();
+        let unpinned = p.credential_key();
+        p.server_public_key = "invalid".into();
+        assert!(p.validate().is_err());
+        p.server_public_key.clear();
+        assert_eq!(p.credential_key(), unpinned);
     }
 }

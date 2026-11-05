@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/tsukiyoz/resona/internal/noiseudp"
+	"github.com/tsukiyoz/resona/internal/serverauth"
 )
 
 type Stream interface {
@@ -65,6 +66,41 @@ func DialNoise(ctx context.Context, address string, key []byte) (Connection, err
 		return nil, err
 	}
 	return noiseConnection{c}, nil
+}
+
+// DialServer authenticates the server before application Hello. A nil key is
+// allowed only with a password; discovery alone never establishes trust.
+func DialServer(ctx context.Context, address string, key []byte, password string) (Connection, error) {
+	if len(key) == 0 && password == "" {
+		return nil, serverauth.ErrAuthentication
+	}
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	c, err := DialNoise(ctx, address, key)
+	if err != nil {
+		return nil, err
+	}
+	stop := context.AfterFunc(ctx, func() { _ = c.CloseWithError(0, "authentication cancelled") })
+	defer stop()
+	stream, err := c.OpenStreamSync(ctx)
+	if err == nil {
+		deadline, _ := ctx.Deadline()
+		_ = stream.SetDeadline(deadline)
+		var binding []byte
+		binding, err = ChannelBinding(c)
+		if err == nil {
+			err = serverauth.Authenticate(stream, binding, password, len(key) != 0)
+		}
+		_ = stream.SetDeadline(time.Time{})
+	}
+	if err == nil {
+		err = ctx.Err()
+	}
+	if err != nil {
+		_ = c.CloseWithError(AuthenticationFailed, "authentication failed")
+		return nil, err
+	}
+	return c, nil
 }
 
 func ListenNoise(address string, key []byte, limit int) (Listener, error) {

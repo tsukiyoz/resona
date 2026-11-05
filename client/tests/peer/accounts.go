@@ -11,6 +11,7 @@ import (
 
 	w "github.com/tsukiyoz/resona/internal/nativewire"
 	"github.com/tsukiyoz/resona/internal/noiseudp"
+	"github.com/tsukiyoz/resona/internal/serverauth"
 )
 
 // A scripted fault peer isolates recovery ordering from account database tests.
@@ -28,6 +29,10 @@ func accountRecovery() error {
 		return err
 	}
 	defer l.Close()
+	auth, err := serverauth.New("")
+	if err != nil {
+		return err
+	}
 	if err := announce(l.Addr().String(), pub); err != nil {
 		return err
 	}
@@ -44,6 +49,10 @@ func accountRecovery() error {
 				return
 			}
 			_ = s.SetDeadline(time.Now().Add(15 * time.Second))
+			binding, err := w.ChannelBinding(c)
+			if err != nil || auth.Accept(s, binding) != nil {
+				return
+			}
 			f, err := w.Read(s)
 			var hello w.Hello
 			if err != nil || w.Decode(f, &hello) != nil || w.VerifyHello(c, hello) != nil {
@@ -53,9 +62,11 @@ func accountRecovery() error {
 			if attempt == 0 {
 				channel = 2
 			}
-			state := w.State{Self: 1, Epoch: 1, IdentityUID: fmt.Sprintf("%x", sha256.Sum256(hello.PublicKey)), ServerRole: "guest",
+			state := w.State{
+				Self: 1, Epoch: 1, IdentityUID: fmt.Sprintf("%x", sha256.Sum256(hello.PublicKey)), ServerRole: "guest",
 				Channels: []w.Channel{{ID: 1, Name: "Lobby"}, {ID: 2, Name: "Gaming"}},
-				Members:  []w.Member{{ID: 1, Channel: channel, Nickname: hello.Nickname, Instance: "fixture", Epoch: 1}}}
+				Members:  []w.Member{{ID: 1, Channel: channel, Nickname: hello.Nickname, Instance: "fixture", Epoch: 1}},
+			}
 			if w.Write(s, w.WelcomeKind, 0, state) != nil {
 				return
 			}

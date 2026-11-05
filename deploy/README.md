@@ -32,7 +32,7 @@ docker run --rm resona-server:v0.1.1 --version
 /opt/resona/
   data/noise.key
   access/              # 旧 JSON（仅迁移读取）和运行锁
-    chat/              # JetStream 聊天与管理资源 KV，必须完整备份
+    chat/              # JetStream 聊天、管理资源/私有认证 KV，必须完整备份
   backups/             # 升级时生成，包含敏感数据，不上传
 ```
 
@@ -50,5 +50,15 @@ sh ./activate.sh resona-server:v0.1.1
 备份或启动失败会尝试重新启动旧容器，并报告恢复失败。成功后保留旧容器和数据备份，便于人工回退。启动检查只确认容器两秒后仍运行，不等于客户端握手、语音或数据迁移验收。旧新版本共用 access 目录，自动恢复容器不会自动恢复已经修改的数据；跨数据格式版本回退需要停服后从备份恢复。
 
 首次安装可沿用仓库的 `compose.yaml` 和 `deploy/server-entrypoint.sh` 初始化流程；本升级脚本不创建或覆盖身份和 owner。命名卷 Compose 布局不直接适用此脚本。
+
+连接密码保存在私有认证 KV，不再由 `serve` 参数或环境变量提供。停服后对同一
+access/chat 目录运行 `password set --password-stdin`，或 `password reset` 生成并
+仅控制台展示一次；owner claim 同样只有显式 `owner init`/`reset-claim` 的一次性
+输出。命名卷 Compose 首次设置可使用 `docker compose run --rm --no-deps server
+password reset`，默认数据目录与正式服务相同，执行前必须停服。不默认创建
+`owner-claim` 或 `server-password` 明文文件。旧文件密码部署需先备份、显式导入，
+再移除旧输入；完整数据备份仍含认证密钥，须私密保管。
+`activate.sh` 检测到旧密码参数或非空密码环境变量会在停服前拒绝升级，避免漏导入后
+意外开放公开访问。这种部署需要按上述流程显式停服导入并更新容器启动配置。
 
 服务器只接受显式子命令：启动参数以 `serve` 开头。源码镜像的默认 CMD 和预编译升级脚本已包含它；自定义 systemd/Compose command 也必须添加。帮助、版本及离线管理命令不会自动创建私钥。

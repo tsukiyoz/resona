@@ -62,6 +62,16 @@ impl Connection {
         public_key: &[u8; 32],
         cancel: &CancellationToken,
     ) -> Result<Self> {
+        Self::dial_optional(address, Some(public_key), cancel).await
+    }
+
+    /// A discovered key is provisional: application PAKE must authenticate it
+    /// before sending identity, credentials or audio on this connection.
+    pub async fn dial_optional(
+        address: SocketAddr,
+        public_key: Option<&[u8; 32]>,
+        cancel: &CancellationToken,
+    ) -> Result<Self> {
         tokio::select! {
             biased;
             _ = cancel.cancelled() => Err(Error::Cancelled),
@@ -73,7 +83,7 @@ impl Connection {
 
     async fn handshake(
         address: SocketAddr,
-        public_key: &[u8; 32],
+        public_key: Option<&[u8; 32]>,
         dial_cancel: &CancellationToken,
     ) -> Result<Self> {
         let bind = if address.is_ipv4() {
@@ -83,23 +93,11 @@ impl Connection {
         };
         let socket = UdpSocket::bind(bind).await?;
         socket.connect(address).await?;
-        let mut handshake = snow::Builder::new(SUITE.parse().map_err(|_| Error::Crypto)?)
-            .prologue(PROLOGUE)
-            .map_err(|_| Error::Crypto)?
-            .remote_public_key(public_key)
-            .map_err(|_| Error::Crypto)?
-            .build_initiator()
-            .map_err(|_| Error::Crypto)?;
         let mut request = [0; 73];
         request[..4].copy_from_slice(MAGIC);
-        request[4] = 1;
-        if handshake
-            .write_message(&[], &mut request[25..])
-            .map_err(|_| Error::Crypto)?
-            != 48
-        {
-            return Err(Error::Crypto);
-        }
+        let mut handshake = public_key
+            .map(|key| Self::initiator(key, &mut request))
+            .transpose()?;
         let mut buffer = [0; MAX_PACKET + 1];
         let mut next = Instant::now();
         loop {
@@ -113,7 +111,16 @@ impl Connection {
                 received = socket.recv(&mut buffer) => {
                     let n = received?;
                     if n < 5 || &buffer[..4] != MAGIC { continue; }
-                    if buffer[4] == 2 && n == 25 {
+                    if handshake.is_none() && buffer[4] == 0 && n == 37 {
+                        handshake = Some(Self::initiator(&buffer[5..37], &mut request)?);
+                        next = Instant::now();
+                        continue;
+                    }
+                    let Some(handshake) = handshake.as_mut() else { continue; };
+                    if buffer[4] == 2 && n == 57 {
+                        if public_key.is_some_and(|key| key.as_slice() != &buffer[25..57]) {
+                            return Err(Error::Authentication);
+                        }
                         request[5..25].copy_from_slice(&buffer[5..25]);
                         next = Instant::now();
                         continue;
@@ -137,6 +144,25 @@ impl Connection {
                 }
             }
         }
+    }
+
+    fn initiator(key: &[u8], request: &mut [u8; 73]) -> Result<snow::HandshakeState> {
+        let mut handshake = snow::Builder::new(SUITE.parse().map_err(|_| Error::Crypto)?)
+            .prologue(PROLOGUE)
+            .map_err(|_| Error::Crypto)?
+            .remote_public_key(key)
+            .map_err(|_| Error::Crypto)?
+            .build_initiator()
+            .map_err(|_| Error::Crypto)?;
+        request[4] = 1;
+        if handshake
+            .write_message(&[], &mut request[25..])
+            .map_err(|_| Error::Crypto)?
+            != 48
+        {
+            return Err(Error::Crypto);
+        }
+        Ok(handshake)
     }
 
     fn start(socket: UdpSocket, tx: SendKeys, rx: ReceiveKeys, binding: [u8; 32]) -> Self {

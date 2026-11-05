@@ -3,8 +3,6 @@ package server
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -20,6 +18,7 @@ import (
 	"github.com/tsukiyoz/resona/internal/accounts"
 	"github.com/tsukiyoz/resona/internal/nativeidentity"
 	w "github.com/tsukiyoz/resona/internal/nativewire"
+	"github.com/tsukiyoz/resona/internal/serverauth"
 )
 
 const (
@@ -32,12 +31,14 @@ type Config struct {
 	Store           *Store
 	NoiseKey        []byte
 	Name            string
-	Password        string
 	Channels        []w.Channel
 	MaxClients      int
 	VoiceQueueSlots int
 }
 type Server struct {
+	passwordAuth      *serverauth.Server
+	passwordMu        sync.Mutex
+	passwordStatus    ConnectionPasswordStatus
 	accountGate       chan struct{}
 	accountBucket     bucket
 	chat              *chatStore
@@ -114,7 +115,7 @@ func Listen(address string, cfg Config) (*Server, error) {
 	if cfg.MaxClients == 0 {
 		cfg.MaxClients = w.MaxMembers
 	}
-	if cfg.MaxClients < 1 || cfg.MaxClients > w.MaxMembers || !validName(cfg.Name, 100) || len(cfg.Password) > 1024 || len(cfg.Channels) == 0 || len(cfg.Channels) > w.MaxChannels {
+	if cfg.MaxClients < 1 || cfg.MaxClients > w.MaxMembers || !validName(cfg.Name, 100) || len(cfg.Channels) == 0 || len(cfg.Channels) > w.MaxChannels {
 		return nil, errors.New("invalid server configuration")
 	}
 	seen := map[uint16]bool{}
@@ -139,6 +140,15 @@ func Listen(address string, cfg Config) (*Server, error) {
 			return nil, err
 		}
 	}
+	authCtx, cancelAuth := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancelAuth()
+	password, err := cfg.Store.readPassword(authCtx)
+	if err != nil {
+		if owned {
+			cfg.Store.Close()
+		}
+		return nil, err
+	}
 	if err := cfg.Store.initializeSettings(cfg.Name, cfg.MaxClients); err != nil {
 		if owned {
 			cfg.Store.Close()
@@ -155,7 +165,7 @@ func Listen(address string, cfg Config) (*Server, error) {
 		return nil, err
 	}
 	cfg.Channels = cfg.Store.snapshot().Channels.Channels
-	return &Server{listener: l, config: cfg, chat: cfg.Store.chat, defaultChannel: cfg.Store.snapshot().Channels.Default, peers: map[uint16]*peer{}, accountGate: make(chan struct{}, 1)}, nil
+	return &Server{listener: l, config: cfg, passwordAuth: password.auth, passwordStatus: password.status(), chat: cfg.Store.chat, defaultChannel: cfg.Store.snapshot().Channels.Default, peers: map[uint16]*peer{}, accountGate: make(chan struct{}, 1)}, nil
 }
 func (s *Server) Addr() net.Addr { return s.listener.Addr() }
 
@@ -210,14 +220,20 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 		return
 	}
 	_ = stream.SetDeadline(time.Now().Add(5 * time.Second))
-	f, err := w.Read(stream)
-	var hello w.Hello
-	if err != nil || f.Kind != w.HelloKind || f.Request != 0 || w.Decode(f, &hello) != nil || !validName(hello.Nickname, 30) || len(hello.Password) > 1024 {
+	s.mu.Lock()
+	auth := s.passwordAuth
+	s.mu.Unlock()
+	if auth == nil {
+		_ = c.CloseWithError(w.AuthenticationFailed, "server authentication unavailable")
 		return
 	}
-	got, want := sha256.Sum256([]byte(hello.Password)), sha256.Sum256([]byte(s.config.Password))
-	if subtle.ConstantTimeCompare(got[:], want[:]) != 1 {
-		_ = c.CloseWithError(w.AuthenticationFailed, "authentication failed")
+	if err = authenticateServer(auth, c, stream); err != nil {
+		_ = c.CloseWithError(w.AuthenticationFailed, "server authentication failed")
+		return
+	}
+	f, err := w.Read(stream)
+	var hello w.Hello
+	if err != nil || f.Kind != w.HelloKind || f.Request != 0 || w.Decode(f, &hello) != nil || !validName(hello.Nickname, 30) {
 		return
 	}
 	if w.VerifyHello(c, hello) != nil {
@@ -233,6 +249,13 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 	p.receivePokes = hello.ReceivePokes
 	// Bootstrap only the current channel; the client explicitly lists what its UI needs.
 	s.mu.Lock()
+	// Admission and password publication share this short critical section;
+	// neither network authentication nor secret-file IO holds the voice lock.
+	if auth != s.passwordAuth {
+		s.mu.Unlock()
+		_ = c.CloseWithError(w.AuthenticationFailed, "server password changed")
+		return
+	}
 	// IDs are never reused during this server lifetime, including after disconnect.
 	limit := s.config.MaxClients
 	if settings := s.config.Store.snapshot().Settings; settings != nil {
@@ -417,6 +440,14 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 		s.enqueueLocked(p, w.ReplyKind, f.Request, w.Reply{Code: code})
 		s.mu.Unlock()
 	}
+}
+
+func authenticateServer(auth *serverauth.Server, c w.Connection, stream w.Stream) error {
+	binding, err := w.ChannelBinding(c)
+	if err != nil {
+		return err
+	}
+	return auth.Accept(stream, binding)
 }
 
 func (s *Server) stateLocked(p *peer) w.State {

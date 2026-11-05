@@ -67,7 +67,7 @@ func openProbeClient(ctx context.Context, profile probeProfile, nickname string,
 	if err != nil {
 		return nil, err
 	}
-	conn, err := w.DialNoise(ctx, profile.Address, key)
+	conn, err := w.DialServer(ctx, profile.Address, key, "")
 	if err != nil {
 		return nil, err
 	}

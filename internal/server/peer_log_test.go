@@ -60,7 +60,7 @@ func TestConnectionLogsFollowRestoredAccountAndNickname(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := w.DialNoise(ctx, s.Addr().String(), public)
+	c, err := w.DialServer(ctx, s.Addr().String(), public, "")
 	if err != nil {
 		t.Fatal(err)
 	}

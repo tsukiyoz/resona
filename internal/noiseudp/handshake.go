@@ -16,13 +16,13 @@ import (
 	"github.com/flynn/noise"
 )
 
-const prologue = "resona-noise-exp-6"
+const prologue = "resona-noise-exp-7"
 
 var ErrServerAuthentication = errors.New("noiseudp: server authentication failed")
 
 var (
 	suite = noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashSHA256)
-	magic = []byte{'R', 'N', '0', '6'}
+	magic = []byte{'R', 'N', '0', '7'}
 )
 
 func PublicKey(private []byte) ([]byte, error) {
@@ -76,16 +76,30 @@ func Dial(ctx context.Context, address string, public []byte) (*Conn, error) {
 	}()
 	stop := context.AfterFunc(ctx, func() { _ = u.Close() })
 	defer stop()
-	hs, err := handshake(true, public)
-	if err != nil {
-		return nil, err
+	// Discovery carries no credentials and returns an untrusted key. Callers
+	// without a supplied pin MUST complete channel-bound PAKE before admission.
+	var hs *noise.HandshakeState
+	request := make([]byte, 73)
+	copy(request, magic)
+	start := func(key []byte) error {
+		var e error
+		hs, e = handshake(true, key)
+		if e != nil {
+			return e
+		}
+		msg, _, _, e := hs.WriteMessage(nil, nil)
+		if e != nil {
+			return e
+		}
+		request[4] = 1
+		copy(request[25:], msg)
+		return nil
 	}
-	msg, _, _, err := hs.WriteMessage(nil, nil)
-	if err != nil {
-		return nil, err
+	if len(public) != 0 {
+		if err = start(public); err != nil {
+			return nil, err
+		}
 	}
-	request := append(append(append([]byte{}, magic...), 1), make([]byte, 20)...)
-	request = append(request, msg...)
 	buf := make([]byte, maxPacket+1)
 	for ctx.Err() == nil {
 		_ = u.SetDeadline(time.Now().Add(200 * time.Millisecond))
@@ -102,7 +116,19 @@ func Dial(ctx context.Context, address string, public []byte) (*Conn, error) {
 		if n < 5 || !bytes.Equal(buf[:4], magic) {
 			continue
 		}
-		if buf[4] == 2 && n == 25 {
+		if hs == nil && buf[4] == 0 && n == 37 {
+			if err = start(buf[5:n]); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if hs == nil {
+			continue
+		}
+		if buf[4] == 2 && n == 57 {
+			if len(public) != 0 && !bytes.Equal(public, buf[25:57]) {
+				return nil, ErrServerAuthentication
+			}
 			copy(request[5:25], buf[5:25])
 			continue
 		}
@@ -144,6 +170,7 @@ type entry struct {
 	request, response []byte
 }
 type Listener struct {
+	discovery   []byte
 	u           *net.UDPConn
 	key, secret []byte
 	mu          sync.Mutex
@@ -163,7 +190,8 @@ type Listener struct {
 }
 
 func Listen(address string, private []byte, limit int) (*Listener, error) {
-	if _, err := PublicKey(private); err != nil {
+	public, err := PublicKey(private)
+	if err != nil {
 		return nil, err
 	}
 	if limit < 1 || limit > 64 {
@@ -184,6 +212,7 @@ func Listen(address string, private []byte, limit int) (*Listener, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	l := &Listener{u: u, key: append([]byte(nil), private...), secret: secret, peers: map[string]*entry{}, accept: make(chan *Conn, limit), ctx: ctx, cancel: cancel, done: make(chan struct{}), writeGate: make(chan struct{}, 1), limit: limit, dhTokens: 20, lastDH: time.Now()}
+	l.discovery = append(append(append([]byte{}, magic...), 0), public...)
 	go l.loop()
 	return l, nil
 }
@@ -296,6 +325,11 @@ func (l *Listener) loop() {
 		l.mu.Lock()
 		p := l.peers[name]
 		l.mu.Unlock()
+		// The padded query is larger than the response and allocates no peer.
+		if n == 73 && bytes.Equal(b[:4], magic) && b[4] == 0 {
+			_ = l.write(l.discovery, addr)
+			continue
+		}
 		if n >= 5 && bytes.Equal(b[:4], magic) && b[4] == 1 {
 			if n != 73 {
 				continue
@@ -310,6 +344,7 @@ func (l *Listener) loop() {
 			supplied := binary.BigEndian.Uint32(b[5:9])
 			if (supplied != slot && supplied != slot-1) || !hmac.Equal(b[5:25], l.cookie(name, b[25:], supplied)) {
 				response := append(append(append([]byte{}, magic...), 2), l.cookie(name, b[25:], slot)...)
+				response = append(response, l.discovery[5:]...)
 				_ = l.write(response, addr)
 				continue
 			}

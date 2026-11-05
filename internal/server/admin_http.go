@@ -60,6 +60,8 @@ func NewAdminConsole(s *Server, origin string) (*AdminConsole, error) {
 	a.registerResources()
 	a.registerMembers()
 	a.mux.HandleFunc("PUT "+adminBase+"/settings", a.settings)
+	a.mux.HandleFunc("PUT "+adminBase+"/server-password", a.connectionPassword)
+	a.mux.HandleFunc("POST "+adminBase+"/server-password", a.connectionPassword)
 	assets, _ := fs.Sub(adminAssets, "web")
 	a.mux.Handle("GET /admin/", http.StripPrefix("/admin/", http.FileServer(http.FS(assets))))
 	a.mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {

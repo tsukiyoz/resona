@@ -1,4 +1,4 @@
-//! Resona RN06 transport; no UI, credentials, audio devices or NATS dependency.
+//! Resona RN07 transport; no UI, credentials, audio devices or NATS dependency.
 
 mod crypto;
 mod transport;
@@ -9,8 +9,8 @@ use std::{fmt, io};
 
 pub use tokio_util::sync::CancellationToken;
 
-pub(crate) const MAGIC: &[u8; 4] = b"RN06";
-pub(crate) const PROLOGUE: &[u8] = b"resona-noise-exp-6";
+pub(crate) const MAGIC: &[u8; 4] = b"RN07";
+pub(crate) const PROLOGUE: &[u8] = b"resona-noise-exp-7";
 pub(crate) const SUITE: &str = "Noise_NK_25519_ChaChaPoly_SHA256";
 pub(crate) const MAX_PACKET: usize = 1200;
 pub(crate) const MAX_CHUNK: usize = 1000;

@@ -24,7 +24,7 @@ func sample[T, B any](name string, kind uint8, request uint32, value T, old B) f
 
 func fixtures() []fixture {
 	result := []fixture{
-		sample("hello", w.HelloKind, 0, w.Hello{Nickname: "tester", Password: "secret"}, b.Hello{Nickname: "tester", Password: "secret"}),
+		sample("hello", w.HelloKind, 0, w.Hello{Nickname: "tester"}, b.Hello{Nickname: "tester"}),
 		sample("move", w.MoveKind, 1, w.Command{Channel: 2}, b.Command{Channel: 2}),
 		sample("voice_state", w.VoiceStateKind, 2, w.Command{Muted: true}, b.Command{Muted: true}),
 		sample("reply_ok", w.ReplyKind, 2, w.Reply{}, b.Reply{}),

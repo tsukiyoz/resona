@@ -71,4 +71,5 @@ Copy-Item "$DesktopDirectory\target\x86_64-pc-windows-msvc\release\resona-deskto
 $Metadata = @{schema=1; product="resona"; platform="windows/amd64"; version=$Version; distribution="portable"} | ConvertTo-Json -Compress
 [IO.File]::WriteAllText("$OutputDirectory\resona-package.json", $Metadata, [Text.UTF8Encoding]::new($false))
 Copy-Item "$DesktopDirectory\..\docs\noise-license.txt" "$OutputDirectory\noise-license.txt"
+Copy-Item "$DesktopDirectory\..\docs\pake-licenses.txt" "$OutputDirectory\pake-licenses.txt"
 Write-Output $OutputDirectory

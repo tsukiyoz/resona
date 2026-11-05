@@ -13,11 +13,11 @@ import (
 )
 
 func TestControlProtobufGoldenAndUnknownFields(t *testing.T) {
-	packet, err := Pack(HelloKind, 0, Hello{Nickname: "tester", Password: "secret"})
+	packet, err := Pack(HelloKind, 0, Hello{Nickname: "tester"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if hex.EncodeToString(packet) != "0000001408011a100a067465737465721206736563726574" {
+	if hex.EncodeToString(packet) != "0000000c08011a080a06746573746572" {
 		t.Fatalf("wire changed: %x", packet)
 	}
 	var frame pb.Frame
@@ -33,7 +33,7 @@ func TestControlProtobufGoldenAndUnknownFields(t *testing.T) {
 	binary.BigEndian.PutUint32(wire, uint32(len(data)))
 	f, err := Read(bytes.NewReader(append(wire, data...)))
 	var got Hello
-	if err != nil || Decode(f, &got) != nil || !reflect.DeepEqual(got, Hello{Nickname: "tester", Password: "secret"}) {
+	if err != nil || Decode(f, &got) != nil || !reflect.DeepEqual(got, Hello{Nickname: "tester"}) {
 		t.Fatalf("unknown field compatibility: %+v %v", got, err)
 	}
 }

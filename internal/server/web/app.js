@@ -111,7 +111,9 @@ function setDisabled() {
       );
   $("#cancel-editor").disabled = false;
   $("#close-editor").disabled = false;
-  if (pending) $("#cancel-editor").textContent = "取消等待";
+  $("#cancel-editor").textContent = pending
+    ? "取消等待"
+    : editor && typeof editor.submit !== "function" ? "完成" : "取消";
 }
 
 function reset(message = "") {
@@ -125,6 +127,7 @@ function reset(message = "") {
   snapshot = session = settingsDraft = editor = null;
   live = pending = false;
   if ($("#editor").open) $("#editor").close();
+  $("#editor-fields").replaceChildren();
   $("#view").replaceChildren();
   $("#workspace").hidden = true;
   $("#login-screen").hidden = false;
@@ -148,6 +151,7 @@ function accept(state) {
   $("#role-label").textContent = roleNames[state.role];
   if (editor && !state.capabilities[editor.capability]) {
     $("#editor").close();
+    $("#editor-fields").replaceChildren();
     editor = null;
     notice("权限已改变，当前操作已关闭", true);
   }
@@ -327,6 +331,7 @@ function renderAccess() {
 
 function renderSettings() {
   const v = settingsDraft ?? snapshot.settings;
+  const password = snapshot.connection_password;
   if (!settingsDraft) settingsRevision = snapshot.revision;
   $("#view").innerHTML = `<form id="settings-form" class="settings-form">
       <fieldset><legend>基本设置</legend>
@@ -348,8 +353,12 @@ function renderSettings() {
       </fieldset>
       ${snapshot.capabilities.settings ? '<div class="form-footer"><button type="submit" class="primary" id="save-settings">保存更改</button><button type="button" id="reset-settings">还原</button></div>' : '<p class="muted section">仅所有者可修改服务器设置</p>'}
       <div id="settings-conflict" role="alert"></div>
-      <section class="read-only"><h3>部署配置</h3><p>监听地址、服务器连接密码、Noise 私钥和存储目录由启动配置管理，需要在服务器上修改。</p></section>
-    </form>`;
+    </form>
+    <section class="read-only"><h3>服务器连接密码</h3>
+      <p>${password.enabled ? "已设置" : "未设置，仅可通过可信邀请公钥连接"}</p>
+      ${snapshot.capabilities.settings && password.editable ? command("修改密码", "change-server-password", "") + " " + command("重置密码", "reset-server-password", "") : `<p class="muted">${snapshot.capabilities.settings ? "认证存储暂不可用，请恢复存储并重启服务器。" : "仅所有者可管理"}</p>`}
+    </section>
+    <section class="read-only"><h3>部署配置</h3><p>监听地址、Noise 私钥和存储目录由启动配置管理。</p></section>`;
 }
 
 function readSettings() {
@@ -399,6 +408,7 @@ function closeEditor() {
     notice("已取消等待，操作可能已在服务端生效，请刷新状态核对", true);
   }
   $("#editor").close();
+  $("#editor-fields").replaceChildren();
   editor = null;
   setDisabled();
 }
@@ -423,6 +433,7 @@ async function showConflict(error) {
     button.textContent = "保留草稿，继续编辑";
     button.onclick = () => {
       $("#editor-form").dataset.revision = current.revision;
+      $("#editor-form").dataset.passwordRevision = current.connection_password.revision;
       $("#conflict").hidden = true;
       $("#editor-error").textContent = "请核对后再次保存";
     };
@@ -446,7 +457,33 @@ async function action(name, id) {
     }
     return;
   }
-  if (name === "create-channel" || name === "edit-channel") {
+  if (name === "change-server-password" || name === "reset-server-password") {
+    if (!snapshot.capabilities.settings || !snapshot.connection_password.editable) return;
+    if (name === "change-server-password") {
+      openEditor("修改服务器连接密码",
+        field("新密码", "password", "", 'type="password" autocomplete="new-password" required maxlength="1024"') +
+        field("确认新密码", "confirmation", "", 'type="password" autocomplete="new-password" required maxlength="1024"') +
+        '<p class="muted">至少 8 字节。保存后，新连接使用新密码；当前连麦不受影响。</p>',
+        "settings", (f) => {
+          if (f.elements.password.value !== f.elements.confirmation.value) throw new Error("两次输入的密码不一致");
+          const size = new TextEncoder().encode(f.elements.password.value).length;
+          if (size < 8 || size > 1024) throw new Error("密码需要 8–1024 字节");
+          if (/[\r\n\0]/.test(f.elements.password.value)) throw new Error("密码不能包含换行或空字符");
+          return api("/server-password", "PUT", {revision: f.dataset.passwordRevision, password: f.elements.password.value});
+        }, "连接密码已修改");
+    } else {
+      confirmAction("重置服务器连接密码", "生成随机新密码？当前连麦不受影响，之后连接需要新密码。新密码仅此次显示；若响应丢失，需核对状态后再次主动重置。", "settings",
+        async (f) => {
+          try {
+            return await api("/server-password", "POST", {revision: f.dataset.passwordRevision});
+          } catch (error) {
+            if (!error.status || error.status >= 500) error.message += "。密码可能已重置；若未收到新密码，请刷新核对后再次主动重置。";
+            throw error;
+          }
+        }, "连接密码已重置");
+    }
+    $("#editor-form").dataset.passwordRevision = snapshot.connection_password.revision;
+  } else if (name === "create-channel" || name === "edit-channel") {
     openEditor(
       ch ? "编辑频道" : "新建频道",
       field("频道名称", "name", ch?.name || "", 'required maxlength="100"') +
@@ -688,7 +725,7 @@ $("#login-form").addEventListener("submit", async (event) => {
 
 $("#editor-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (pending || !live || !editor) return;
+  if (pending || !live || !editor || typeof editor.submit !== "function") return;
   const operation = editor,
     epoch = ++operationEpoch;
   pending = true;
@@ -701,23 +738,26 @@ $("#editor-form").addEventListener("submit", async (event) => {
       Number(event.currentTarget.dataset.revision),
     );
     if (editor !== operation) return;
-    if (result.token) {
-      $("#editor-title").textContent = "登录凭据已创建";
+    if (result.token || result.password) {
+      const secret = result.password || result.token;
+      const label = result.password ? "连接密码" : "登录凭据";
+      $("#editor-title").textContent = label + "已创建";
       $("#editor-fields").innerHTML =
-        `<p>此凭据仅显示一次</p><div class="secret" id="new-secret">${esc(result.token)}</div><button type="button" id="copy-secret">${icon("copy")}复制凭据</button>`;
+        `<p>仅此次显示，请妥善保存</p><div class="secret" id="new-secret">${esc(secret)}</div><button type="button" id="copy-secret">${icon("copy")}复制${label}</button>`;
       $("#copy-secret").onclick = async () => {
         try {
-          await navigator.clipboard.writeText(result.token);
+          await navigator.clipboard.writeText(secret);
           $("#copy-secret").textContent = "已复制";
         } catch {
-          $("#editor-error").textContent = "复制失败，请选中凭据文字复制";
+          $("#editor-error").textContent = "复制失败，请选中文字复制";
         }
       };
       $("#save-editor").hidden = true;
       $("#cancel-editor").textContent = "完成";
-      editor = null;
+      editor = {capability: operation.capability};
     } else {
       $("#editor").close();
+      $("#editor-fields").replaceChildren();
       editor = null;
       notice(operation.success);
     }
@@ -861,6 +901,12 @@ async function logout() {
 $("#logout").onclick = logout;
 $("#editor-logout").onclick = logout;
 window.addEventListener("pagehide", () => {
+  generation++;
+  operationEpoch++;
+  pending = false;
+  editor = null;
+  $("#editor").close();
+  $("#editor-fields").replaceChildren();
   connected(false);
   stream?.close();
   clearTimeout(reconnect);

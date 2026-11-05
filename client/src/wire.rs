@@ -97,16 +97,10 @@ impl FrameReader {
 
 /// A seed is supplied by the caller. This foundation deliberately does not
 /// create or replace the product's existing persistent identity file.
-pub fn sign_hello(
-    seed: &[u8; 32],
-    binding: &[u8; 32],
-    nickname: String,
-    password: String,
-) -> Result<pb::Hello> {
+pub fn sign_hello(seed: &[u8; 32], binding: &[u8; 32], nickname: String) -> Result<pb::Hello> {
     let identity = SigningKey::from_bytes(seed);
     let mut hello = pb::Hello {
         nickname,
-        password,
         public_key: identity.verifying_key().to_bytes().to_vec(),
         signature: Vec::new(),
         receive_pokes: true,
@@ -188,7 +182,7 @@ mod tests {
     #[test]
     fn identity_proof_binds_transport_and_login() {
         let seed = [19; 32];
-        let hello = sign_hello(&seed, &[5; 32], "tester".into(), "test-only".into()).unwrap();
+        let hello = sign_hello(&seed, &[5; 32], "tester".into()).unwrap();
         let mut unsigned = hello.clone();
         unsigned.signature.clear();
         let mut hash = Sha256::new();
@@ -200,13 +194,13 @@ mod tests {
         key.verify(&hash.finalize(), &signature).unwrap();
         assert_ne!(
             hello.signature,
-            sign_hello(&seed, &[6; 32], "tester".into(), "test-only".into())
+            sign_hello(&seed, &[6; 32], "tester".into())
                 .unwrap()
                 .signature
         );
         assert_ne!(
             hello.signature,
-            sign_hello(&seed, &[5; 32], "other".into(), "test-only".into())
+            sign_hello(&seed, &[5; 32], "other".into())
                 .unwrap()
                 .signature
         );

@@ -1,6 +1,6 @@
 # Resona 应用协议
 
-唯一传输为 [Noise UDP](noise-protocol.md)，版本 `resona-noise-exp-6` / `RN06`。开发版客户端与服务端需匹配升级，不进行旧协议回退。
+唯一传输为 [Noise UDP](noise-protocol.md)，版本 `resona-noise-exp-7` / `RN07`。开发版客户端与服务端需匹配升级，不进行旧协议回退。可靠流先完成绑定 Noise 握手哈希的 OPAQUE 认证，再进入下述 Protobuf 帧；服务器共享密码不出现在 Hello 中，旧字段 2 已保留。
 
 ## 控制消息
 

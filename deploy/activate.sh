@@ -22,6 +22,16 @@ test -d "$root/access"
 docker image inspect "$image" >/dev/null
 test "$(docker inspect "$container" --format '{{.State.Running}}')" = true
 
+# Removing old password inputs without an explicit import could expose a server.
+old_command=$(docker inspect "$container" --format '{{json .Config.Cmd}}')
+case "$old_command" in
+  *--password-file*) echo 'Import the old connection password into KV offline and update the deployment before using activate.sh' >&2; exit 1 ;;
+esac
+if docker inspect "$container" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -qE '^RESONA_SERVER_PASSWORD(_FILE)?=.'; then
+  echo 'Import the old connection password into KV offline and remove password environment configuration first' >&2
+  exit 1
+fi
+
 # One upgrade per container; backups stay outside generated release packages.
 lock="$root/.upgrade-$container.lock"
 mkdir "$lock"
