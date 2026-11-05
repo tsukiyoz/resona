@@ -49,7 +49,8 @@ message AccountCommand {
 }
 message Hello {
   string nickname = 1;
-  string password = 2;
+  reserved 2; // Server passwords are authenticated by channel-bound PAKE.
+  reserved "password";
   bytes public_key = 3;
   bytes signature = 4;
   bool receive_pokes = 5;

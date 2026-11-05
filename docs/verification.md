@@ -1137,3 +1137,66 @@ data/access 并保留旧容器；沿用原私有环境、启动参数、公网 U
 TCP 9989。容器运行、重启次数 0、管理页 HTTP 200；未进入用户频道或做远端压测。
 本轮未修改/重打包桌面，现有路径 desktop/dist/Resona.app。预发 Go 从 1.26.2
 升至构建机 1.27.1，尚无同负载 Linux 前后性能对比。未提交、推送或打 tag。
+
+## 2026-11-05 PAKE 地址与密码连接
+
+RN07 使用 OPAQUE RFC 9807，绑定 Noise 握手哈希；有密码时可省略公钥，无密码
+仍须可信邀请 pin。指定 pin 始终校验，认证前不发 Hello/账号 Token，Hello 密码字段
+删除并 reserve。发现公钥不落盘，不改变已有凭据目标。原语音包、密钥更新、
+编解码和路由不变。依赖精确版本、评估提交及审计边界见 ADR-0036。
+
+Go internal 全量、serverauth/noiseudp/nativewire/server race、make lint、CLI 和
+deploy 测试、独立 controlcodec 测试通过。带音频 Rust 客户端 60 项单测、34 项
+真实 Go/Rust 互通通过，桌面 73 项单测和 1 项兼容测试通过；client audio/all-targets
+Clippy -D warnings、两端 cargo fmt --check、git diff --check 通过。
+验证正确/错误密码、公开服 pin、拒绝降级、跨 Noise binding、重放、认证等待取消、
+账号恢复、多人 Opus 与聊天同跑。Go net.Pipe 微基准约 0.75–0.78 ms/op、48.9 KiB、
+565 分配，包含 Go 两端，不含建档/WAN，不可解释为生产延迟或逐帧成本。
+
+后台 owner 改密/随机重置有随机编辑修订和私密文件原子持久化，文件缺失失败，
+不会读回旧环境密码。测试覆盖 CSRF/非 owner/冲突、文件重读、0600 权限、写失败
+保留旧认证；真实 UDP 测试覆盖旧 PAKE 已成功但未 Hello 的入服拒绝，已加入连接保留。
+本地隔离浏览器实际验证中文密码“两次不一致”错误、正确提交、随机重置确认、
+一次性展示及完成关闭后秘密/输入节点清空；修正 UTF-8 字节长度与 HTML minlength
+不一致、以及完成按钮被异步等待文案覆盖的问题。流程 agent 只读审查确认其余主要
+边界，复制失败、延迟响应/页面恢复等极端浏览器场景未逐一注入。
+
+make build-desktop 完成 macOS 签名打包，路径 desktop/dist/Resona.app。首次试用
+自定义开发版本后缀被原有包版本校验拒绝，按当前 VERSION=v0.3.0 重新打包成功；
+没有改版本或发布标签。Windows 实机/Intel macOS、主动网络对抗、独立密码学审查
+和大规模认证容量仍待验证，不将旧依赖审计当作当前版本安全背书。
+
+tsukiyo 部署 v0.3.0-pake-20261105 未提交开发快照，保留原 data/access 与私有环境，
+停服备份和旧容器可回退。公开 UDP 9988 与本机 TCP 9989 不变，后台 HTTP 200、
+容器运行且重启数 0。按维护者选择生成 0600 随机连接密码，宿主
+/opt/resona/server-password 链接到 access/server-password；容器 --password-file
+/access/server-password，因此后台原子替换后宿主入口仍查看最新密码。
+实际服务器探针正确密码成功、错误密码拒绝，未发送 Hello、未加入任何用户频道。
+密码/备份与探针只在忽略构建目录及服务器私有目录，未进入 Git/日志。未提交、
+推送或打 tag；新旧客户端/服务端不互通，验收需配套升级。
+
+## 2026-11-05: 认领码与连接认证存储收敛
+
+本段替代上述 RN07 初版的密码文件部署方式。认领码继续在资源 KV 保存 SHA-256
+摘要和固定 24 小时到期时间，认领时 CAS 同时消费并绑定 owner，不默认保留明文。
+连接认证另存 RESONA_AUTH 私有 KV，FileStorage、History=1、无 TTL，保存版本化
+OPAQUE 注册记录及配套密钥；不存明文密码，不发资源快照/SSE，不写日志。
+初始化标记阻止认证状态被删除后自动退为公开服。新增离线 password set/reset，
+输入只用 stdin，随机新密码确认提交后只 stdout 展示一次。旧启动密码输入拒绝，
+升级脚本在旧输入未处理前拒绝停服，避免漏导入导致公开访问。
+
+go test ./internal/... ./cmd/resona-server ./deploy、认证/server/CLI 的 race 检查、
+make lint 通过。覆盖认证记录原样跨重启、正误密码、缺失/删除/损坏/错误 TTL
+拒绝启动、旧认证入服拒绝、当前成员保留、取消不替换对象、未知写入回读协调，
+读回也失败时禁止新入服。CLI 锁冲突不输出秘密，不生成明文文件；记录解析测试
+覆盖错误版本、损坏密钥/注册记录、未知字段、超长及尾随数据。Rust client audio
+60 项单测、34 项 Go/Rust 真实互通通过。后台流程只读审查无阻塞发现；本轮未重跑
+浏览器后退/取消的人工注入验收，JS 语法检查通过。
+
+tsukiyo 已部署 v0.3.0-authkv-20261105 开发快照（未提交，基线 9ccfd97）。停服后
+备份完整 data/access，将原连接密码显式导入 KV，密码不变；正误密码握手检查
+在部署后及重启后各通过一次，未发送 Hello、未加入频道。活动目录不再保留
+owner-claim、server-password 或 access/server-password；旧备份仍属私密数据。
+备份位于 /opt/resona/backups/resona-server.authkv-pzvTHj，配套旧容器保留；回退须
+停服恢复对应数据快照，不能直接让旧版本读取新增字段。Windows 实机和独立安全
+审查仍待完成，不把该部署快照视为发布或协议审计结果。

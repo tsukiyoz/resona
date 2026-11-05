@@ -18,18 +18,28 @@ import (
 	w "github.com/tsukiyoz/resona/internal/nativewire"
 	"github.com/tsukiyoz/resona/internal/noiseudp"
 	"github.com/tsukiyoz/resona/internal/server"
+	"github.com/tsukiyoz/resona/internal/serverauth"
 )
 
 func main() {
 	loss := flag.Bool("loss", false, "drop first handshake response and control ACK in both directions")
 	blackhole := flag.Bool("blackhole-acks", false, "drop all server control ACKs")
 	application := flag.Bool("server", false, "run the real application server")
+	password := flag.String("server-password", "local-test-only", "fixture server password")
+	authFault := flag.String("auth-fault", "", "binding mismatch or pause after KE1")
 	slow := flag.Bool("slow-command-acks", false, "drop the first two post-login control ACKs")
 	vectors := flag.Bool("vectors", false, "print fixed-key Go rekey reference vectors")
 	codec := flag.Bool("codec", false, "local Opus cross-language reference")
 	recovery := flag.Bool("account-recovery", false, "rotate recovery credentials, then interrupt the first channel restore")
 	directory := flag.String("data-dir", "", "caller-owned temporary server storage for restart tests")
 	flag.Parse()
+	if *authFault != "" {
+		if err := authenticationFault(*authFault); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if *recovery {
 		if err := accountRecovery(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -48,13 +58,59 @@ func main() {
 		printVectors()
 		return
 	}
-	if err := run(*loss, *blackhole, *application, *slow, *directory); err != nil {
+	if err := run(*loss, *blackhole, *application, *slow, *directory, *password); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func run(loss, blackhole, application, slow bool, directory string) error {
+func authenticationFault(fault string) error {
+	key, err := noiseudp.GenerateKey()
+	if err != nil {
+		return err
+	}
+	public, _ := noiseudp.PublicKey(key)
+	l, err := noiseudp.Listen("127.0.0.1:0", key, 1)
+	if err != nil {
+		return err
+	}
+	defer l.Close()
+	if err := announce(l.Addr().String(), public); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, err := l.Accept(ctx)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+	if fault == "pause" {
+		if _, err := c.Write([]byte{1}); err != nil {
+			return err
+		}
+		if _, err := io.ReadFull(c, make([]byte, 96)); err != nil {
+			return err
+		}
+		// Never send KE2. The client must cancel and close, without sending Hello.
+		_, err := c.Read(make([]byte, 1))
+		if err == nil {
+			return fmt.Errorf("unexpected application data before authentication")
+		}
+		return nil
+	}
+	auth, err := serverauth.New("local-test-only")
+	if err != nil {
+		return err
+	}
+	binding := c.ChannelBinding()
+	binding[0] ^= 1
+	_ = auth.Accept(c, binding)
+	return nil
+}
+
+func run(loss, blackhole, application, slow bool, directory, password string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 	go func() { _, _ = io.Copy(io.Discard, os.Stdin); cancel() }()
@@ -84,7 +140,12 @@ func run(loss, blackhole, application, slow bool, directory string) error {
 				return err
 			}
 		}
-		s, err := server.Listen("127.0.0.1:0", server.Config{Store: store, NoiseKey: key, Name: "Rust interop", Password: "local-test-only", MaxClients: 4})
+		if password != "" {
+			if err := store.SetConnectionPassword(context.Background(), password); err != nil {
+				return err
+			}
+		}
+		s, err := server.Listen("127.0.0.1:0", server.Config{Store: store, NoiseKey: key, Name: "Rust interop", MaxClients: 4})
 		if err != nil {
 			return err
 		}
@@ -178,7 +239,7 @@ func startProxy(target *net.UDPAddr, loss, blackhole, slow bool) (*net.UDPConn, 
 				continue
 			}
 			kind := byte(0)
-			if n >= 5 && string(buffer[:4]) == "RN06" {
+			if n >= 5 && string(buffer[:4]) == "RN07" {
 				kind = buffer[4]
 			} else if n > 0 {
 				kind = buffer[0] & 0x7f
@@ -186,7 +247,8 @@ func startProxy(target *net.UDPAddr, loss, blackhole, slow bool) (*net.UDPConn, 
 			id := fmt.Sprintf("%s-%d", direction, kind)
 			if slow && direction == "down" && kind == 6 {
 				acks++
-				if acks == 2 || acks == 3 {
+				// KE1 and KE3 precede Hello; delay the first application command.
+				if acks == 4 || acks == 5 {
 					continue
 				}
 			}

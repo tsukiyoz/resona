@@ -34,6 +34,7 @@ pub enum Error {
     Busy,
     InvalidInput,
     AuthenticationRejected,
+    ServerTrustRequired,
     CredentialStorage,
 }
 pub type Result<T> = std::result::Result<T, Error>;
@@ -61,6 +62,7 @@ impl Error {
     pub fn message(&self) -> &'static str {
         match self {
             Self::CredentialStorage => "无法读取已保存登录，请允许系统凭据访问后重试",
+            Self::ServerTrustRequired => "请输入服务器密码；无密码服务器需要邀请信息中的公钥",
             Self::Transport(noise::Error::RemoteClosed(3)) => {
                 "你已被管理员移出服务器，可手动重新连接"
             }
@@ -75,7 +77,7 @@ impl Error {
                 "账号登录已过期或凭据已更改，请重新登录"
             }
             Self::AuthenticationRejected | Self::Transport(noise::Error::RemoteClosed(2)) => {
-                "服务器拒绝连接，请检查服务器密码"
+                "服务器密码认证失败，请检查密码及连接信息"
             }
             Self::Transport(noise::Error::Authentication) => "服务器公钥验证失败，请检查连接信息",
             Self::InvalidState => "服务器响应无效，请确认客户端与服务器版本一致",
@@ -585,22 +587,33 @@ impl Session {
     ) -> Result<Self> {
         profile.validate().map_err(|_| Error::InvalidInput)?;
         let endpoint = profile.endpoint().map_err(|_| Error::InvalidInput)?;
-        let key = profile.public_key().map_err(|_| Error::InvalidInput)?;
+        let key = if profile.server_public_key.is_empty() {
+            if password.is_empty() {
+                return Err(Error::ServerTrustRequired);
+            }
+            None
+        } else {
+            Some(profile.public_key().map_err(|_| Error::InvalidInput)?)
+        };
         let mut addresses = tokio::select! {
             biased;
             _=cancel.cancelled()=>return Err(Error::Cancelled),
             r=timeout_at(deadline,tokio::net::lookup_host(endpoint))=>r.map_err(|_|Error::Timeout)?.map_err(|e|Error::from(noise::Error::Io(e.kind())))?,
         };
         let address = addresses.next().ok_or(Error::InvalidInput)?;
-        let mut conn = timeout_at(deadline, Connection::dial(address, &key, cancel))
-            .await
-            .map_err(|_| Error::Timeout)??;
+        let mut conn = timeout_at(
+            deadline,
+            Connection::dial_optional(address, key.as_ref(), cancel),
+        )
+        .await
+        .map_err(|_| Error::Timeout)??;
         let admitted = async {
+            crate::server_auth::authenticate(&mut conn, password, key.is_some(), deadline, cancel)
+                .await?;
             let hello = wire::sign_hello(
                 identity.seed(),
                 conn.channel_binding(),
                 profile.nickname.clone(),
-                password.into(),
             )?;
             wire::send(
                 &conn.control_tx,

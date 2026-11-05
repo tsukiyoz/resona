@@ -491,8 +491,9 @@ impl ResonaApp {
         let address_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("voice.example.com"));
         let nickname_input = cx.new(|cx| InputState::new(window, cx).placeholder("昵称"));
-        let public_key_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("必填，64位十六进制服务器公钥"));
+        let public_key_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("有密码可留空；无密码时填写邀请公钥")
+        });
         let password_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("服务器密码，可留空")
@@ -3058,7 +3059,7 @@ impl ResonaApp {
         {
             Some(server) if server.supports_connection() => true,
             Some(_) => {
-                self.error = "此书签版本已停止支持，请使用服务器地址和公钥重新添加".into();
+                self.error = "此书签版本已停止支持，请重新添加服务器连接信息".into();
                 false
             }
             None => {
@@ -7263,7 +7264,7 @@ impl ResonaApp {
                         .child(field("地址", Input::new(&self.address_input)))
                         .child(field("昵称", Input::new(&self.nickname_input)))
                         .child(field(
-                            "服务器公钥 X25519（必填）",
+                            "服务器公钥（可选）",
                             Input::new(&self.public_key_input),
                         ))
                         .child(

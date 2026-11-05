@@ -21,6 +21,9 @@ func newServeCommand(configDir string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "serve", Short: "Run the voice server", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if os.Getenv("RESONA_SERVER_PASSWORD") != "" || os.Getenv("RESONA_SERVER_PASSWORD_FILE") != "" {
+				return errors.New("connection password environment configuration is unsupported; use password set --password-stdin with the same access directory")
+			}
 			if voiceQueueSlots < 1 || voiceQueueSlots > server.MaxVoiceQueueSlots {
 				return fmt.Errorf("--voice-queue-slots must be between 1 and %d", server.MaxVoiceQueueSlots)
 			}
@@ -34,7 +37,7 @@ func newServeCommand(configDir string) *cobra.Command {
 			return store.withStore(func(store *server.Store) error {
 				s, err := server.Listen(address, server.Config{
 					Store: store, NoiseKey: key,
-					Name: name, Password: os.Getenv("RESONA_SERVER_PASSWORD"), MaxClients: maxClients,
+					Name: name, MaxClients: maxClients,
 					VoiceQueueSlots: voiceQueueSlots,
 				})
 				if err != nil {

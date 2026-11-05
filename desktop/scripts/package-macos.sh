@@ -67,6 +67,7 @@ if otool -L "$bundle_dir/Contents/Frameworks/libresona_webrtc_apm.dylib" | tail 
 fi
 cp "$icon_tmp/Resona.icns" "$bundle_dir/Contents/Resources/Resona.icns"
 cp "$repo_dir/docs/noise-license.txt" "$bundle_dir/Contents/Resources/noise-license.txt"
+cp "$repo_dir/docs/pake-licenses.txt" "$bundle_dir/Contents/Resources/pake-licenses.txt"
 python3 "$repo_dir/native/webrtc-apm/licenses.py" "$repo_dir/native/webrtc-apm/Cargo.toml" \
   "$bundle_dir/Contents/Resources/licenses" "$repo_dir/native/webrtc-apm/target"
 cp "$repo_dir/build/native/opus-source/COPYING" "$bundle_dir/Contents/Resources/licenses/Opus.txt"

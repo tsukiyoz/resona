@@ -7,7 +7,7 @@ import (
 )
 
 func TestFramesAndVoiceBounds(t *testing.T) {
-	b, err := Pack(HelloKind, 0, Hello{Nickname: "tester", Password: "secret"})
+	b, err := Pack(HelloKind, 0, Hello{Nickname: "tester"})
 	if err != nil {
 		t.Fatal(err)
 	}

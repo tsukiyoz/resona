@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -253,8 +254,7 @@ func TestCookieAndCancelledHandshake(t *testing.T) {
 	wrongPub, _ := PublicKey(wrong)
 	ctx, cancel = context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	if c, e := Dial(ctx, l.Addr().String(), wrongPub); e == nil {
-		c.Close()
-		t.Fatal("wrong server key accepted")
+	if _, e := Dial(ctx, l.Addr().String(), wrongPub); !errors.Is(e, ErrServerAuthentication) {
+		t.Fatalf("wrong server key should fail without retry/fallback: %v", e)
 	}
 }

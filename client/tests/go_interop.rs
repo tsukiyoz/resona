@@ -2248,6 +2248,123 @@ async fn incorrect_server_key_never_establishes_a_session() {
 }
 
 #[tokio::test]
+async fn password_only_connection_and_public_server_trust_policy() {
+    use resona_client::{
+        config::{Identity, ServerProfile},
+        session::{Error as SessionError, Session},
+    };
+    let (_peer, address, _) = start_peer(&["-server"]);
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::load_or_create(&dir.path().join("identity")).unwrap();
+    let mut profile = ServerProfile {
+        protocol: "resona-noise".into(),
+        id: "password-only".into(),
+        name: "test".into(),
+        nickname: "guest".into(),
+        address: address.to_string(),
+        ..Default::default()
+    };
+    let cancel = CancellationToken::new();
+    assert!(matches!(
+        Session::connect(&profile, &identity, "", &cancel).await,
+        Err(SessionError::ServerTrustRequired)
+    ));
+    assert!(matches!(
+        Session::connect(&profile, &identity, "wrong", &cancel).await,
+        Err(SessionError::AuthenticationRejected)
+    ));
+    let session = Session::connect(&profile, &identity, "local-test-only", &cancel)
+        .await
+        .unwrap();
+    assert!(
+        profile.server_public_key.is_empty(),
+        "discovered keys must not change the bookmark or credential destination"
+    );
+    session.close().await;
+
+    let (_public, address, key) = start_peer(&["-server", "-server-password", ""]);
+    profile.address = address.to_string();
+    assert!(matches!(
+        Session::connect(&profile, &identity, "secret", &cancel).await,
+        Err(SessionError::AuthenticationRejected)
+    ));
+    profile.server_public_key = key.iter().map(|b| format!("{b:02x}")).collect();
+    let session = Session::connect(&profile, &identity, "", &cancel)
+        .await
+        .unwrap();
+    session.close().await;
+}
+
+#[tokio::test]
+async fn cancelling_password_authentication_does_not_send_identity() {
+    use resona_client::server_auth;
+    // The raw fixture sends its channel binding then echoes bytes; it is not
+    // an application server and cannot complete PAKE or receive a Hello.
+    let (_peer, address, key) = peer(false);
+    let cancel = CancellationToken::new();
+    let mut conn = Connection::dial(address, &key, &cancel).await.unwrap();
+    let mut binding = [0; 32];
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut offset = 0;
+    while offset < binding.len() {
+        offset += conn
+            .control_rx
+            .read(&mut binding[offset..], deadline, &cancel)
+            .await
+            .unwrap();
+    }
+    let trigger = cancel.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        trigger.cancel();
+    });
+    let error = server_auth::authenticate(&mut conn, "secret", true, deadline, &cancel)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error,
+        resona_client::session::Error::Transport(Error::Cancelled)
+    );
+    conn.close().await;
+}
+
+#[tokio::test]
+async fn pake_rejects_another_noise_channel_and_cancels_while_waiting_for_ke2() {
+    for fault in ["binding", "pause"] {
+        let (_peer, address, _) = start_peer(&["-auth-fault", fault]);
+        let cancel = CancellationToken::new();
+        let mut conn = Connection::dial_optional(address, None, &cancel)
+            .await
+            .unwrap();
+        if fault == "pause" {
+            let trigger = cancel.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                trigger.cancel();
+            });
+        }
+        let error = resona_client::server_auth::authenticate(
+            &mut conn,
+            "local-test-only",
+            false,
+            Instant::now() + Duration::from_secs(2),
+            &cancel,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error,
+            if fault == "pause" {
+                resona_client::session::Error::Transport(Error::Cancelled)
+            } else {
+                resona_client::session::Error::AuthenticationRejected
+            }
+        );
+        conn.close().await;
+    }
+}
+
+#[tokio::test]
 async fn cancel_pending_handshake_and_pending_read() {
     let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let address = socket.local_addr().unwrap();
@@ -2525,15 +2642,23 @@ async fn go_server_authentication_and_jetstream_chat() {
     let (_peer, address, key) = start_peer(&["-server"]);
     let cancel = CancellationToken::new();
     let mut connection = Connection::dial(address, &key, &cancel).await.unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    resona_client::server_auth::authenticate(
+        &mut connection,
+        "local-test-only",
+        true,
+        deadline,
+        &cancel,
+    )
+    .await
+    .unwrap();
     let hello = wire::sign_hello(
         &[11; 32],
         connection.channel_binding(),
         "Rust tester".into(),
-        "local-test-only".into(),
     )
     .unwrap();
     let expected_uid = wire::identity_uid(hello.public_key.as_slice().try_into().unwrap());
-    let deadline = Instant::now() + Duration::from_secs(5);
     wire::send(
         &connection.control_tx,
         pb::Kind::Hello,
@@ -2608,9 +2733,25 @@ async fn go_server_rejects_wrong_password_and_replayed_identity_proof() {
         } else {
             "local-test-only"
         };
-        let hello =
-            wire::sign_hello(&[13; 32], &binding, "Rust rejected".into(), password.into()).unwrap();
         let deadline = Instant::now() + Duration::from_secs(2);
+        let authenticated = resona_client::server_auth::authenticate(
+            &mut connection,
+            password,
+            true,
+            deadline,
+            &cancel,
+        )
+        .await;
+        if wrong_password {
+            assert!(matches!(
+                authenticated,
+                Err(resona_client::session::Error::AuthenticationRejected)
+            ));
+            connection.close().await;
+            continue;
+        }
+        authenticated.unwrap();
+        let hello = wire::sign_hello(&[13; 32], &binding, "Rust rejected".into()).unwrap();
         let sent = wire::send(
             &connection.control_tx,
             pb::Kind::Hello,

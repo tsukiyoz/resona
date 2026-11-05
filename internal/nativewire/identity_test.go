@@ -39,7 +39,7 @@ func TestIdentityProofThroughInstrumentedConnection(t *testing.T) {
 func TestIdentityProofBindsHelloAndTransport(t *testing.T) {
 	pub, key, _ := ed25519.GenerateKey(rand.Reader)
 	binding := bytes.Repeat([]byte{1}, 32)
-	hello := Hello{Nickname: "tester", Password: "test-only", PublicKey: pub}
+	hello := Hello{Nickname: "tester", PublicKey: pub}
 	proof, err := identityProof(binding, hello)
 	if err != nil {
 		t.Fatal(err)
@@ -47,7 +47,6 @@ func TestIdentityProofBindsHelloAndTransport(t *testing.T) {
 	sig := ed25519.Sign(key, proof)
 	for _, mutate := range []func(*Hello, []byte){
 		func(h *Hello, b []byte) { h.Nickname = "other" },
-		func(h *Hello, b []byte) { h.Password = "other" },
 		func(h *Hello, b []byte) { h.ReceivePokes = !h.ReceivePokes },
 		func(h *Hello, b []byte) { b[0]++ },
 		func(h *Hello, b []byte) { h.PublicKey = bytes.Repeat([]byte{3}, 32) },

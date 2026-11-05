@@ -46,7 +46,7 @@ func marshalBody(kind uint8, value any) (proto.Message, error) {
 		}
 	case Hello:
 		if kind == HelloKind {
-			return &pb.Hello{Nickname: v.Nickname, Password: v.Password, PublicKey: v.PublicKey, Signature: v.Signature, ReceivePokes: v.ReceivePokes}, nil
+			return &pb.Hello{Nickname: v.Nickname, PublicKey: v.PublicKey, Signature: v.Signature, ReceivePokes: v.ReceivePokes}, nil
 		}
 	case ClaimOwner:
 		if kind == ClaimOwnerKind {
@@ -206,7 +206,7 @@ func decodeBody(f Frame, value any) error {
 		if err := unmarshal.Unmarshal(f.Body, &v); err != nil {
 			return err
 		}
-		*out = Hello{Nickname: v.Nickname, Password: v.Password, PublicKey: v.PublicKey, Signature: v.Signature, ReceivePokes: v.ReceivePokes}
+		*out = Hello{Nickname: v.Nickname, PublicKey: v.PublicKey, Signature: v.Signature, ReceivePokes: v.ReceivePokes}
 	case *ClaimOwner:
 		if out == nil || f.Kind != ClaimOwnerKind {
 			return ErrPacket

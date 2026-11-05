@@ -22,15 +22,16 @@ const resourceKey = "state"
 // resourceRecord is one CAS transaction: claiming an owner consumes its claim,
 // and channel creation advances the non-reusable ID allocator in the same write.
 type resourceRecord struct {
-	Version           int               `json:"version"`
-	Channels          channelRecord     `json:"channels"`
-	Owner             string            `json:"owner,omitempty"`
-	Claim             claimSecret       `json:"claim"`
-	Admins            []string          `json:"admins,omitempty"`
-	Credentials       []AdminCredential `json:"credentials,omitempty"`
-	Bans              []Ban             `json:"bans,omitempty"`
-	Settings          *ServerSettings   `json:"settings,omitempty"`
-	AccountIdentities bool              `json:"account_identities,omitempty"`
+	Version                   int               `json:"version"`
+	Channels                  channelRecord     `json:"channels"`
+	Owner                     string            `json:"owner,omitempty"`
+	Claim                     claimSecret       `json:"claim"`
+	Admins                    []string          `json:"admins,omitempty"`
+	Credentials               []AdminCredential `json:"credentials,omitempty"`
+	Bans                      []Ban             `json:"bans,omitempty"`
+	Settings                  *ServerSettings   `json:"settings,omitempty"`
+	AccountIdentities         bool              `json:"account_identities,omitempty"`
+	AuthenticationInitialized bool              `json:"authentication_initialized,omitempty"`
 }
 
 // Store owns one embedded broker shared by chat and durable management state.
@@ -40,6 +41,7 @@ type Store struct {
 	accounts   *accounts.Store
 	chat       *chatStore
 	kv         jetstream.KeyValue
+	authKV     jetstream.KeyValue
 	updateGate chan struct{}
 	mu         sync.RWMutex
 	record     resourceRecord
@@ -133,6 +135,9 @@ func OpenStore(cfg ChatConfig, legacyDir string, seed []w.Channel) (_ *Store, er
 			return nil, e
 		}
 		s.record, s.revision = record, rev
+	}
+	if err = s.openAuthentication(ctx); err != nil {
+		return nil, err
 	}
 	return s, nil
 }
@@ -248,7 +253,8 @@ func (s *Store) install(r resourceRecord, revision uint64) error {
 }
 
 func validResourceTransition(before, after resourceRecord) error {
-	if (before.Owner != "" && after.Owner != before.Owner) || after.Channels.Next < before.Channels.Next ||
+	if (before.AuthenticationInitialized && !after.AuthenticationInitialized) ||
+		(before.Owner != "" && after.Owner != before.Owner) || after.Channels.Next < before.Channels.Next ||
 		after.Channels.Default != before.Channels.Default {
 		return errors.New("resource update violates immutable owner/default channel/ID sequence")
 	}

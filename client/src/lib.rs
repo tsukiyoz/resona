@@ -14,6 +14,7 @@ pub mod lifecycle;
 pub mod model;
 pub mod noise;
 pub mod resources;
+pub mod server_auth;
 pub mod session;
 pub mod updates;
 pub mod wire;

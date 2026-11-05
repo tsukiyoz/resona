@@ -57,7 +57,6 @@ type Frame struct {
 type Hello struct {
 	ReceivePokes bool
 	Nickname     string
-	Password     string
 	PublicKey    []byte
 	Signature    []byte
 }

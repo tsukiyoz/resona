@@ -6,8 +6,6 @@ services:
     image: resona-server:local
     ports:
       - "${RESONA_BIND_IP:-127.0.0.1}:${RESONA_PORT:-9988}:9988/udp"
-    environment:
-      RESONA_SERVER_PASSWORD: "${RESONA_SERVER_PASSWORD:-}"
     volumes:
       - server-data:/data
     read_only: true

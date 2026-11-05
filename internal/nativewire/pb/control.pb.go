@@ -389,7 +389,6 @@ func (x *AccountCommand) GetNickname() string {
 type Hello struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Nickname      string                 `protobuf:"bytes,1,opt,name=nickname,proto3" json:"nickname,omitempty"`
-	Password      string                 `protobuf:"bytes,2,opt,name=password,proto3" json:"password,omitempty"`
 	PublicKey     []byte                 `protobuf:"bytes,3,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
 	Signature     []byte                 `protobuf:"bytes,4,opt,name=signature,proto3" json:"signature,omitempty"`
 	ReceivePokes  bool                   `protobuf:"varint,5,opt,name=receive_pokes,json=receivePokes,proto3" json:"receive_pokes,omitempty"`
@@ -430,13 +429,6 @@ func (*Hello) Descriptor() ([]byte, []int) {
 func (x *Hello) GetNickname() string {
 	if x != nil {
 		return x.Nickname
-	}
-	return ""
-}
-
-func (x *Hello) GetPassword() string {
-	if x != nil {
-		return x.Password
 	}
 	return ""
 }
@@ -1628,14 +1620,13 @@ const file_control_proto_rawDesc = "" +
 	"\bpassword\x18\x03 \x01(\tR\bpassword\x12\x14\n" +
 	"\x05token\x18\x04 \x01(\tR\x05token\x12!\n" +
 	"\fnew_password\x18\x05 \x01(\tR\vnewPassword\x12\x1a\n" +
-	"\bnickname\x18\x06 \x01(\tR\bnickname\"\xa1\x01\n" +
+	"\bnickname\x18\x06 \x01(\tR\bnickname\"\x95\x01\n" +
 	"\x05Hello\x12\x1a\n" +
-	"\bnickname\x18\x01 \x01(\tR\bnickname\x12\x1a\n" +
-	"\bpassword\x18\x02 \x01(\tR\bpassword\x12\x1d\n" +
+	"\bnickname\x18\x01 \x01(\tR\bnickname\x12\x1d\n" +
 	"\n" +
 	"public_key\x18\x03 \x01(\fR\tpublicKey\x12\x1c\n" +
 	"\tsignature\x18\x04 \x01(\fR\tsignature\x12#\n" +
-	"\rreceive_pokes\x18\x05 \x01(\bR\freceivePokes\"\"\n" +
+	"\rreceive_pokes\x18\x05 \x01(\bR\freceivePokesJ\x04\b\x02\x10\x03R\bpassword\"\"\n" +
 	"\n" +
 	"ClaimOwner\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\"_\n" +

@@ -12,7 +12,40 @@ build/bin/resona-server serve --listen 127.0.0.1:9988
 ```
 
 CLI 使用 Cobra；`--help`、`serve --help`、`owner --help` 查看命令。
-初始化私钥不会覆盖已有文件。`identity init` 输出公钥，客户端添加地址和公钥后连接。`owner init` 输出一次性认领码，不写日志；用户在客户端认领成为 owner。共享连接密码通过 `RESONA_SERVER_PASSWORD` 环境变量配置，缺省为空。所有操作使用显式子命令；根命令只显示帮助，不启动服务。参数放在对应叶子命令之后，例如 `serve --listen ...` 或 `owner init --access-dir ...`。旧初始化 flags 和根命令启动方式已移除，更新自定义 service/container 时须同步修改启动参数。
+初始化私钥不会覆盖已有文件。`identity init` 输出公钥；无密码服务器通过可信邀请公钥连接，有密码服务器可只用地址和连接密码，通过 OPAQUE 认证发现的公钥。`owner init` 输出一次性认领码，不写日志；用户在客户端认领成为 owner。所有操作使用显式子命令；根命令只显示帮助，不启动服务。参数放在对应叶子命令之后，例如 `serve --listen ...` 或 `owner init --access-dir ...`。
+
+### 共享连接密码
+
+停止服务，在同一数据目录显式初始化或修改连接密码：
+
+```sh
+build/bin/resona-server password set --access-dir /path/to/access --password-stdin
+# 或生成随机密码，持久化成功后仅向 stdout 展示一次：
+build/bin/resona-server password reset --access-dir /path/to/access
+```
+
+`set` 从 stdin 读取 UTF-8 密码，允许输入结尾一个换行（含 CRLF），不回显密码。
+自定义 `--chat-dir` 时管理命令必须传入相同目录。新数据目录默认为无密码公开服；
+有密码服务器必须先执行上述命令。`serve` 不再接受 `--password-file` 或密码环境变量，
+旧部署升级时先停服备份，通过 `password set --password-stdin` 显式导入原密码，
+再移除旧启动参数、环境变量和明文文件。不会自动读取或覆盖旧秘密文件。
+
+私有 `RESONA_AUTH` KV 保存版本化的 OPAQUE 注册记录和配套服务端密钥，不保存
+明文密码；FileStorage、History=1、无 TTL。普通管理资源、state/events 和日志不包含
+该记录；完整数据备份仍须按私钥保管。初始化标记与管理资源一起保存，已经初始化
+的认证桶/记录缺失、被删除、格式无效或配置了 TTL 时拒绝启动，不降级为公开服。
+
+owner 可在后台“服务器设置 → 服务器连接密码”修改或随机重置。修改至少 8 字节、
+最多 1024 字节，不允许换行/NUL；不支持通过空值关闭密码。随机重置生成至少 128 bit
+随机密码，仅响应展示一次。变化先 KV CAS 持久化再发布，重启加载相同认证记录；现有连麦不重启，
+新连接和重连使用新密码。后台没有旧密码查询接口。取消等待或存储/网络结果未知时，
+刷新检查状态；若随机新密码没有收到，核对修订后再次主动重置。服务端不能找回
+明文。写入失败回读权威记录；若连回读也失败，暂停新连接认证，恢复存储并重启，
+原有语音连接继续。不会自动重发修改或向日志输出秘密。
+
+空密码公开服必须使用含可信公钥的邀请；共享密码持有者
+也可冒充同密码服务器，特别需要固定服务器身份时仍填写可信公钥。OPAQUE 仅在连接
+时运行，不改变语音逐包路径。协议已升级 RN07，旧客户端须同步更新（ADR-0036）。
 
 `--noise-key` 指定 32 字节服务器私钥；默认位于系统用户配置目录的 `resona-server/noise.key`。`--access-dir` 指定数据访问锁和旧配置导入目录，默认 `resona-server/access`。配置与聊天共用该目录下 `chat/` 中的一个内置 JetStream，也可用 `--chat-dir` 显式指定完整 JetStream 目录。备份私钥和完整数据目录，不提交仓库；定制 `--chat-dir` 时它也必须进入备份。
 
@@ -37,8 +70,11 @@ CLI 使用 Cobra；`--help`、`serve --help`、`owner --help` 查看命令。
 频道、单调递增的频道 ID、owner/admin 身份、认领码摘要/有效期、封禁、管理凭据摘要和在线设置保存在
 `RESONA_RESOURCES` KV 桶的 `state` 文档中。一次 CAS 同时完成相关字段修改。
 仅保存最新修订，单值最大 128 KiB、桶逻辑上限 2 MiB，不设置 TTL，
-聊天淘汰不会删除管理资源。监听地址、连接密码和 Noise 私钥仍由启动参数、
-环境与私钥文件管理，不发给订阅者。
+聊天淘汰不会删除管理资源。认领码由 `owner init` 显式生成并仅 stdout 展示一次，
+有效期 24 小时；到期立即拒绝，不依赖物理删除。认领成功在同一次 CAS 中绑定 owner
+并消费摘要；重启不延长有效期，不默认创建明文文件。已绑定 owner 不能重置认领码。
+连接密码认证数据另存私有 `RESONA_AUTH` KV，不参与资源订阅；监听地址与 Noise
+私钥仍由启动配置管理。
 
 第一次创建 KV 时只导入已有 `channels.json`，原文件不改写。
 旧设备的 owner/admin、管理凭据、认领码及封禁在本次账号体系升级中清空一次，
@@ -126,7 +162,11 @@ Casbin RBAC 策略目前固定在代码中，KV 保存角色分配；尚不开�
 不能降至当前在线人数以下；每频道 1–10000 条，全服逻辑容量 16 KiB–4 GiB，
 时长 1 秒–365 天。缩小保留范围可能立即删除旧消息，网页保存前要求确认。
 KV 保存期望设置后应用 JetStream retention；存储错误/超时可能结果未知，应刷新核对，
-不能把它视作已回滚。监听地址、连接密码、Noise 私钥和数据目录仍属于启动配置。
+不能把它视作已回滚。监听地址、Noise 私钥和数据目录仍属于启动配置。
+
+连接密码另用 `PUT /api/admin/v1/server-password`（指定新密码）或 `POST`（随机重置）；
+两者携带 `connection_password.revision` 的随机字符串，而非普通 KV 数字 revision。
+仅 owner 可调用，同样要求会话、Origin 和 CSRF；原密码及 verifier 不在 state/events 中。
 
 接口位于 `/api/admin/v1`：`login/logout/session/state/events`，频道 CRUD 与排序、
 成员 move/kick、角色、封禁、credentials 和 settings。写请求携带 CSRF token，

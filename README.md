@@ -49,7 +49,7 @@ go test ./internal/... ./cmd/... ./tools/desktop-perf
 ## 数据与边界
 
 - 书签与原生身份位于系统用户配置目录的 `resona/`。密码仅存 macOS Keychain 或 Windows Credential Manager。
-- 添加服务器需要地址和可信渠道获得的 X25519 公钥，不自动信任未知公钥。
+- 有密码服务器使用地址和连接密码，通过 PAKE 自动认证公钥；无密码服务器需要可信邀请中的 X25519 公钥。已填写的公钥始终严格校验。客户端与 RN07 服务端需配套升级。
 - 不支持的旧书签保留供删除或重新编辑，不能发起连接。
 - 音频采集、处理、编解码与混音由 Rust 客户端专用 worker 拥有，复用原生 Opus/SpeexDSP/WebRTC/RNNoise；服务端不做编解码。
 - 调试本地预览不联网；麦克风试听不向频道发送。服务器 JetStream 保存有限近期历史，客户端显示缓存最多 500 条 / 512 KiB。

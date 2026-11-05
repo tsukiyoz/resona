@@ -32,21 +32,22 @@ type AdminChannel struct {
 }
 
 type AdminSnapshot struct {
-	Revision       uint64             `json:"revision"`
-	Identity       string             `json:"identity"`
-	Role           string             `json:"role"`
-	Capabilities   map[string]bool    `json:"capabilities"`
-	Name           string             `json:"name"`
-	MaxClients     int                `json:"max_clients"`
-	DefaultChannel uint16             `json:"default_channel"`
-	Channels       []AdminChannel     `json:"channels"`
-	Members        []AdminMember      `json:"members"`
-	Owner          string             `json:"owner"`
-	Admins         []string           `json:"admins"`
-	Credentials    []AdminCredential  `json:"credentials,omitempty"`
-	Bans           []Ban              `json:"bans"`
-	Settings       *ServerSettings    `json:"settings"`
-	Accounts       []accounts.Account `json:"accounts"`
+	Revision           uint64                   `json:"revision"`
+	Identity           string                   `json:"identity"`
+	Role               string                   `json:"role"`
+	Capabilities       map[string]bool          `json:"capabilities"`
+	Name               string                   `json:"name"`
+	MaxClients         int                      `json:"max_clients"`
+	DefaultChannel     uint16                   `json:"default_channel"`
+	Channels           []AdminChannel           `json:"channels"`
+	Members            []AdminMember            `json:"members"`
+	Owner              string                   `json:"owner"`
+	Admins             []string                 `json:"admins"`
+	Credentials        []AdminCredential        `json:"credentials,omitempty"`
+	Bans               []Ban                    `json:"bans"`
+	Settings           *ServerSettings          `json:"settings"`
+	Accounts           []accounts.Account       `json:"accounts"`
+	ConnectionPassword ConnectionPasswordStatus `json:"connection_password"`
 }
 
 func (s *Server) adminSnapshot(identity string) AdminSnapshot {
@@ -58,6 +59,7 @@ func (s *Server) adminSnapshot(identity string) AdminSnapshot {
 		state.Channels = append(state.Channels, AdminChannel(ch))
 	}
 	state.Bans = r.Bans
+	state.ConnectionPassword = s.passwordStatus
 	state.Settings = r.Settings
 	if r.Settings != nil {
 		state.Name = r.Settings.Name

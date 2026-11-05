@@ -364,6 +364,9 @@ impl Plan {
         }
     }
     async fn run(mut self) -> session::Result<Established> {
+        if self.profile.server_public_key.is_empty() && self.password.is_empty() {
+            return Err(session::Error::ServerTrustRequired);
+        }
         if self.account_token.is_empty()
             && let Some(account) = self.account.clone()
         {

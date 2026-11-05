@@ -6,6 +6,7 @@ RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY cmd/resona-server/ cmd/resona-server/
 COPY internal/nativewire/ internal/nativewire/
 COPY internal/noiseudp/ internal/noiseudp/
+COPY internal/serverauth/ internal/serverauth/
 COPY internal/server/ internal/server/
 COPY internal/accounts/ internal/accounts/
 COPY internal/nativeidentity/ internal/nativeidentity/
@@ -24,6 +25,7 @@ RUN addgroup -S -g 10001 resona && adduser -S -D -H -u 10001 -G resona resona \
 COPY --from=build /out/resona-server /usr/local/bin/resona-server
 COPY --chmod=755 deploy/server-entrypoint.sh /usr/local/bin/server-entrypoint
 COPY docs/noise-license.txt /usr/share/licenses/resona/noise-license.txt
+COPY docs/pake-licenses.txt /usr/share/licenses/resona/pake-licenses.txt
 COPY docs/nats-license.txt /usr/share/licenses/resona/nats-license.txt
 ENV XDG_CONFIG_HOME=/data
 USER 10001:10001

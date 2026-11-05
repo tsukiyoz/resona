@@ -17,3 +17,6 @@
 | [0031 有界频道历史](0031-bounded-channel-chat.md) | Accepted，实验协议 RN06 |
 | [0032 Rust 客户端核心](0032-rust-client-core.md) | Accepted，跨平台验收继续 |
 | [0033 管理资源 KV](0033-kv-management-resources.md) | Accepted，本地迁移与观察 |
+| [0034 HTTP 管理后台](0034-admin-console.md) | Accepted |
+| [0035 服务器账号](0035-server-local-accounts.md) | Accepted |
+| [0036 地址与密码连接](0036-password-authenticated-connect.md) | Accepted，实验协议 RN07 |
