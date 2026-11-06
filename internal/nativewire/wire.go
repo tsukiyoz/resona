@@ -45,6 +45,7 @@ const (
 	ChatPageKind
 	PokeKind
 	PokedKind
+	ModerateMemberKind
 )
 
 var ErrPacket = errors.New("invalid Resona packet")
@@ -66,6 +67,7 @@ type (
 	CreateChannel struct {
 		Name, Description string
 		Bitrate           uint32
+		AdminOnly         bool
 	}
 )
 
@@ -73,6 +75,7 @@ type UpdateChannel struct {
 	ID                uint16
 	Name, Description string
 	Bitrate           uint32
+	AdminOnly         bool
 }
 type (
 	DeleteChannel  struct{ ID uint16 }
@@ -83,6 +86,7 @@ type (
 		Name        string
 		Description string
 		Bitrate     uint32
+		AdminOnly   bool
 	}
 )
 
@@ -101,11 +105,18 @@ type Poke struct {
 	Target   uint16
 	Instance string
 }
+type ModerateMember struct {
+	Target           uint16
+	Instance, Action string
+	Channel          uint16
+}
 type Poked struct {
 	Sender             uint16
 	Instance, Nickname string
 }
 type State struct {
+	CanModerateMembers       bool
+	CanKickAdmins            bool
 	CanPoke                  bool
 	CanWatchResources        bool
 	Revision                 uint64
@@ -170,6 +181,7 @@ const (
 	AccountNameTaken
 	AccountBusy
 	MemberUnavailable
+	_ // Retired administrator invitation error (14).
 )
 
 type Message struct {

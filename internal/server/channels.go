@@ -17,6 +17,11 @@ type channelRecord struct {
 	Channels []w.Channel `json:"channels"`
 }
 
+type ChannelOptions struct {
+	Bitrate   uint32
+	AdminOnly bool
+}
+
 func validChannels(channels []w.Channel) bool {
 	if len(channels) == 0 || len(channels) > w.MaxChannels {
 		return false
@@ -36,18 +41,18 @@ func validChannels(channels []w.Channel) bool {
 	return budget <= 16*1024
 }
 
-func (s *Server) manageChannel(p *peer, kind uint8, id uint16, name, description string, audioBitrate ...uint32) uint8 {
+func (s *Server) manageChannel(p *peer, kind uint8, id uint16, name, description string, options ...ChannelOptions) uint8 {
 	ctx := context.Background()
 	if p.conn != nil {
 		ctx = p.conn.Context()
 	}
-	return s.ManageChannel(ctx, p.principal(), kind, id, name, description, audioBitrate...)
+	return s.ManageChannel(ctx, p.principal(), kind, id, name, description, options...)
 }
 
 // ManageChannel is the shared authorized mutation boundary for native commands
 // and future admin transports. The actor is an authenticated identity, not a name.
-func (s *Server) ManageChannel(parent context.Context, identity string, kind uint8, id uint16, name, description string, audioBitrate ...uint32) uint8 {
-	return s.mutateChannel(parent, identity, kind, id, 0, name, description, audioBitrate...)
+func (s *Server) ManageChannel(parent context.Context, identity string, kind uint8, id uint16, name, description string, options ...ChannelOptions) uint8 {
+	return s.mutateChannel(parent, identity, kind, id, 0, name, description, options...)
 }
 
 // ReorderChannel moves a channel before beforeID (zero means the end).
@@ -56,12 +61,12 @@ func (s *Server) ReorderChannel(ctx context.Context, identity string, id, before
 	return s.mutateChannel(ctx, identity, w.ReorderChannelKind, id, beforeID, "", "")
 }
 
-func (s *Server) mutateChannel(parent context.Context, identity string, kind uint8, id, beforeID uint16, name, description string, audioBitrate ...uint32) uint8 {
-	code, _ := s.mutateChannelAt(parent, identity, 0, kind, id, beforeID, name, description, audioBitrate...)
+func (s *Server) mutateChannel(parent context.Context, identity string, kind uint8, id, beforeID uint16, name, description string, options ...ChannelOptions) uint8 {
+	code, _ := s.mutateChannelAt(parent, identity, 0, kind, id, beforeID, name, description, options...)
 	return code
 }
 
-func (s *Server) mutateChannelAt(parent context.Context, identity string, revision uint64, kind uint8, id, beforeID uint16, name, description string, audioBitrate ...uint32) (uint8, error) {
+func (s *Server) mutateChannelAt(parent context.Context, identity string, revision uint64, kind uint8, id, beforeID uint16, name, description string, options ...ChannelOptions) (uint8, error) {
 	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
 	defer cancel()
 	s.channelMu.Lock()
@@ -72,10 +77,11 @@ func (s *Server) mutateChannelAt(parent context.Context, identity string, revisi
 	if !s.config.Store.Allowed(identity, "channels", "write", "*") {
 		return w.PermissionDenied, ErrPermission
 	}
-	var bitrate uint32
-	if len(audioBitrate) != 0 {
-		bitrate = audioBitrate[0]
+	var option ChannelOptions
+	if len(options) != 0 {
+		option = options[0]
 	}
+	bitrate := option.Bitrate
 	if !w.ValidChannelBitrate(bitrate) {
 		return w.Rejected, ErrInvalid
 	}
@@ -105,7 +111,7 @@ func (s *Server) mutateChannelAt(parent context.Context, identity string, revisi
 			if bitrate == 0 {
 				bitrate = 32000
 			}
-			channels = append(channels, w.Channel{ID: uint16(next), Name: name, Description: description, Bitrate: bitrate})
+			channels = append(channels, w.Channel{ID: uint16(next), Name: name, Description: description, Bitrate: bitrate, AdminOnly: option.AdminOnly})
 			next++
 		case w.UpdateChannelKind:
 			if index < 0 {
@@ -113,6 +119,13 @@ func (s *Server) mutateChannelAt(parent context.Context, identity string, revisi
 				return errors.New("channel not found")
 			}
 			channels[index].Name, channels[index].Description = name, description
+			if len(options) != 0 {
+				if id == r.Channels.Default && option.AdminOnly {
+					code = w.DefaultChannel
+					return ErrInvalid
+				}
+				channels[index].AdminOnly = option.AdminOnly
+			}
 			if bitrate != 0 {
 				channels[index].Bitrate = bitrate
 			}
@@ -178,6 +191,7 @@ func (s *Server) mutateChannelAt(parent context.Context, identity string, revisi
 		r, revision := s.config.Store.state()
 		s.config.Channels, s.resourceRevision = r.Channels.Channels, revision
 		s.defaultChannel = r.Channels.Default
+		s.enforceChannelAccessLocked(r)
 		s.broadcastLocked(nil)
 	}
 	if code != w.OK {
@@ -192,6 +206,7 @@ func (s *Server) mutateChannelAt(parent context.Context, identity string, revisi
 func (s *Server) channelCommand(p *peer, f w.Frame) bool {
 	var id, beforeID uint16
 	var bitrate uint32
+	var adminOnly bool
 	var name, description string
 	switch f.Kind {
 	case w.CreateChannelKind:
@@ -201,6 +216,7 @@ func (s *Server) channelCommand(p *peer, f w.Frame) bool {
 		}
 		name, description = v.Name, v.Description
 		bitrate = v.Bitrate
+		adminOnly = v.AdminOnly
 	case w.UpdateChannelKind:
 		var v w.UpdateChannel
 		if w.Decode(f, &v) != nil {
@@ -208,6 +224,7 @@ func (s *Server) channelCommand(p *peer, f w.Frame) bool {
 		}
 		id, name, description = v.ID, v.Name, v.Description
 		bitrate = v.Bitrate
+		adminOnly = v.AdminOnly
 	case w.DeleteChannelKind:
 		var v w.DeleteChannel
 		if w.Decode(f, &v) != nil {
@@ -226,7 +243,7 @@ func (s *Server) channelCommand(p *peer, f w.Frame) bool {
 		if f.Kind == w.ReorderChannelKind {
 			code = s.ReorderChannel(p.conn.Context(), p.principal(), id, beforeID)
 		} else {
-			code = s.manageChannel(p, f.Kind, id, name, description, bitrate)
+			code = s.manageChannel(p, f.Kind, id, name, description, ChannelOptions{Bitrate: bitrate, AdminOnly: adminOnly})
 		}
 	}
 	s.mu.Lock()

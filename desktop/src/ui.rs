@@ -12,7 +12,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::{DateTime, Local, Utc};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState, hotkey::HotKey};
 use gpui_kit::component::{
-    Disableable, IconName, IconNamed, Selectable,
+    Disableable, Icon, IconName, IconNamed, Selectable,
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
     input::{Input, InputEvent, InputState, Textarea, TextareaState},
@@ -99,9 +99,9 @@ impl IconNamed for VoiceIcon {
 
 #[derive(Clone)]
 enum Pending {
+    Moderation(UserPlaybackTarget),
     Poke(UserPlaybackTarget),
     Account(String, u64),
-    AccountToken(String, u64),
     ChatRetry(String, String, u32),
     ChatHistory(String, String, u32, u64),
     Update(&'static str),
@@ -230,6 +230,12 @@ struct ChannelDrag {
     name: String,
 }
 
+#[derive(Clone)]
+struct MemberDrag {
+    target: UserPlaybackTarget,
+    name: String,
+}
+
 struct ChannelDragPreview {
     name: String,
     offset: gpui_kit::Point<gpui_kit::Pixels>,
@@ -329,6 +335,10 @@ struct SubmittedDraft {
 
 #[derive(Clone)]
 enum Modal {
+    Kick {
+        target: UserPlaybackTarget,
+        nickname: String,
+    },
     Channel {
         session: String,
         id: String,
@@ -368,6 +378,40 @@ enum DeviceMenu {
     Output,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum SidePanel {
+    Servers,
+    Details,
+}
+
+struct PanelDrag {
+    panel: SidePanel,
+    start_x: f32,
+    start_width: f32,
+    width: f32,
+}
+
+impl PanelDrag {
+    fn move_to(&mut self, x: f32) {
+        let direction = if self.panel == SidePanel::Servers {
+            1.
+        } else {
+            -1.
+        };
+        let raw = self.start_width + (x - self.start_x) * direction;
+        // Separate close/reopen thresholds prevent flicker at the snap boundary.
+        let (closed, close_at, reopen_at, min, max) = match self.panel {
+            SidePanel::Servers => (52., 92., 116., 144., 172.),
+            SidePanel::Details => (0., 132., 156., 220., 280.),
+        };
+        self.width = if raw <= close_at || (self.width == closed && raw < reopen_at) {
+            closed
+        } else {
+            raw.clamp(min, max)
+        };
+    }
+}
+
 pub struct ResonaApp {
     resource_interest: Option<(bool, bool)>,
     resource_generation: u64,
@@ -376,6 +420,7 @@ pub struct ResonaApp {
     loading_notice: LoadingNotice,
     composer_height: f32,
     composer_drag: Option<(f32, f32)>,
+    panel_drag: Option<PanelDrag>,
     chat_collapsed: bool,
     emoji_scope: Option<(String, u32)>,
     emoji_focus: FocusHandle,
@@ -449,13 +494,13 @@ pub struct ResonaApp {
     channel_description_input: Entity<TextareaState>,
     channel_bitrate_input: Entity<InputState>,
     channel_audio_preset: u32,
+    channel_admin_only: bool,
     ownership_error: String,
     claim_input: Entity<InputState>,
     account_name: Entity<InputState>,
     account_password: Entity<InputState>,
     account_new_password: Entity<InputState>,
     account_nickname: Entity<InputState>,
-    account_token: Entity<InputState>,
     account_mode: &'static str,
     account_notice: String,
     account_revision: u64,
@@ -470,7 +515,7 @@ pub struct ResonaApp {
     name_input: Entity<InputState>,
     address_input: Entity<InputState>,
     nickname_input: Entity<InputState>,
-    public_key_input: Entity<InputState>,
+    server_password_input: Entity<InputState>,
     password_input: Entity<InputState>,
     chat_input: Entity<TextareaState>,
     shortcut_input: Entity<InputState>,
@@ -491,8 +536,10 @@ impl ResonaApp {
         let address_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("voice.example.com"));
         let nickname_input = cx.new(|cx| InputState::new(window, cx).placeholder("昵称"));
-        let public_key_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("有密码可留空；无密码时填写邀请公钥")
+        let server_password_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("输入新密码；留空保留已保存密码")
+                .masked(true)
         });
         let password_input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -518,11 +565,6 @@ impl ResonaApp {
         });
         let account_nickname =
             cx.new(|cx| InputState::new(window, cx).placeholder("昵称，最多 30 字"));
-        let account_token = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("账号登录 Token")
-                .masked(true)
-        });
         let chat_input = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .submit_on_enter(true)
@@ -623,7 +665,7 @@ impl ResonaApp {
             name_input.clone(),
             address_input.clone(),
             nickname_input.clone(),
-            public_key_input.clone(),
+            server_password_input.clone(),
             password_input.clone(),
             claim_input.clone(),
             channel_name_input.clone(),
@@ -632,7 +674,6 @@ impl ResonaApp {
             account_password.clone(),
             account_new_password.clone(),
             account_nickname.clone(),
-            account_token.clone(),
         ]
         .into_iter()
         .map(|input| {
@@ -685,6 +726,7 @@ impl ResonaApp {
             this.sync_loading_notices(window.is_window_active(), cx);
             if !window.is_window_active() {
                 this.composer_drag = None;
+                this.panel_drag = None;
                 if this.hotkey.is_none() {
                     this.ptt_key_down = false;
                     this.set_push_to_talk(false, cx);
@@ -693,7 +735,14 @@ impl ResonaApp {
             }
             cx.notify();
         });
-        let quit_subscription = cx.on_app_quit(|this, cx| {
+        let quit_window = window.window_handle();
+        let quit_subscription = cx.on_app_quit(move |this, cx| {
+            this.panel_drag = None;
+            let _ = quit_window.update(cx, |_, window, cx| {
+                this.server_password_input
+                    .update(cx, |input, cx| input.set_value("", window, cx));
+                this.clear_account_secrets(window, cx);
+            });
             this.flush_preferences();
             if let Some(core) = this.core.clone() {
                 this.clear_hotkey(cx);
@@ -719,6 +768,7 @@ impl ResonaApp {
             loading_notice: Default::default(),
             composer_height: 210.,
             composer_drag: None,
+            panel_drag: None,
             chat_collapsed: false,
             emoji_scope: None,
             emoji_focus: cx.focus_handle(),
@@ -793,13 +843,13 @@ impl ResonaApp {
             channel_description_input,
             channel_bitrate_input,
             channel_audio_preset: 32000,
+            channel_admin_only: false,
             ownership_error: String::new(),
             claim_input,
             account_name,
             account_password,
             account_new_password,
             account_nickname,
-            account_token,
             account_mode: "password",
             account_notice: String::new(),
             account_revision: 0,
@@ -814,7 +864,7 @@ impl ResonaApp {
             name_input,
             address_input,
             nickname_input,
-            public_key_input,
+            server_password_input,
             password_input,
             chat_input,
             shortcut_input,
@@ -944,7 +994,9 @@ impl ResonaApp {
         match result {
             Ok(id) => {
                 let scope = match &pending {
-                    Pending::Poke(target) => ReplyScope::Session(target.session.clone()),
+                    Pending::Poke(target) | Pending::Moderation(target) => {
+                        ReplyScope::Session(target.session.clone())
+                    }
                     Pending::Voice | Pending::VoiceSnapshot | Pending::PushToTalk => {
                         ReplyScope::Session(self.workspace.session.id.clone())
                     }
@@ -978,6 +1030,11 @@ impl ResonaApp {
 
     fn request_failed(&mut self, pending: Pending, error: String) {
         match pending {
+            Pending::Moderation(target) => {
+                if target.session == self.workspace.session.id && self.workspace.connected() {
+                    self.error = format!("成员操作失败：{error}");
+                }
+            }
             Pending::Poke(target) => {
                 if target.session == self.workspace.session.id && self.workspace.connected() {
                     self.push_poke_notice(format!("戳一下失败：{error}"));
@@ -990,7 +1047,7 @@ impl ResonaApp {
                     self.error = error;
                 }
             }
-            Pending::Account(session, _) | Pending::AccountToken(session, _) => {
+            Pending::Account(session, _) => {
                 if session == self.workspace.session.id && matches!(self.modal, Some(Modal::User)) {
                     self.account_notice = error;
                 }
@@ -1061,6 +1118,13 @@ impl ResonaApp {
     }
 
     fn clear_selected_details(&mut self) {
+        if self
+            .panel_drag
+            .as_ref()
+            .is_some_and(|drag| drag.panel == SidePanel::Details)
+        {
+            self.panel_drag = None;
+        }
         self.detail_selection = None;
         self.detail_value = None;
         self.detail_error.clear();
@@ -1174,7 +1238,7 @@ impl ResonaApp {
                 self.device_menu = None;
                 if matches!(
                     self.modal,
-                    Some(Modal::Ownership { .. } | Modal::Channel { .. })
+                    Some(Modal::Ownership { .. } | Modal::Channel { .. } | Modal::Kick { .. })
                 ) {
                     self.close_modal(window, cx);
                 }
@@ -1198,6 +1262,11 @@ impl ResonaApp {
                 }
                 let pending = Some(request.action);
                 match (pending, result) {
+                    (Some(Pending::Moderation(target)), result) => {
+                        if let Err(error) = result {
+                            self.request_failed(Pending::Moderation(target), error);
+                        }
+                    }
                     (Some(Pending::Poke(_)), result) => {
                         self.push_poke_notice(match result {
                             Ok(_) => "已发送戳一下".into(),
@@ -1219,26 +1288,6 @@ impl ResonaApp {
                                 }
                                 Err(error) if current => self.account_notice = error,
                                 Err(_) => {}
-                            }
-                        }
-                    }
-                    (Some(Pending::AccountToken(session, revision)), result) => {
-                        if session == self.workspace.session.id
-                            && revision == self.account_revision
-                            && matches!(self.modal, Some(Modal::User))
-                            && !self.closing
-                        {
-                            match result {
-                                Ok(value) => {
-                                    if let Some(token) = value["token"].as_str() {
-                                        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
-                                            token.to_owned(),
-                                        ));
-                                        self.account_notice =
-                                            "登录 Token 已复制，请妥善保管".into();
-                                    }
-                                }
-                                Err(error) => self.account_notice = error,
                             }
                         }
                     }
@@ -1757,6 +1806,7 @@ impl ResonaApp {
                     || workspace.session.account_uid != self.workspace.session.account_uid
                 {
                     self.clear_account_secrets(window, cx);
+                    self.account_mode = "password";
                     self.account_revision = self.account_revision.wrapping_add(1);
                     self.account_notice.clear();
                     self.account_nickname.update(cx, |input, cx| {
@@ -1818,6 +1868,11 @@ impl ResonaApp {
                             .update(cx, |input, cx| input.set_value("", window, cx));
                         self.ownership_error.clear();
                     }
+                }
+                if let Some(Modal::Kick { target, .. }) = &self.modal
+                    && (!workspace.connected() || workspace.session.id != target.session)
+                {
+                    self.close_modal(window, cx);
                 }
                 let detail_update = self
                     .detail_selection
@@ -1966,11 +2021,15 @@ impl ResonaApp {
         }
     }
 
-    pub fn begin_shutdown(&mut self, cx: &mut Context<Self>) {
+    pub fn begin_shutdown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.closing {
             return;
         }
+        self.panel_drag = None;
+        self.server_password_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
         self._audio_update = None;
+        self.clear_account_secrets(window, cx);
         self.settings_apply = None;
         self.settings_draft = None;
         self.settings_baseline = None;
@@ -2129,6 +2188,20 @@ impl ResonaApp {
                 .pending_actions()
                 .any(|p| matches!(p, Pending::Workspace("SelectChannel") | Pending::Send(_)))
         {
+            return;
+        }
+        if self
+            .workspace
+            .channels
+            .iter()
+            .any(|ch| ch.id == id && ch.admin_only)
+            && !matches!(
+                self.workspace.session.server_role.as_str(),
+                "owner" | "admin"
+            )
+        {
+            self.error = "仅管理员可进入".into();
+            cx.notify();
             return;
         }
         self.set_push_to_talk(false, cx);
@@ -2337,6 +2410,29 @@ impl ResonaApp {
         self.poke_notices.push_back(text);
     }
 
+    fn moderate_user(
+        &mut self,
+        target: UserPlaybackTarget,
+        action: &str,
+        channel: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if self.closing
+            || self.resources_blocked()
+            || self.modal.is_some()
+            || !can_moderate_user(&self.workspace, &target)
+            || (action == "move" && !can_move_user(&self.workspace, &target, channel))
+            || self
+                .pending_actions()
+                .any(|p| matches!(p, Pending::Moderation(_)))
+        {
+            return;
+        }
+        self.error.clear();
+        self.request("ModerateMember", json!({"sessionID": target.session, "userID": target.user, "instance": target.instance, "action": action, "channelID": channel}), Pending::Moderation(target));
+        cx.notify();
+    }
+
     fn poke_user(&mut self, target: UserPlaybackTarget, cx: &mut Context<Self>) {
         if self.closing
             || !can_poke_user(&self.workspace, &target)
@@ -2468,8 +2564,18 @@ impl ResonaApp {
             nickname: "Resona".into(),
             ..Default::default()
         });
-        self.public_key_input.update(cx, |input, cx| {
-            input.set_value(profile.server_public_key.clone(), window, cx)
+        self.server_password_input.update(cx, |input, cx| {
+            input.set_value("", window, cx);
+            input.set_masked(true, window, cx);
+            input.set_placeholder(
+                if profile.id.is_empty() {
+                    "服务器连接密码"
+                } else {
+                    "输入新密码；留空保留已保存密码"
+                },
+                window,
+                cx,
+            );
         });
         self.name_input
             .update(cx, |input, cx| input.set_value(profile.name, window, cx));
@@ -2486,6 +2592,8 @@ impl ResonaApp {
     }
 
     fn open_password(&mut self, server_id: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.server_password_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
         self.password_input
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.modal = Some(Modal::Password { server_id });
@@ -2641,6 +2749,7 @@ impl ResonaApp {
         }
         self.close_modal(window, cx);
         if let Some(channel) = channel {
+            self.channel_admin_only = channel.admin_only;
             let bitrate = if channel.bitrate == 0 {
                 48000
             } else {
@@ -2727,7 +2836,7 @@ impl ResonaApp {
             0
         };
         self.request(if delete { "DeleteChannel" } else if id.is_empty() { "CreateChannel" } else { "UpdateChannel" },
-            json!({"sessionID": session, "channelID": id, "name": name, "description": description, "bitrate": bitrate}),
+            json!({"sessionID": session, "channelID": id, "name": name, "description": description, "bitrate": bitrate, "adminOnly": self.channel_admin_only}),
             Pending::ChannelMutation { session, revision: self.channel_revision });
         cx.notify();
     }
@@ -2815,6 +2924,7 @@ impl ResonaApp {
             self.settings_discard = false;
         }
         self.channel_audio_preset = 32000;
+        self.channel_admin_only = false;
         self.channel_bitrate_input
             .update(cx, |input, cx| input.set_value("32", window, cx));
         self.channel_revision = self.channel_revision.wrapping_add(1);
@@ -2857,6 +2967,8 @@ impl ResonaApp {
         }
         self.password_input
             .update(cx, |input, cx| input.set_value("", window, cx));
+        self.server_password_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
         self.clear_account_secrets(window, cx);
         self.account_notice.clear();
         self.account_revision = self.account_revision.wrapping_add(1);
@@ -2866,12 +2978,8 @@ impl ResonaApp {
         cx.notify();
     }
 
-    fn clear_account_secrets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        for input in [
-            &self.account_password,
-            &self.account_new_password,
-            &self.account_token,
-        ] {
+    fn clear_account_secrets(&mut self, window: &mut Window, cx: &mut gpui_kit::App) {
+        for input in [&self.account_password, &self.account_new_password] {
             input.update(cx, |state, cx| state.set_value("", window, cx));
         }
     }
@@ -2887,16 +2995,12 @@ impl ResonaApp {
             || !self.workspace.session.switching_channel_id.is_empty()
             || self
                 .pending_actions()
-                .any(|p| matches!(p, Pending::Account(..) | Pending::AccountToken(..)))
+                .any(|p| matches!(p, Pending::Account(..)))
         {
             return;
         }
         let logged = !self.workspace.session.account_uid.is_empty();
-        let action = action.unwrap_or(if logged && self.account_mode != "change_password" {
-            "update_profile"
-        } else {
-            self.account_mode
-        });
+        let action = action.unwrap_or(account_form_action(logged, self.account_mode));
         let command = resona_client::session::AccountRequest {
             action: action.into(),
             username: self.account_name.read(cx).value().to_string(),
@@ -2912,13 +3016,8 @@ impl ResonaApp {
                 .unmask_value()
                 .to_string()
                 .into(),
-            token: self
-                .account_token
-                .read(cx)
-                .unmask_value()
-                .to_string()
-                .into(),
             nickname: self.account_nickname.read(cx).value().to_string(),
+            ..Default::default()
         };
         if let Err(error) = command.validate() {
             self.account_notice = error.into();
@@ -2949,8 +3048,8 @@ impl ResonaApp {
         self.account_revision = self.account_revision.wrapping_add(1);
         self.account_mode = mode;
         self.account_notice.clear();
-        let input = if mode == "token" {
-            &self.account_token
+        let input = if !self.workspace.session.account_uid.is_empty() {
+            &self.account_nickname
         } else {
             &self.account_name
         };
@@ -3002,17 +3101,28 @@ impl ResonaApp {
         let profile = ServerProfile {
             certificate_fingerprint: None,
             protocol: "resona-noise".into(),
-            server_public_key: self.public_key_input.read(cx).value().to_string(),
+            server_public_key: self
+                .workspace
+                .servers
+                .iter()
+                .find(|server| server.id == editing_id)
+                .map(|server| server.server_public_key.clone())
+                .unwrap_or_default(),
             id: editing_id,
             name: self.name_input.read(cx).value().to_string(),
             address: self.address_input.read(cx).value().to_string(),
             nickname: self.nickname_input.read(cx).value().to_string(),
             skip_password_storage,
         };
+        let password = self
+            .server_password_input
+            .read(cx)
+            .unmask_value()
+            .to_string();
         self.server_error.clear();
         self.request(
             "SaveServer",
-            json!({"profile": profile}),
+            json!({"profile": profile, "password": password}),
             Pending::SaveServer(self.server_form_revision),
         );
         cx.notify();
@@ -3676,6 +3786,11 @@ impl ResonaApp {
     }
 
     fn navigation_width(&self) -> f32 {
+        if let Some(drag) = &self.panel_drag
+            && drag.panel == SidePanel::Servers
+        {
+            return drag.width;
+        }
         if self.preferences.server_sidebar_collapsed {
             52.
         } else {
@@ -3683,8 +3798,72 @@ impl ResonaApp {
         }
     }
 
+    fn details_width(&self) -> f32 {
+        self.panel_drag
+            .as_ref()
+            .filter(|drag| drag.panel == SidePanel::Details)
+            .map_or(280., |drag| drag.width)
+    }
+
+    fn finish_panel_drag(&mut self, cx: &mut Context<Self>) {
+        let Some(drag) = self.panel_drag.take() else {
+            return;
+        };
+        match drag.panel {
+            SidePanel::Servers => {
+                let collapsed = drag.width == 52.;
+                if self.preferences.server_sidebar_collapsed != collapsed {
+                    self.preferences.server_sidebar_collapsed = collapsed;
+                    self.save_preferences(cx);
+                }
+            }
+            SidePanel::Details if drag.width == 0. => self.clear_selected_details(),
+            SidePanel::Details => {}
+        }
+        cx.notify();
+    }
+
+    fn panel_handle(&self, panel: SidePanel, view: &Entity<Self>) -> AnyElement {
+        let entity = view.clone();
+        div()
+            .id(if panel == SidePanel::Servers {
+                "server-panel-drag"
+            } else {
+                "detail-panel-drag"
+            })
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .w(px(6.))
+            .when(panel == SidePanel::Servers, |handle| handle.right_0())
+            .when(panel == SidePanel::Details, |handle| handle.left_0())
+            .cursor_col_resize()
+            .hover(|style| style.bg(color(Color::HoverOverlay)))
+            .on_mouse_down(gpui_kit::MouseButton::Left, move |event, _, cx| {
+                entity.update(cx, |this, cx| {
+                    if this.closing || this.modal.is_some() {
+                        return;
+                    }
+                    let width = match panel {
+                        SidePanel::Servers => this.navigation_width(),
+                        SidePanel::Details => this.details_width(),
+                    };
+                    this.composer_drag = None;
+                    this.panel_drag = Some(PanelDrag {
+                        panel,
+                        start_x: f32::from(event.position.x),
+                        start_width: width,
+                        width,
+                    });
+                    cx.notify();
+                });
+                cx.stop_propagation();
+            })
+            .into_any_element()
+    }
+
     fn render_rail(&self, view: &Entity<Self>) -> AnyElement {
-        let collapsed = self.preferences.server_sidebar_collapsed;
+        let collapsed = self.navigation_width() == 52.;
         let mut servers = div().flex().flex_col().gap_1().p_1().w_full();
         for server in &self.workspace.servers {
             let id = server.id.clone();
@@ -3865,7 +4044,8 @@ impl ResonaApp {
                 }),
         );
         div()
-            .w(px(if collapsed { 52. } else { 172. }))
+            .relative()
+            .w(px(self.navigation_width()))
             .h_full()
             .flex_shrink_0()
             .bg(color(Color::Sidebar))
@@ -3930,6 +4110,7 @@ impl ResonaApp {
                     .child(servers.overflow_y_scrollbar()),
             )
             .child(footer)
+            .child(self.panel_handle(SidePanel::Servers, view))
             .into_any_element()
     }
 
@@ -4165,6 +4346,10 @@ impl ResonaApp {
                             user: user.id.clone(),
                             instance: user.instance.clone(),
                         };
+                        let member_drag = MemberDrag {
+                            target: menu_target.clone(),
+                            name: user.nickname.clone(),
+                        };
                         let speaking = user_is_speaking(
                             &self.workspace,
                             &self.voice,
@@ -4181,6 +4366,19 @@ impl ResonaApp {
                                     .id(SharedString::from(format!("tree-user-{user_id}")))
                                     .tab_index(0)
                                     .cursor_pointer()
+                                    .when(
+                                        can_moderate_user(&self.workspace, &member_drag.target)
+                                            && !self.resources_blocked()
+                                            && !self.closing,
+                                        |row| {
+                                            row.on_drag(member_drag, |drag, offset, _, cx| {
+                                                cx.new(|_| ChannelDragPreview {
+                                                    name: drag.name.clone(),
+                                                    offset,
+                                                })
+                                            })
+                                        },
+                                    )
                                     .border_l_2()
                                     .border_color(color(if inspecting_user {
                                         Color::SelectionBorder
@@ -4250,6 +4448,51 @@ impl ResonaApp {
                                                 .unwrap_or(100);
                                             let muted = current.is_some_and(|u| u.playback_muted);
                                             let mut menu = menu;
+                                            if this.workspace.session.can_moderate_members {
+                                                let entity = menu_entity.clone();
+                                                let target = menu_target.clone();
+                                                let allowed =
+                                                    can_moderate_user(&this.workspace, &target)
+                                                        && !this.closing
+                                                        && !this.resources_blocked();
+                                                menu = menu
+                                                    .item(
+                                                        PopupMenuItem::new("踢出服务器")
+                                                            .disabled(!allowed)
+                                                            .on_click(move |_, window, cx| {
+                                                                entity.update(cx, |this, cx| {
+                                                                    if !can_moderate_user(
+                                                                        &this.workspace,
+                                                                        &target,
+                                                                    ) || this.closing
+                                                                        || this.resources_blocked()
+                                                                    {
+                                                                        return;
+                                                                    }
+                                                                    let nickname = this
+                                                                        .workspace
+                                                                        .users
+                                                                        .iter()
+                                                                        .find(|u| {
+                                                                            u.id == target.user
+                                                                                && u.instance
+                                                                                    == target
+                                                                                        .instance
+                                                                        })
+                                                                        .map(|u| u.nickname.clone())
+                                                                        .unwrap_or_default();
+                                                                    this.close_modal(window, cx);
+                                                                    this.modal =
+                                                                        Some(Modal::Kick {
+                                                                            target: target.clone(),
+                                                                            nickname,
+                                                                        });
+                                                                    cx.notify();
+                                                                });
+                                                            }),
+                                                    )
+                                                    .separator();
+                                            }
                                             if this.workspace.session.can_poke {
                                                 let entity = menu_entity.clone();
                                                 let target = menu_target.clone();
@@ -4382,6 +4625,36 @@ impl ResonaApp {
                             .flex()
                             .items_center()
                             .gap_2()
+                            .map(|row| {
+                                let check = view.clone();
+                                let dest = drop_id.clone();
+                                let entity = view.clone();
+                                let target = drop_id.clone();
+                                row.can_drop(move |value, _, cx| {
+                                    value.downcast_ref::<MemberDrag>().is_some_and(|drag| {
+                                        let this = check.read(cx);
+                                        !this.closing
+                                            && this.modal.is_none()
+                                            && !this.resources_blocked()
+                                            && can_move_user(&this.workspace, &drag.target, &dest)
+                                    })
+                                })
+                                .drag_over::<MemberDrag>(|style, _, _, _| {
+                                    style.bg(color(HOVER)).border_color(color(ICE))
+                                })
+                                .on_drop(
+                                    move |drag: &MemberDrag, _, cx| {
+                                        entity.update(cx, |this, cx| {
+                                            this.moderate_user(
+                                                drag.target.clone(),
+                                                "move",
+                                                &target,
+                                                cx,
+                                            )
+                                        });
+                                    },
+                                )
+                            })
                             .when(self.channel_order_allowed(), |row| {
                                 row.on_drag(drag, move |drag, offset, _, cx| {
                                     drag_entity.update(cx, |this, _| {
@@ -4411,8 +4684,20 @@ impl ResonaApp {
                             } else {
                                 div()
                                     .w(px(17.))
+                                    .h(px(20.))
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
                                     .text_color(color(if selected { ICE } else { MUTED }))
-                                    .child(if locked { "◆" } else { "#" })
+                                    .child(if channel.admin_only {
+                                        Icon::new(gpui_kit::assets::IconName::Shield)
+                                            .size(px(14.))
+                                            .text_color(color(if selected { ICE } else { MUTED }))
+                                            .into_any_element()
+                                    } else {
+                                        div().child("#").into_any_element()
+                                    })
                                     .into_any_element()
                             })
                             .child(
@@ -5318,15 +5603,25 @@ impl ResonaApp {
 
     fn render_details(&self, view: &Entity<Self>) -> AnyElement {
         div()
-            .w(px(280.))
+            .relative()
+            .w(px(self.details_width()))
             .h_full()
             .flex_shrink_0()
+            .overflow_hidden()
             .bg(color(Color::Popover))
-            .border_l_1()
-            .border_color(color(Color::GlassBorder))
-            .px_4()
-            .child(self.render_selected_details(view))
-            .overflow_y_scrollbar()
+            .when(self.details_width() > 0., |panel| {
+                panel
+                    .border_l_1()
+                    .border_color(color(Color::GlassBorder))
+                    .child(
+                        div()
+                            .size_full()
+                            .px_4()
+                            .child(self.render_selected_details(view))
+                            .overflow_y_scrollbar(),
+                    )
+                    .child(self.panel_handle(SidePanel::Details, view))
+            })
             .into_any_element()
     }
 
@@ -6061,11 +6356,20 @@ impl ResonaApp {
                 .get("passwordRequired")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
+            let restricted = self
+                .workspace
+                .channels
+                .iter()
+                .any(|ch| ch.id == id && ch.admin_only)
+                && !matches!(
+                    self.workspace.session.server_role.as_str(),
+                    "owner" | "admin"
+                );
             section = section.child(
                 Button::new("join-detail-channel")
                     .label("加入频道")
                     .icon(IconName::ArrowRight)
-                    .disabled(locked || self.speaking_transition_pending())
+                    .disabled(locked || restricted || self.speaking_transition_pending())
                     .on_click(move |_, _, cx| {
                         entity.update(cx, |this, cx| {
                             this.join_channel(&id, cx);
@@ -6950,6 +7254,52 @@ impl ResonaApp {
         let audio_page = matches!(modal, Modal::Devices | Modal::Audio);
         let entity = view.clone();
         let card = match modal.clone() {
+            Modal::Kick { target, nickname } => {
+                let cancel = view.clone();
+                let confirm = view.clone();
+                div().child(
+                    div()
+                        .w(px(380.))
+                        .p_5()
+                        .rounded(px(7.))
+                        .border_1()
+                        .border_color(color(LINE))
+                        .bg(color(PANEL_2))
+                        .shadow_lg()
+                        .flex()
+                        .flex_col()
+                        .gap_4()
+                        .child(modal_title("踢出服务器"))
+                        .child(
+                            div()
+                                .text_sm()
+                                .child(format!("将「{nickname}」踢出服务器？对方可手动重新连接。")),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .justify_end()
+                                .gap_2()
+                                .child(Button::new("cancel-kick").label("取消").ghost().on_click(
+                                    move |_, window, cx| {
+                                        cancel.update(cx, |this, cx| this.close_modal(window, cx));
+                                    },
+                                ))
+                                .child(
+                                    Button::new("confirm-kick")
+                                        .label("踢出")
+                                        .primary()
+                                        .disabled(!can_moderate_user(&self.workspace, &target))
+                                        .on_click(move |_, window, cx| {
+                                            confirm.update(cx, |this, cx| {
+                                                this.close_modal(window, cx);
+                                                this.moderate_user(target.clone(), "kick", "", cx);
+                                            });
+                                        }),
+                                ),
+                        ),
+                )
+            }
             Modal::Channel { id, delete, .. } => {
                 let pending = self.channel_pending();
                 let audio_entity = entity.clone();
@@ -7002,6 +7352,21 @@ impl ResonaApp {
                                         .disabled(pending || unavailable),
                                 )
                         })
+						.when(!delete, |card| {
+							let entity = view.clone();
+							let session = self.workspace.session.id.clone();
+							let channel = id.clone();
+							let revision = self.channel_revision;
+							card.child(Checkbox::new("channel-admin-only").label("仅管理员可主动进入").checked(self.channel_admin_only)
+								.disabled(pending || unavailable || target.is_some_and(|ch| ch.is_default))
+								.on_click(move |checked, _, cx| { entity.update(cx, |this,cx| {
+									if this.channel_matches(&session, revision) && !this.channel_pending()
+										&& matches!(&this.modal, Some(Modal::Channel { id, delete:false,.. }) if id == &channel)
+										&& !this.workspace.channels.iter().any(|ch| ch.id == channel && ch.is_default) {
+										this.channel_admin_only = *checked; cx.notify();
+									}
+								}); }))
+						})
                         .when(
                             !delete && self.workspace.session.can_configure_channel_audio,
                             |card| {
@@ -7264,8 +7629,8 @@ impl ResonaApp {
                         .child(field("地址", Input::new(&self.address_input)))
                         .child(field("昵称", Input::new(&self.nickname_input)))
                         .child(field(
-                            "服务器公钥（可选）",
-                            Input::new(&self.public_key_input),
+                            "服务器密码",
+                            Input::new(&self.server_password_input).mask_toggle(),
                         ))
                         .child(
                             div()
@@ -7548,6 +7913,7 @@ impl ResonaApp {
                     ("disconnected", "已断开"),
                     ("member_joined", "成员加入"),
                     ("member_left", "成员离开"),
+                    ("poke", "戳一下"),
                 ].into_iter().map(|(kind, label)| {
                     let entity = entity.clone();
                     Button::new(SharedString::from(format!("preview-{kind}"))).label(label).outline().disabled(self.core.is_none() || self.voice.deafened).on_click(move |_, _, cx| {
@@ -7567,7 +7933,7 @@ impl ResonaApp {
                     .gap_4()
                     .child(
                         Checkbox::new("notifications-enabled")
-                            .label("播放连接与成员提示音")
+                            .label("播放连接、成员与戳一下提示音")
                             .checked(self.editing_preferences().notifications_enabled)
                             .on_click({
                                 let entity = entity.clone();
@@ -7696,7 +8062,7 @@ impl ResonaApp {
                 let logged = !self.workspace.session.account_uid.is_empty();
                 let busy = self
                     .pending_actions()
-                    .any(|p| matches!(p, Pending::Account(..) | Pending::AccountToken(..)));
+                    .any(|p| matches!(p, Pending::Account(..)));
                 let session = &self.workspace.session;
                 let mut page =
                     div()
@@ -7732,30 +8098,23 @@ impl ResonaApp {
                                 )),
                         );
                 if connected && !logged {
-                    if self.account_mode == "token" {
-                        page = page.child(field(
-                            "登录 Token",
-                            Input::new(&self.account_token).disabled(busy).mask_toggle(),
-                        ));
-                    } else {
-                        page = page
-                            .child(field(
-                                "用户名",
-                                Input::new(&self.account_name).disabled(busy),
+                    page = page
+                        .child(field(
+                            "用户名",
+                            Input::new(&self.account_name).disabled(busy),
+                        ))
+                        .when(self.account_mode == "register", |page| {
+                            page.child(field(
+                                "昵称",
+                                Input::new(&self.account_nickname).disabled(busy),
                             ))
-                            .when(self.account_mode == "register", |page| {
-                                page.child(field(
-                                    "昵称",
-                                    Input::new(&self.account_nickname).disabled(busy),
-                                ))
-                            })
-                            .child(field(
-                                "密码",
-                                Input::new(&self.account_password)
-                                    .disabled(busy)
-                                    .mask_toggle(),
-                            ));
-                    }
+                        })
+                        .child(field(
+                            "密码",
+                            Input::new(&self.account_password)
+                                .disabled(busy)
+                                .mask_toggle(),
+                        ));
                     let switch_mode = if self.account_mode == "register" {
                         "password"
                     } else {
@@ -7807,33 +8166,6 @@ impl ResonaApp {
                                     }),
                             ),
                     );
-                    if self.account_mode != "register" {
-                        let token_mode = if self.account_mode == "token" {
-                            "password"
-                        } else {
-                            "token"
-                        };
-                        let entity = entity.clone();
-                        page = page.child(
-                            div().flex().child(
-                                Button::new("account-token-mode")
-                                    .label(if self.account_mode == "token" {
-                                        "使用密码登录"
-                                    } else {
-                                        "使用 Token 登录"
-                                    })
-                                    .ghost()
-                                    .compact()
-                                    .text_color(color(MUTED))
-                                    .disabled(busy)
-                                    .on_click(move |_, window, cx| {
-                                        entity.update(cx, |this, cx| {
-                                            this.set_account_mode(token_mode, window, cx)
-                                        });
-                                    }),
-                            ),
-                        );
-                    }
                 } else if connected && logged {
                     page = page
                         .child(div().text_sm().child(format!(
@@ -7927,7 +8259,6 @@ impl ResonaApp {
                         );
                     }
                     let entity_password = entity.clone();
-                    let entity_token = entity.clone();
                     let entity_logout = entity.clone();
                     page = page.child(
                         div()
@@ -7946,26 +8277,6 @@ impl ResonaApp {
                                         entity_password.update(cx, |this, cx| {
                                             this.clear_account_secrets(window, cx);
                                             this.account_mode = "change_password";
-                                            cx.notify();
-                                        });
-                                    }),
-                            )
-                            .child(
-                                Button::new("account-copy-token")
-                                    .icon(IconName::Copy)
-                                    .ghost()
-                                    .tooltip("复制账号登录 Token")
-                                    .disabled(busy)
-                                    .on_click(move |_, _, cx| {
-                                        entity_token.update(cx, |this, cx| {
-                                            this.request(
-                                                "GetAccountToken",
-                                                json!({"sessionID":this.workspace.session.id}),
-                                                Pending::AccountToken(
-                                                    this.workspace.session.id.clone(),
-                                                    this.account_revision,
-                                                ),
-                                            );
                                             cx.notify();
                                         });
                                     }),
@@ -8717,6 +9028,9 @@ impl ResonaApp {
 
 impl Render for ResonaApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.closing || self.modal.is_some() || !window.is_window_active() {
+            self.panel_drag = None;
+        }
         if self.emoji_scope.is_some() && self.emoji_scope != self.emoji_context() {
             self.emoji_scope = None;
         }
@@ -8814,6 +9128,18 @@ impl Render for ResonaApp {
             .track_focus(&self.focus)
             .on_mouse_move(
                 cx.listener(|this, event: &gpui_kit::MouseMoveEvent, window, cx| {
+                    if let Some(drag) = &mut this.panel_drag {
+                        if event.pressed_button != Some(gpui_kit::MouseButton::Left) {
+                            this.finish_panel_drag(cx);
+                        } else {
+                            let previous = drag.width;
+                            drag.move_to(f32::from(event.position.x));
+                            if drag.width != previous {
+                                cx.notify();
+                            }
+                        }
+                        return;
+                    }
                     if let Some((start_y, start_height)) = this.composer_drag {
                         if event.pressed_button != Some(gpui_kit::MouseButton::Left)
                             || visible_text_channel(&this.workspace, &this.selected_server)
@@ -8833,6 +9159,7 @@ impl Render for ResonaApp {
             .on_mouse_up(
                 gpui_kit::MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
+                    this.finish_panel_drag(cx);
                     this.composer_drag = None;
                     this.chat_follow_bottom =
                         f32::from(this.chat_scroll.max_offset_for_scrollbar().y)
@@ -8860,6 +9187,7 @@ impl Render for ResonaApp {
             .on_mouse_up_out(
                 gpui_kit::MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
+                    this.finish_panel_drag(cx);
                     this.composer_drag = None;
                     if this
                         .chat_scroll_drag
@@ -8873,8 +9201,13 @@ impl Render for ResonaApp {
                 }),
             )
             .on_action(cx.listener(Self::dismiss_modal))
-            .on_action(cx.listener(|this, _: &Quit, _, cx| this.begin_shutdown(cx)))
+            .on_action(cx.listener(|this, _: &Quit, window, cx| this.begin_shutdown(window, cx)))
             .capture_key_down(cx.listener(|this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                if event.keystroke.key == "escape" && this.panel_drag.take().is_some() {
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
                 if event.keystroke.key == "escape" && this.composer_drag.take().is_some() {
                     cx.stop_propagation();
                     return;
@@ -8960,35 +9293,18 @@ impl Render for ResonaApp {
                         .left(px(self.navigation_width() + 16.))
                         .right(px(16.))
                         .top(px(64.))
-                        .p_3()
-                        .rounded(px(5.))
-                        .border_1()
-                        .border_color(color(Color::DangerBorder))
-                        .bg(color(Color::DangerSurface))
-                        .shadow_md()
                         .flex()
-                        .items_center()
-                        .gap_3()
-                        .child(
-                            div()
-                                .flex_1()
-                                .text_xs()
-                                .text_color(color(RED))
-                                .child(display_error.clone()),
-                        )
-                        .child(
-                            Button::new("dismiss-error")
-                                .icon(IconName::Close)
-                                .ghost()
-                                .tooltip("关闭")
-                                .on_click(move |_, _, cx| {
-                                    entity.update(cx, |this, cx| {
-                                        this.error.clear();
-                                        this.playback_error = None;
-                                        cx.notify();
-                                    })
-                                }),
-                        ),
+                        .justify_center()
+                        .child(components::error_notice(
+                            display_error.clone(),
+                            move |_, _, cx| {
+                                entity.update(cx, |this, cx| {
+                                    this.error.clear();
+                                    this.playback_error = None;
+                                    cx.notify();
+                                })
+                            },
+                        )),
                 )
             })
             .children(self.render_modal(&view))
@@ -9055,6 +9371,32 @@ fn can_poke_user(workspace: &Workspace, target: &UserPlaybackTarget) -> bool {
             .users
             .iter()
             .any(|user| user.id == target.user && user.instance == target.instance && !user.is_self)
+}
+
+fn can_moderate_user(workspace: &Workspace, target: &UserPlaybackTarget) -> bool {
+    workspace.connected()
+        && workspace.session.can_moderate_members
+        && workspace.session.id == target.session
+        && !target.instance.is_empty()
+        && workspace.users.iter().any(|user| {
+            user.id == target.user
+                && user.instance == target.instance
+                && !user.is_self
+                && user.server_role != "owner"
+                && (user.server_role != "admin" || workspace.session.can_kick_admins)
+        })
+}
+
+fn can_move_user(workspace: &Workspace, target: &UserPlaybackTarget, channel: &str) -> bool {
+    can_moderate_user(workspace, target)
+        && workspace
+            .users
+            .iter()
+            .find(|u| u.id == target.user && u.instance == target.instance)
+            .is_some_and(|u| u.channel_id != channel)
+        && workspace.channels.iter().any(|ch| {
+            ch.id == channel && (!ch.admin_only || workspace.session.channel_id == channel)
+        })
 }
 
 fn notification_applies(workspace: &Workspace, notification: &crate::model::Notification) -> bool {
@@ -9346,6 +9688,7 @@ fn detail_selection_change(
             if old.name != channel.name
                 || old.description != channel.description
                 || old.bitrate != channel.bitrate
+                || old.admin_only != channel.admin_only
                 || old.parent_id != channel.parent_id
                 || old.password_required != channel.password_required
                 || old.kind != channel.kind
@@ -9415,6 +9758,7 @@ fn native_detail_value(workspace: &Workspace, selection: &DetailSelection) -> Op
                 let bitrate = if ch.bitrate == 0 { 48000 } else { ch.bitrate };
                 json!({
                     "id": ch.id, "name": ch.name, "description": ch.description,
+					"access": if ch.admin_only { "管理员频道" } else { "普通频道" },
                     "codec": format!("Opus mono / 48 kHz / 20 ms / {} kbps", bitrate / 1000),
                     "members": ch.members, "memberSyncState": if ch.id == workspace.session.channel_id && workspace.session.member_sync_state == "limited" { "ready" } else { &workspace.session.member_sync_state },
                     "default": ch.is_default
@@ -9442,6 +9786,7 @@ fn detail_fields(selection: &DetailSelection) -> &'static [(&'static str, &'stat
         DetailSelection::Channel(_) => &[
             ("description", "描述"),
             ("codec", "编码"),
+            ("access", "访问权限"),
             ("members", "当前人数"),
             ("default", "默认频道"),
         ],
@@ -9586,6 +9931,14 @@ fn server_role_label(role: &str) -> &'static str {
         _ => "未知角色",
     }
 }
+
+fn account_form_action(logged: bool, mode: &str) -> &str {
+    if logged && mode != "change_password" {
+        "update_profile"
+    } else {
+        mode
+    }
+}
 fn message_status_label(status: &str) -> &'static str {
     match status {
         "sending" => "发送中",
@@ -9694,6 +10047,45 @@ fn ordered_channels(channels: &[crate::model::Channel]) -> Vec<(crate::model::Ch
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn moderation_gates_protect_peers_and_scope_restricted_pulls() {
+        let mut w = crate::model::Workspace::default();
+        w.session.mode = "connected".into();
+        w.session.id = "session".into();
+        w.session.channel_id = "2".into();
+        w.session.can_moderate_members = true;
+        w.channels = vec![crate::model::Channel {
+            id: "2".into(),
+            admin_only: true,
+            ..Default::default()
+        }];
+        w.users = vec![crate::model::User {
+            id: "9".into(),
+            instance: "live".into(),
+            server_role: "member".into(),
+            channel_id: "1".into(),
+            ..Default::default()
+        }];
+        let target = super::UserPlaybackTarget {
+            session: "session".into(),
+            user: "9".into(),
+            instance: "live".into(),
+        };
+        assert!(super::can_moderate_user(&w, &target));
+        assert!(super::can_move_user(&w, &target, "2"));
+        w.session.channel_id = "1".into();
+        assert!(!super::can_move_user(&w, &target, "2"));
+        w.users[0].server_role = "admin".into();
+        assert!(!super::can_moderate_user(&w, &target));
+        w.session.can_kick_admins = true;
+        assert!(super::can_moderate_user(&w, &target));
+        w.users[0].server_role = "owner".into();
+        assert!(!super::can_moderate_user(&w, &target));
+        w.users[0].server_role = "member".into();
+        w.users[0].instance = "reused".into();
+        assert!(!super::can_moderate_user(&w, &target));
+    }
+
     #[test]
     fn poke_targets_are_session_scoped_and_never_self_or_reused_ids() {
         let mut workspace = super::Workspace::default();
@@ -10215,6 +10607,60 @@ mod tests {
         assert_eq!(super::composer_height(800., 1200.), 480.);
         assert_eq!(super::composer_height(210., 600.), 210.);
     }
+
+    #[test]
+    fn side_panels_snap_with_hysteresis_and_bounded_readable_widths() {
+        use super::{PanelDrag, SidePanel};
+        let mut rail = PanelDrag {
+            panel: SidePanel::Servers,
+            start_x: 172.,
+            start_width: 172.,
+            width: 172.,
+        };
+        rail.move_to(150.);
+        assert_eq!(rail.width, 150.);
+        rail.move_to(100.);
+        assert_eq!(rail.width, 144.);
+        rail.move_to(92.);
+        assert_eq!(rail.width, 52.);
+        rail.move_to(110.);
+        assert_eq!(rail.width, 52.);
+        rail.move_to(116.);
+        assert_eq!(rail.width, 144.);
+        rail.move_to(2000.);
+        assert_eq!(rail.width, 172.);
+        rail.move_to(-2000.);
+        assert_eq!(rail.width, 52.);
+        let mut collapsed = PanelDrag {
+            panel: SidePanel::Servers,
+            start_x: 52.,
+            start_width: 52.,
+            width: 52.,
+        };
+        collapsed.move_to(120.);
+        assert_eq!(collapsed.width, 144.);
+
+        let mut details = PanelDrag {
+            panel: SidePanel::Details,
+            start_x: 500.,
+            start_width: 280.,
+            width: 280.,
+        };
+        details.move_to(540.);
+        assert_eq!(details.width, 240.);
+        details.move_to(620.);
+        assert_eq!(details.width, 220.);
+        details.move_to(648.);
+        assert_eq!(details.width, 0.);
+        details.move_to(630.);
+        assert_eq!(details.width, 0.);
+        details.move_to(624.);
+        assert_eq!(details.width, 220.);
+        details.move_to(-2000.);
+        assert_eq!(details.width, 280.);
+        details.move_to(2000.);
+        assert_eq!(details.width, 0.);
+    }
     #[test]
     fn native_detail_cache_projects_membership_and_metadata_notifications() {
         let mut workspace = Workspace::default();
@@ -10228,13 +10674,16 @@ mod tests {
         let selection = DetailSelection::Channel("1".into());
         let cached = super::native_detail_value(&workspace, &selection).unwrap();
         assert_eq!(cached["members"], 1);
+        assert_eq!(cached["access"], "普通频道");
         workspace.channels[0].members = 4;
         workspace.channels[0].description = "Updated".into();
         workspace.channels[0].bitrate = 32000;
+        workspace.channels[0].admin_only = true;
         let updated = super::native_detail_value(&workspace, &selection).unwrap();
         assert_eq!(cached["members"], 1);
         assert_eq!(updated["members"], 4);
         assert_eq!(updated["description"], "Updated");
+        assert_eq!(updated["access"], "管理员频道");
         assert_eq!(updated["codec"], "Opus mono / 48 kHz / 20 ms / 32 kbps");
         workspace.session.member_sync_state = "pending".into();
         assert_eq!(
@@ -10276,7 +10725,7 @@ mod tests {
         let fields = super::detail_fields(&channel);
         assert_eq!(
             fields.iter().map(|f| f.0).collect::<Vec<_>>(),
-            vec!["description", "codec", "members", "default"]
+            vec!["description", "codec", "access", "members", "default"]
         );
         let user = DetailSelection::User("2".into());
         assert_eq!(super::detail_fields(&user).len(), 3);

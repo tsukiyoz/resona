@@ -6,6 +6,8 @@ pub use crate::config::ServerProfile;
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Session {
+    pub can_moderate_members: bool,
+    pub can_kick_admins: bool,
     pub can_poke: bool,
     pub chat_state: String,
     pub chat_epoch: u32,
@@ -49,6 +51,7 @@ pub struct Session {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Channel {
+    pub admin_only: bool,
     pub bitrate: u32,
     pub is_default: bool,
     pub id: String,

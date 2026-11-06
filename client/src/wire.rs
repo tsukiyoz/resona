@@ -147,6 +147,7 @@ pub fn valid_state(state: &pb::State, expected_uid: &str) -> bool {
     let mut channels = Vec::with_capacity(state.channels.len());
     for ch in &state.channels {
         if ch.id == 0
+            || (ch.id == state.default_channel && ch.admin_only)
             || ch.id > u16::MAX.into()
             || channels.contains(&ch.id)
             || (ch.bitrate != 0

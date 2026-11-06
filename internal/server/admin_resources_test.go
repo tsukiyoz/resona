@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -15,7 +16,7 @@ func TestAdminChannelAPIUsesCASAndDefaultGuards(t *testing.T) {
 	s, owner, _ := channelTestServer(t)
 	a, cookie, csrf := testAdminLogin(t, s, owner.identity)
 	_, rev := s.config.Store.state()
-	body := fmt.Sprintf(`{"revision":%d,"name":"Web channel","description":"test","bitrate":32000}`, rev)
+	body := fmt.Sprintf(`{"revision":%d,"name":"Web channel","description":"test","bitrate":32000,"admin_only":true}`, rev)
 	if w := adminRequest(a, "POST", "/channels", body, csrf, cookie); w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
 	}
@@ -26,17 +27,44 @@ func TestAdminChannelAPIUsesCASAndDefaultGuards(t *testing.T) {
 	if w := adminRequest(a, "DELETE", "/channels/1", fmt.Sprintf(`{"revision":%d}`, rev), csrf, cookie); w.Code != 409 {
 		t.Fatal(w.Code, w.Body.String())
 	}
+	if w := adminRequest(a, "PATCH", "/channels/1", fmt.Sprintf(`{"revision":%d,"name":"Lobby","bitrate":32000,"admin_only":true}`, rev), csrf, cookie); w.Code != 409 {
+		t.Fatal("restricted default accepted", w.Code, w.Body.String())
+	}
 	if w := adminRequest(a, "POST", "/channels/3/order", fmt.Sprintf(`{"revision":%d,"before_id":1}`, rev), csrf, cookie); w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
 	}
 	state := s.adminSnapshot(owner.identity)
-	if state.Channels[0].ID != 3 || state.DefaultChannel != 1 {
-		t.Fatal("order/default changed incorrectly")
+	if state.Channels[0].ID != 3 || !state.Channels[0].AdminOnly || state.DefaultChannel != 1 {
+		t.Fatal("order/access/default changed incorrectly")
 	}
-	for _, c := range state.Credentials {
-		if c.Digest != "" {
-			t.Fatal("credential digest exposed")
+}
+
+func TestRetiredTokensAreDiscardedAndRolesRetained(t *testing.T) {
+	s, owner, _ := channelTestServer(t)
+	a, cookie, csrf := testAdminLogin(t, s, owner.principal())
+	for _, path := range []string{"/credentials", "/invitations"} {
+		if w := adminRequest(a, "POST", path, `{}`, csrf, cookie); w.Code != 404 {
+			t.Fatal("retired issuance still reachable", path, w.Code)
 		}
+	}
+	if w := adminRequest(a, "POST", "/login", `{"username":"owner","password":"`+testAccountPassword+`","invitation":"retired"}`, "", nil); w.Code != 400 {
+		t.Fatal("retired redemption accepted", w.Code)
+	}
+	r := s.config.Store.snapshot()
+	data, _ := json.Marshal(r)
+	var document map[string]json.RawMessage
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	document["credentials"], document["invitations"] = json.RawMessage(`[{"secret":"retired"}]`), json.RawMessage(`[{"secret":"retired"}]`)
+	data, _ = json.Marshal(document)
+	restored, err := decodeResources(data)
+	if err != nil || restored.Owner != owner.principal() {
+		t.Fatal("retired records changed owner", err)
+	}
+	data, _ = json.Marshal(restored)
+	if strings.Contains(string(data), "retired") || strings.Contains(string(data), "invitations") || strings.Contains(string(data), "credentials") {
+		t.Fatal("retired records persisted")
 	}
 }
 

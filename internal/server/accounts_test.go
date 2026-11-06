@@ -129,7 +129,7 @@ func TestAccountPasswordWebLoginRolesAndRevocation(t *testing.T) {
 	}
 	console, _ := NewAdminConsole(s, testAdminOrigin)
 	body := `{"username":"alice","password":"correct horse battery staple"}`
-	if r := adminRequest(console, "POST", "/login", body, "", nil); r.Code != 401 {
+	if r := adminRequest(console, "POST", "/login", body, "", nil); r.Code != 403 {
 		t.Fatal("registration granted administration")
 	}
 	claim, err := store.ProvisionOwnerClaim(false)

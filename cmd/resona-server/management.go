@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/tsukiyoz/resona/internal/server"
@@ -33,37 +32,6 @@ func newOwnerCommand(configDir string) *cobra.Command {
 		owner.AddCommand(cmd)
 	}
 	return owner
-}
-
-func newAdminCommand(configDir string) *cobra.Command {
-	var store storeOptions
-	var identity, label string
-	var ttl time.Duration
-	admin := &cobra.Command{Use: "admin", Short: "Offline web credential provisioning (stop the server first)"}
-	cmd := &cobra.Command{
-		Use: "token", Short: "Create a web credential for an existing owner or admin; print once", Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			return store.withStore(func(store *server.Store) error {
-				owner := store.OwnerIdentity()
-				target := identity
-				if target == "" {
-					target = owner
-				}
-				_, token, err := store.IssueAdminCredential(cmd.Context(), owner, target, label, ttl, 0)
-				if err != nil {
-					return err
-				}
-				_, err = fmt.Fprintln(cmd.OutOrStdout(), token)
-				return err
-			})
-		},
-	}
-	store.flags(cmd, configDir)
-	cmd.Flags().StringVar(&identity, "identity", "", "existing management UID (default: owner)")
-	cmd.Flags().StringVar(&label, "label", "Web administration", "credential label")
-	cmd.Flags().DurationVar(&ttl, "expires", 30*24*time.Hour, "credential lifetime (1h-2160h)")
-	admin.AddCommand(cmd)
-	return admin
 }
 
 func newAccountCommand(configDir string) *cobra.Command {

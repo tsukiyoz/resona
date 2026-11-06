@@ -2,15 +2,11 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
-
-	w "github.com/tsukiyoz/resona/internal/nativewire"
 
 	"github.com/tsukiyoz/resona/internal/server"
 )
@@ -44,39 +40,14 @@ func TestInvalidVoiceQueueSlotsDoNotReadKeysOrCreateData(t *testing.T) {
 	}
 }
 
-func TestOfflineAdminCredentialBindsExistingOwnerAndUsesAccessLock(t *testing.T) {
+func TestRetiredAdminTokenCommandCannotIssueCredentials(t *testing.T) {
 	dir := t.TempDir()
-	store, err := server.OpenStore(server.ChatConfig{Directory: filepath.Join(dir, "chat")}, dir, []w.Channel{{ID: 1, Name: "Lobby"}})
-	if err != nil {
-		t.Fatal(err)
+	if _, err := executeTest(t, "admin", "token", "--access-dir", dir); err == nil {
+		t.Fatal("retired credential command accepted")
 	}
-	claim, err := store.ProvisionOwnerClaim(false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = store.Claim(strings.Repeat("a", 64), claim); err != nil {
-		t.Fatal(err)
-	}
-	store.Close()
-	out, err := executeTest(t, "admin", "token", "--access-dir", dir, "--label", "Laptop", "--expires", "24h")
-	if err != nil || len(strings.TrimSpace(out)) < 32 {
-		t.Fatal("credential provisioning failed", err)
-	}
-	store, err = server.OpenStore(server.ChatConfig{Directory: filepath.Join(dir, "chat")}, dir, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	if _, _, err = store.IssueAdminCredential(context.Background(), strings.Repeat("b", 64), strings.Repeat("a", 64), "Invalid", time.Hour, 0); err == nil {
-		t.Fatal("member issued token")
-	}
-	lock, err := server.LockAccess(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer lock.Close()
-	if _, err = executeTest(t, "admin", "token", "--access-dir", dir); err == nil {
-		t.Fatal("live store lock bypassed")
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 0 {
+		t.Fatal("retired command created state", err)
 	}
 }
 

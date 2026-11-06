@@ -125,10 +125,12 @@ func (s *Server) accountCommand(p *peer, f w.Frame) bool {
 			logger := p.identityLoggerLocked()
 			p.account = accounts.Proof{}
 			p.accountExpires = time.Time{}
+			p.temporaryChannel = 0
 			p.member.Muted = true
 			p.epoch++
 			p.member.Epoch = p.epoch
 			s.restartChatLocked(p)
+			s.enforceChannelAccessLocked(s.config.Store.snapshot())
 			s.broadcastLocked(nil)
 			s.mu.Unlock()
 			if previous.UID != "" {
@@ -181,11 +183,15 @@ func (s *Server) accountCommand(p *peer, f w.Frame) bool {
 		}
 	}
 	p.account = proof
+	if previous.UID != proof.UID {
+		p.temporaryChannel = 0
+	}
 	p.accountExpires = proof.Expires
 	p.member.Nickname = proof.Nickname
 	p.epoch++
 	p.member.Epoch = p.epoch
 	s.restartChatLocked(p)
+	s.enforceChannelAccessLocked(s.config.Store.snapshot())
 	s.broadcastLocked(nil)
 	s.enqueueLocked(p, w.ReplyKind, f.Request, w.Reply{Code: w.OK, AccountToken: secret})
 	logger := p.identityLoggerLocked()

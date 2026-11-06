@@ -12,6 +12,10 @@ import (
 // ordinary copyable values, without protobuf runtime state or mutable pointers.
 func marshalBody(kind uint8, value any) (proto.Message, error) {
 	switch v := value.(type) {
+	case ModerateMember:
+		if kind == ModerateMemberKind {
+			return &pb.ModerateMember{Target: uint32(v.Target), Instance: v.Instance, Action: v.Action, Channel: uint32(v.Channel)}, nil
+		}
 	case Poke:
 		if kind == PokeKind {
 			return &pb.Poke{Target: uint32(v.Target), Instance: v.Instance}, nil
@@ -30,11 +34,11 @@ func marshalBody(kind uint8, value any) (proto.Message, error) {
 		}
 	case CreateChannel:
 		if kind == CreateChannelKind {
-			return &pb.CreateChannel{Name: v.Name, Description: v.Description, Bitrate: v.Bitrate}, nil
+			return &pb.CreateChannel{Name: v.Name, Description: v.Description, Bitrate: v.Bitrate, AdminOnly: v.AdminOnly}, nil
 		}
 	case UpdateChannel:
 		if kind == UpdateChannelKind {
-			return &pb.UpdateChannel{Id: uint32(v.ID), Name: v.Name, Description: v.Description, Bitrate: v.Bitrate}, nil
+			return &pb.UpdateChannel{Id: uint32(v.ID), Name: v.Name, Description: v.Description, Bitrate: v.Bitrate, AdminOnly: v.AdminOnly}, nil
 		}
 	case DeleteChannel:
 		if kind == DeleteChannelKind {
@@ -59,6 +63,7 @@ func marshalBody(kind uint8, value any) (proto.Message, error) {
 		s := &pb.State{Name: v.Name, Self: uint32(v.Self), Epoch: v.Epoch, Channels: make([]*pb.Channel, len(v.Channels)), Members: make([]*pb.Member, len(v.Members)), IdentityUid: v.IdentityUID, ServerRole: v.ServerRole, CanClaimOwner: v.CanClaimOwner}
 		s.CanManageChannels = v.CanManageChannels
 		s.CanPoke = v.CanPoke
+		s.CanModerateMembers, s.CanKickAdmins = v.CanModerateMembers, v.CanKickAdmins
 		s.CanReorderChannels = v.CanReorderChannels
 		s.CanConfigureChannelAudio = v.CanConfigureChannelAudio
 		s.CanWatchResources, s.Revision = v.CanWatchResources, v.Revision
@@ -69,7 +74,7 @@ func marshalBody(kind uint8, value any) (proto.Message, error) {
 		channels := make([]pb.Channel, len(v.Channels))
 		members := make([]pb.Member, len(v.Members))
 		for i, c := range v.Channels {
-			channels[i] = pb.Channel{Id: uint32(c.ID), Name: c.Name, Description: c.Description, Bitrate: c.Bitrate}
+			channels[i] = pb.Channel{Id: uint32(c.ID), Name: c.Name, Description: c.Description, Bitrate: c.Bitrate, AdminOnly: c.AdminOnly}
 			s.Channels[i] = &channels[i]
 		}
 		for i, m := range v.Members {
@@ -108,6 +113,18 @@ func marshalBody(kind uint8, value any) (proto.Message, error) {
 
 func decodeBody(f Frame, value any) error {
 	switch out := value.(type) {
+	case *ModerateMember:
+		if out == nil || f.Kind != ModerateMemberKind {
+			return ErrPacket
+		}
+		var v pb.ModerateMember
+		if err := unmarshal.Unmarshal(f.Body, &v); err != nil {
+			return err
+		}
+		if v.Target == 0 || v.Target > math.MaxUint16 || v.Channel > math.MaxUint16 || len(v.Instance) == 0 || len(v.Instance) > 128 || (v.Action != "move" && v.Action != "kick") || (v.Action == "move" && v.Channel == 0) {
+			return ErrPacket
+		}
+		*out = ModerateMember{Target: uint16(v.Target), Instance: v.Instance, Action: v.Action, Channel: uint16(v.Channel)}
 	case *Poke:
 		if out == nil || f.Kind != PokeKind {
 			return ErrPacket
@@ -161,7 +178,7 @@ func decodeBody(f Frame, value any) error {
 		if err := unmarshal.Unmarshal(f.Body, &v); err != nil {
 			return err
 		}
-		*out = CreateChannel{Name: v.Name, Description: v.Description, Bitrate: v.Bitrate}
+		*out = CreateChannel{Name: v.Name, Description: v.Description, Bitrate: v.Bitrate, AdminOnly: v.AdminOnly}
 	case *UpdateChannel:
 		if out == nil || f.Kind != UpdateChannelKind {
 			return ErrPacket
@@ -173,7 +190,7 @@ func decodeBody(f Frame, value any) error {
 		if v.Id > math.MaxUint16 {
 			return ErrPacket
 		}
-		*out = UpdateChannel{ID: uint16(v.Id), Name: v.Name, Description: v.Description, Bitrate: v.Bitrate}
+		*out = UpdateChannel{ID: uint16(v.Id), Name: v.Name, Description: v.Description, Bitrate: v.Bitrate, AdminOnly: v.AdminOnly}
 	case *DeleteChannel:
 		if out == nil || f.Kind != DeleteChannelKind {
 			return ErrPacket
@@ -303,6 +320,7 @@ func decodeBody(f Frame, value any) error {
 		s := State{Name: v.Name, Self: uint16(v.Self), Epoch: v.Epoch, Channels: make([]Channel, len(v.Channels)), Members: make([]Member, len(v.Members)), IdentityUID: v.IdentityUid, ServerRole: v.ServerRole, CanClaimOwner: v.CanClaimOwner}
 		s.CanManageChannels = v.CanManageChannels
 		s.CanPoke = v.CanPoke
+		s.CanModerateMembers, s.CanKickAdmins = v.CanModerateMembers, v.CanKickAdmins
 		s.CanReorderChannels = v.CanReorderChannels
 		s.CanConfigureChannelAudio = v.CanConfigureChannelAudio
 		s.CanWatchResources, s.Revision = v.CanWatchResources, v.Revision
@@ -312,7 +330,7 @@ func decodeBody(f Frame, value any) error {
 			if c == nil || c.Id > math.MaxUint16 {
 				return ErrPacket
 			}
-			s.Channels[i] = Channel{ID: uint16(c.Id), Name: c.Name, Description: c.Description, Bitrate: c.Bitrate}
+			s.Channels[i] = Channel{ID: uint16(c.Id), Name: c.Name, Description: c.Description, Bitrate: c.Bitrate, AdminOnly: c.AdminOnly}
 		}
 		for i, m := range v.Members {
 			if m == nil || m.Id > math.MaxUint16 || m.Channel > math.MaxUint16 {

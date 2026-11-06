@@ -29,6 +29,7 @@ type AdminChannel struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Bitrate     uint32 `json:"bitrate"`
+	AdminOnly   bool   `json:"admin_only"`
 }
 
 type AdminSnapshot struct {
@@ -43,7 +44,6 @@ type AdminSnapshot struct {
 	Members            []AdminMember            `json:"members"`
 	Owner              string                   `json:"owner"`
 	Admins             []string                 `json:"admins"`
-	Credentials        []AdminCredential        `json:"credentials,omitempty"`
 	Bans               []Ban                    `json:"bans"`
 	Settings           *ServerSettings          `json:"settings"`
 	Accounts           []accounts.Account       `json:"accounts"`
@@ -65,7 +65,7 @@ func (s *Server) adminSnapshot(identity string) AdminSnapshot {
 		state.Name = r.Settings.Name
 		state.MaxClients = r.Settings.MaxClients
 	}
-	for _, object := range []string{"channels", "members", "roles", "settings", "tokens"} {
+	for _, object := range []string{"channels", "members", "roles", "settings", "bans"} {
 		state.Capabilities[object] = authorized(r, identity, object, "write", "member")
 	}
 	for _, p := range s.peers {
@@ -79,12 +79,6 @@ func (s *Server) adminSnapshot(identity string) AdminSnapshot {
 		state.Members = append(state.Members, AdminMember{ID: p.member.ID, Instance: p.member.Instance, Identity: identity, Nickname: p.member.Nickname, Channel: p.member.Channel, Role: roleOf(r, p.principal()), Muted: p.member.Muted})
 	}
 	slices.SortFunc(state.Members, func(a, b AdminMember) int { return int(a.ID) - int(b.ID) })
-	if state.Capabilities["tokens"] {
-		for _, c := range r.Credentials {
-			c.Digest = ""
-			state.Credentials = append(state.Credentials, c)
-		}
-	}
 	return state
 }
 
@@ -206,6 +200,7 @@ func (a *AdminConsole) channel(wr http.ResponseWriter, r *http.Request) {
 		Name        string `json:"name"`
 		Description string `json:"description"`
 		Bitrate     uint32 `json:"bitrate"`
+		AdminOnly   bool   `json:"admin_only"`
 		BeforeID    uint16 `json:"before_id"`
 	}
 	if !adminDecode(wr, r, &v) {
@@ -232,7 +227,7 @@ func (a *AdminConsole) channel(wr http.ResponseWriter, r *http.Request) {
 			kind = w.ReorderChannelKind
 		}
 	}
-	code, err := a.server.mutateChannelAt(r.Context(), session.Identity, v.Revision, kind, uint16(id), v.BeforeID, v.Name, v.Description, v.Bitrate)
+	code, err := a.server.mutateChannelAt(r.Context(), session.Identity, v.Revision, kind, uint16(id), v.BeforeID, v.Name, v.Description, ChannelOptions{Bitrate: v.Bitrate, AdminOnly: v.AdminOnly})
 	if code == w.OK {
 		adminJSON(wr, 200, map[string]bool{"ok": true})
 		return
@@ -245,7 +240,7 @@ func (a *AdminConsole) channel(wr http.ResponseWriter, r *http.Request) {
 	case w.PermissionDenied:
 		adminFailure(wr, ErrPermission)
 	case w.DefaultChannel:
-		adminError(wr, 409, "默认频道不能删除")
+		adminError(wr, 409, "默认频道必须保持普通且不能删除")
 	case w.ChannelNotEmpty:
 		adminError(wr, 409, "频道内仍有成员，不能删除")
 	case w.WrongChannel:

@@ -28,7 +28,7 @@ func newCommand() (*cobra.Command, error) {
 	}
 	root.SetVersionTemplate("resona-server {{.Version}}\n")
 	root.AddCommand(newServeCommand(configDir), newIdentityCommand(configDir),
-		newOwnerCommand(configDir), newAdminCommand(configDir), newAccountCommand(configDir), newPasswordCommand(configDir),
+		newOwnerCommand(configDir), newAccountCommand(configDir), newPasswordCommand(configDir),
 		&cobra.Command{
 			Use: "version", Short: "Print build information", Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, _ []string) error {

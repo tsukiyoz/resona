@@ -19,6 +19,25 @@ use gpui_kit::{
 use std::borrow::Cow;
 
 struct Assets;
+gpui_kit::assets::icon_assets!(ChannelIcons, [Shield]);
+
+#[cfg(test)]
+mod asset_tests {
+    use super::*;
+
+    #[test]
+    fn channel_permission_and_existing_icons_are_bundled() {
+        for path in [
+            gpui_kit::assets::IconName::Shield.path(),
+            gpui_kit::assets::IconName::CircleAlert.path(),
+            "resona.svg".into(),
+        ] {
+            let bytes = Assets.load(&path).unwrap().expect("icon must be bundled");
+            assert!(std::str::from_utf8(&bytes).unwrap().contains("<svg"));
+            assert!(Assets.list("").unwrap().contains(&path));
+        }
+    }
+}
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
@@ -35,11 +54,15 @@ impl AssetSource for Assets {
         if let Some(asset) = asset {
             return Ok(Some(Cow::Borrowed(asset)));
         }
+        if let Some(asset) = ChannelIcons.load(path)? {
+            return Ok(Some(asset));
+        }
         gpui_kit::assets::Assets.load(path)
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
         let mut assets = gpui_kit::assets::Assets.list(path)?;
+        assets.extend(ChannelIcons.list(path)?);
         for asset in [
             "resona.svg",
             "mic.svg",
@@ -115,9 +138,9 @@ fn main() -> Result<()> {
             |window, cx| {
                 let view = cx.new(|cx| ui::ResonaApp::new(window, cx));
                 let close_view = view.downgrade();
-                window.on_window_should_close(cx, move |_, cx| {
+                window.on_window_should_close(cx, move |window, cx| {
                     close_view
-                        .update(cx, |view, cx| view.begin_shutdown(cx))
+                        .update(cx, |view, cx| view.begin_shutdown(window, cx))
                         .is_err()
                 });
                 view

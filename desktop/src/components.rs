@@ -6,13 +6,65 @@ use crate::{
 };
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
-    IconName,
+    Icon, IconName, Sizable,
     button::{Button, ButtonVariants},
+    scroll::ScrollableElement,
 };
 use gpui_kit::{
     AnyElement, InteractiveElement, IntoElement, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, div, prelude::*, px, svg,
 };
+
+pub fn error_notice(
+    text: String,
+    dismiss: impl Fn(&gpui_kit::ClickEvent, &mut gpui_kit::Window, &mut gpui_kit::App) + 'static,
+) -> impl IntoElement {
+    div()
+        .id("error-notice")
+        .max_w(px(360.))
+        .min_w_0()
+        .px_3()
+        .py_2()
+        .rounded(px(8.))
+        .bg(color(Color::Panel))
+        .border_1()
+        .border_color(color(Color::Border))
+        .shadow_sm()
+        .flex()
+        .items_start()
+        .gap_2()
+        .child(
+            div().h(px(24.)).flex_none().flex().items_center().child(
+                Icon::new(gpui_kit::assets::IconName::CircleAlert)
+                    .size(px(16.))
+                    .text_color(color(Color::Danger)),
+            ),
+        )
+        .child(
+            div()
+                .id("error-notice-text")
+                .min_w_0()
+                .max_h(px(144.))
+                .py(px(2.))
+                .pr_2()
+                .text_sm()
+                .line_height(px(20.))
+                .text_color(color(Color::Text))
+                .child(text)
+                .overflow_y_scrollbar(),
+        )
+        .child(
+            Button::new("dismiss-error")
+                .icon(IconName::Close)
+                .ghost()
+                .xsmall()
+                .w(px(24.))
+                .h(px(24.))
+                .flex_none()
+                .tooltip("关闭通知")
+                .on_click(dismiss),
+        )
+}
 
 pub fn attention_notice(
     text: String,

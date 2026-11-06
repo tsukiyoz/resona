@@ -20,8 +20,12 @@ func channelTestServer(t *testing.T) (*Server, *peer, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := &peer{identity: strings.Repeat("a", 64)}
-	p.account = accounts.Proof{Account: accounts.Account{UID: p.identity}}
+	account, err := store.accounts.Register(context.Background(), "owner", testAccountPassword, "Owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &peer{identity: account.UID}
+	p.account = accounts.Proof{Account: account}
 	if err = store.Claim(p.identity, token); err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +34,7 @@ func channelTestServer(t *testing.T) (*Server, *peer, string) {
 
 func TestChannelOrderPersistsWithoutChangingDefaultOrMembership(t *testing.T) {
 	s, owner, path := channelTestServer(t)
-	if code := s.manageChannel(owner, w.CreateChannelKind, 0, "Third", "metadata", 20000); code != w.OK {
+	if code := s.manageChannel(owner, w.CreateChannelKind, 0, "Third", "metadata", ChannelOptions{Bitrate: 20000}); code != w.OK {
 		t.Fatal(code)
 	}
 	// An occupied channel may move; membership and voice epochs must not change.
@@ -184,16 +188,16 @@ func TestChannelAudioPersistenceValidationAndLegacyEdits(t *testing.T) {
 		t.Fatal("wrong new channel default")
 	}
 	for _, bitrate := range []uint32{16000, 20000, 32000, 48000, 64000, 37000} {
-		if code := s.manageChannel(owner, w.UpdateChannelKind, 2, "Gaming", "", bitrate); code != w.OK {
+		if code := s.manageChannel(owner, w.UpdateChannelKind, 2, "Gaming", "", ChannelOptions{Bitrate: bitrate}); code != w.OK {
 			t.Fatal(code)
 		}
 	}
-	if code := s.manageChannel(owner, w.UpdateChannelKind, 2, "Legacy rename", "", 0); code != w.OK || s.config.Channels[1].Bitrate != 37000 {
+	if code := s.manageChannel(owner, w.UpdateChannelKind, 2, "Rename", "", ChannelOptions{}); code != w.OK || s.config.Channels[1].Bitrate != 37000 {
 		t.Fatal("old client reset bitrate")
 	}
 	before := append([]w.Channel(nil), s.config.Channels...)
 	for _, bitrate := range []uint32{1, 15999, 16500, 64001, ^uint32(0)} {
-		if code := s.manageChannel(owner, w.UpdateChannelKind, 2, "invalid", "", bitrate); code != w.Rejected {
+		if code := s.manageChannel(owner, w.UpdateChannelKind, 2, "invalid", "", ChannelOptions{Bitrate: bitrate}); code != w.Rejected {
 			t.Fatal(code)
 		}
 	}
