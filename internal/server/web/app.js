@@ -131,7 +131,6 @@ function reset(message = "") {
   $("#view").replaceChildren();
   $("#workspace").hidden = true;
   $("#login-screen").hidden = false;
-  $("#token").value = "";
   $("#account-password").value = "";
   $("#login-error").textContent = message;
   $("#login-form button").disabled = loggingOut;
@@ -206,13 +205,16 @@ async function enter() {
 
 function render() {
   if (!snapshot) return;
+  if (view === "administrators" && !snapshot.capabilities.roles) view = "access";
+  document.querySelector('[data-view="administrators"]').hidden = !snapshot.capabilities.roles;
   const titles = {
     channels: ["频道", "频道顺序、音质与描述"],
     members: [
       "在线成员",
       `${snapshot.members.length} 人在线 · 上限 ${snapshot.max_clients} 人`,
     ],
-    access: ["身份与权限", "管理员、封禁与登录凭据"],
+    access: ["身份与权限", "服务器用户与封禁"],
+    administrators: ["管理员", "授权或撤销已有账号的管理权限"],
     settings: ["服务器设置", "在线配置与消息保留"],
   };
   $("#view-title").textContent = titles[view][0];
@@ -227,6 +229,7 @@ function render() {
   if (view === "channels") renderChannels();
   if (view === "members") renderMembers();
   if (view === "access") renderAccess();
+  if (view === "administrators") renderAdministrators();
   if (view === "settings" && (!$("#settings-form") || !settingsDraft))
     renderSettings();
   setDisabled();
@@ -245,7 +248,7 @@ function renderChannels() {
       channels
         .map(
           (ch, index) =>
-            `<tr><td class="name"><strong>${esc(ch.name)}</strong>${ch.id === snapshot.default_channel ? '<span class="tag">默认</span>' : ""}<span class="description">${esc(ch.description || "—")}</span></td><td>${(ch.bitrate || 48000) / 1000} kbps</td><td>${snapshot.members.filter((m) => m.channel === ch.id).length}</td><td><div class="actions">${tool("up", "上移", "up", ch.id, index === 0)}${tool("down", "下移", "down", ch.id, index === channels.length - 1)}${tool("edit", "编辑频道", "edit-channel", ch.id)}${tool("trash", "删除频道", "delete-channel", ch.id, ch.id === snapshot.default_channel)}</div></td></tr>`,
+            `<tr><td class="name"><strong>${esc(ch.name)}</strong>${ch.id === snapshot.default_channel ? '<span class="tag">默认</span>' : ""}${ch.admin_only ? '<span class="tag">管理员</span>' : ""}<span class="description">${esc(ch.description || "—")}</span></td><td>${(ch.bitrate || 48000) / 1000} kbps</td><td>${snapshot.members.filter((m) => m.channel === ch.id).length}</td><td><div class="actions">${tool("up", "上移", "up", ch.id, index === 0)}${tool("down", "下移", "down", ch.id, index === channels.length - 1)}${tool("edit", "编辑频道", "edit-channel", ch.id)}${tool("trash", "删除频道", "delete-channel", ch.id, ch.id === snapshot.default_channel)}</div></td></tr>`,
         )
         .join(""),
       "暂无频道",
@@ -273,7 +276,7 @@ function renderMembers() {
     snapshot.members
       .map(
         (m) =>
-          `<tr><td class="name"><strong>${esc(m.nickname)}</strong><span class="tag">${roleNames[m.role]}</span><div class="identity" title="${esc(m.identity)}">${esc(m.identity.slice(0, 10))}…${esc(m.identity.slice(-6))} ${tool("copy", "复制身份", "copy-identity", m.identity)}</div></td><td>${esc(snapshot.channels.find((ch) => ch.id === m.channel)?.name || m.channel)}</td><td>${m.muted ? "麦克风静音" : "麦克风开启"}</td><td><div class="actions">${canModerate(m) ? command("移动", "move", m.id) + command("踢出", "kick", m.id) + command("封禁", "ban-member", m.id, true) : ""}</div></td></tr>`,
+          `<tr><td class="name"><strong>${esc(m.nickname)}</strong><span class="tag">${roleNames[m.role]}</span><div class="identity" title="${esc(m.identity)}">${esc(m.identity.slice(0, 10))}…${esc(m.identity.slice(-6))} ${tool("copy", "复制身份", "copy-identity", m.identity)}</div></td><td>${esc(snapshot.channels.find((ch) => ch.id === m.channel)?.name || m.channel)}</td><td>${m.muted ? "麦克风静音" : "麦克风开启"}</td><td><div class="actions">${canModerate(m) ? command("移动", "move", m.id) + command("踢出", "kick", m.id) + (snapshot.capabilities.bans ? command("封禁", "ban-member", m.id, true) : "") : ""}</div></td></tr>`,
       )
       .join(""),
     "当前没有在线成员",
@@ -287,46 +290,39 @@ function renderAccess() {
   }));
   let html = `<div class="section-heading"><h3>服务器用户</h3></div>`;
   html += table(
-    ["昵称 / UID", "角色", ""],
+    ["昵称 / UID", "角色"],
     identities
       .filter((v) => v.identity)
       .map(
         (v) =>
-          `<tr><td><strong>${esc(v.nickname)}</strong><div>${esc(v.username)}</div><div class="identity">${esc(v.identity)}</div></td><td>${roleNames[v.role]}</td><td class="actions">${snapshot.capabilities.roles && v.role === "admin" ? command("撤销管理员", "revoke-admin", v.identity, true) : snapshot.capabilities.roles && v.role === "member" ? command("设为管理员", "grant-admin", v.identity) : ""}</td></tr>`,
+          `<tr><td><strong>${esc(v.nickname)}</strong><div>${esc(v.username)}</div><div class="identity">${esc(v.identity)}</div></td><td>${roleNames[v.role]}</td></tr>`,
       )
       .join(""),
     "暂无管理身份",
   );
-  html += `<section class="section"><div class="section-heading"><h3>封禁名单</h3>${snapshot.capabilities.members ? '<button data-action="add-ban">添加封禁</button>' : ""}</div>`;
+  html += `<section class="section"><div class="section-heading"><h3>封禁名单</h3>${snapshot.capabilities.bans ? '<button data-action="add-ban">添加封禁</button>' : ""}</div>`;
   html +=
     table(
       ["身份 / 原因", "到期时间", ""],
       (snapshot.bans || [])
         .map(
           (b) =>
-            `<tr><td><div class="identity">${esc(b.identity)}</div><small>${esc(b.reason)}</small></td><td>${date(b.expires)}${new Date(b.expires) < new Date() ? '<span class="tag">已过期</span>' : ""}</td><td class="actions">${snapshot.role === "owner" || !(snapshot.admins || []).includes(b.identity) ? command("解除", "unban", b.identity) : ""}</td></tr>`,
+            `<tr><td><div class="identity">${esc(b.identity)}</div><small>${esc(b.reason)}</small></td><td>${date(b.expires)}${new Date(b.expires) < new Date() ? '<span class="tag">已过期</span>' : ""}</td><td><div class="actions">${snapshot.capabilities.bans ? command("解除", "unban", b.identity) : ""}</div></td></tr>`,
         )
         .join(""),
       "暂无封禁",
     ) + "</section>";
-  if (snapshot.capabilities.tokens) {
-    html +=
-      '<section class="section"><div class="section-heading"><h3>登录凭据</h3><button data-action="create-credential">' +
-      icon("plus") +
-      "创建凭据</button></div>";
-    html +=
-      table(
-        ["名称 / 身份", "到期时间", ""],
-        (snapshot.credentials || [])
-          .map(
-            (c) =>
-              `<tr><td><strong>${esc(c.label)}</strong><div class="identity">${esc(c.identity.slice(0, 12))}…</div></td><td>${date(c.expires)}</td><td class="actions">${command("撤销", "revoke-credential", c.id, true)}</td></tr>`,
-          )
-          .join(""),
-        "暂无登录凭据",
-      ) + "</section>";
-  }
   $("#view").innerHTML = html;
+}
+
+function renderAdministrators() {
+  if (!snapshot.capabilities.roles) return;
+  const accounts = snapshot.accounts || [];
+  $("#view").innerHTML =
+    `<div class="section-heading"><h3>管理员账号</h3><button data-action="add-admin">${icon("plus")}添加管理员</button></div>` +
+    table(["昵称 / 账号", "UID", ""], accounts
+      .filter(v => (snapshot.admins || []).includes(v.uid))
+      .map(v => `<tr><td><strong>${esc(v.nickname)}</strong><div>${esc(v.username)}</div></td><td class="identity">${esc(v.uid)}</td><td><div class="actions">${command("撤销管理员", "revoke-admin", v.uid, true)}</div></td></tr>`).join(""), "暂无管理员");
 }
 
 function renderSettings() {
@@ -493,7 +489,7 @@ async function action(name, id) {
           "bitrate",
           (ch?.bitrate || 32000) / 1000,
           'type="number" min="16" max="64" required',
-        ),
+        ) + `<label for="edit-access">访问权限</label><select id="edit-access" name="admin_only" ${ch?.id === snapshot.default_channel ? "disabled" : ""}><option value="false">普通频道</option><option value="true" ${ch?.admin_only ? "selected" : ""}>管理员频道</option></select>`,
       "channels",
       (f, revision) =>
         api(ch ? `/channels/${ch.id}` : "/channels", ch ? "PATCH" : "POST", {
@@ -501,6 +497,7 @@ async function action(name, id) {
           name: f.elements.name.value,
           description: f.elements.description.value,
           bitrate: Number(f.elements.bitrate.value) * 1000,
+          admin_only: f.elements.admin_only.value === "true",
         }),
       "频道已保存",
       (current) => {
@@ -546,7 +543,11 @@ async function action(name, id) {
   } else if (name === "move" && member) {
     openEditor(
       "移动成员",
-      `<p>${esc(member.nickname)}</p><label for="edit-channel">目标频道</label><select id="edit-channel" name="channel">${snapshot.channels.map((c) => `<option value="${c.id}" ${c.id === member.channel ? "disabled" : ""}>${esc(c.name)}</option>`).join("")}</select>`,
+      `<p>${esc(member.nickname)}</p><label for="edit-channel">目标频道</label><select id="edit-channel" name="channel">${snapshot.channels.map((c) => {
+        const present = snapshot.members.some(m => m.identity === snapshot.identity && m.channel === c.id);
+        const forbidden = c.admin_only && !present && !["admin", "owner"].includes(member.role);
+        return `<option value="${c.id}" ${c.id === member.channel || forbidden ? "disabled" : ""}>${esc(c.name)}${forbidden ? "（请先在客户端进入此频道）" : ""}</option>`;
+      }).join("")}</select>`,
       "members",
       (f, revision) =>
         api(`/members/${member.id}/move`, "POST", {
@@ -569,6 +570,7 @@ async function action(name, id) {
       "成员已移出",
     );
   } else if (name === "ban-member" || name === "add-ban") {
+    if (!snapshot.capabilities.bans) return;
     openEditor(
       "封禁身份",
       field(
@@ -584,7 +586,7 @@ async function action(name, id) {
           'type="number" min="1" max="525600" required',
         ) +
         field("原因", "reason", "", 'maxlength="200"'),
-      "members",
+      "bans",
       (f, revision) =>
         api(`/bans/${f.elements.identity.value}`, "POST", {
           revision,
@@ -594,22 +596,23 @@ async function action(name, id) {
       "身份已封禁",
     );
   } else if (name === "unban") {
+    if (!snapshot.capabilities.bans) return;
     confirmAction(
       "解除封禁",
       `解除身份 …${id.slice(-8)} 的封禁？`,
-      "members",
+      "bans",
       (_, revision) => api(`/bans/${id}`, "DELETE", { revision }),
       "封禁已解除",
     );
   } else if (name === "add-admin") {
+    const candidates = (snapshot.accounts || []).filter(v => v.uid !== snapshot.owner && !(snapshot.admins || []).includes(v.uid));
+    if (!candidates.length) {
+      notice("暂无可添加的账号，请先在客户端注册", true);
+      return;
+    }
     openEditor(
       "添加管理员",
-      field(
-        "身份 UID",
-        "identity",
-        "",
-        'required pattern="[0-9a-f]{64}" maxlength="64"',
-      ),
+      `<label for="edit-identity">账号</label><select id="edit-identity" name="identity" required>${candidates.map(v => `<option value="${esc(v.uid)}">${esc(v.nickname)} · ${esc(v.username)}</option>`).join("")}</select>`,
       "roles",
       (f, revision) =>
         api(`/roles/${f.elements.identity.value}`, "PUT", {
@@ -618,46 +621,13 @@ async function action(name, id) {
         }),
       "管理员已添加",
     );
-  } else if (name === "grant-admin") {
-    const account = (snapshot.accounts || []).find(v => v.uid === id);
-    if (!account) return;
-    confirmAction("设为管理员", `授予「${account.nickname}」管理员权限？`, "roles",
-      (_, revision) => api(`/roles/${id}`, "PUT", {revision, role: "admin"}), "管理员已添加");
   } else if (name === "revoke-admin") {
     confirmAction(
       "撤销管理员",
-      `撤销身份 …${id.slice(-8)} 的管理员权限及其登录凭据？`,
+      `撤销身份 …${id.slice(-8)} 的管理员权限？账号与语音连接保留。`,
       "roles",
       (_, revision) => api(`/roles/${id}`, "PUT", { revision, role: "member" }),
       "管理员已撤销",
-    );
-  } else if (name === "create-credential") {
-    openEditor(
-      "创建登录凭据",
-      field("名称", "label", "", 'required maxlength="64"') +
-        `<label for="edit-identity">管理身份</label><select id="edit-identity" name="identity">${[snapshot.owner, ...(snapshot.admins || [])].map((uid) => `<option value="${uid}">${uid === snapshot.owner ? "所有者" : "管理员"} · …${uid.slice(-12)}</option>`).join("")}</select>` +
-        field(
-          "有效期（小时）",
-          "hours",
-          720,
-          'type="number" min="1" max="2160" required',
-        ),
-      "tokens",
-      (f, revision) =>
-        api("/credentials", "POST", {
-          revision,
-          label: f.elements.label.value,
-          identity: f.elements.identity.value,
-          hours: Number(f.elements.hours.value),
-        }),
-    );
-  } else if (name === "revoke-credential") {
-    confirmAction(
-      "撤销登录凭据",
-      "使用此凭据的管理会话将失效。",
-      "tokens",
-      (_, revision) => api(`/credentials/${id}`, "DELETE", { revision }),
-      "登录凭据已撤销",
     );
   }
 }
@@ -678,16 +648,6 @@ document.addEventListener("click", (event) => {
   }
 });
 
-$("#login-method").addEventListener("change", () => {
-  const password = $("#login-method").value === "password";
-  $("#password-login").hidden = !password;
-  $("#token-login").hidden = password;
-  $("#username").required = password;
-  $("#account-password").required = password;
-  $("#token").required = !password;
-  $("#account-password").value = $("#token").value = "";
-  $("#login-error").textContent = "";
-});
 
 $("#login-form").addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -699,11 +659,8 @@ $("#login-form").addEventListener("submit", async (event) => {
   button.textContent = "登录中…";
   $("#login-error").textContent = "";
   try {
-    const credentials = $("#login-method").value === "password"
-      ? {username: $("#username").value, password: $("#account-password").value}
-      : {token: $("#token").value};
+    const credentials = {username: $("#username").value, password: $("#account-password").value};
     session = await api("/login", "POST", credentials);
-    $("#token").value = "";
     $("#account-password").value = "";
     await enter();
   } catch (error) {
@@ -738,9 +695,9 @@ $("#editor-form").addEventListener("submit", async (event) => {
       Number(event.currentTarget.dataset.revision),
     );
     if (editor !== operation) return;
-    if (result.token || result.password) {
-      const secret = result.password || result.token;
-      const label = result.password ? "连接密码" : "登录凭据";
+    if (result.password) {
+      const secret = result.password;
+      const label = "连接密码";
       $("#editor-title").textContent = label + "已创建";
       $("#editor-fields").innerHTML =
         `<p>仅此次显示，请妥善保存</p><div class="secret" id="new-secret">${esc(secret)}</div><button type="button" id="copy-secret">${icon("copy")}复制${label}</button>`;

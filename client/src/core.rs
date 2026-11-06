@@ -691,7 +691,6 @@ impl App {
                 if ![
                     "register",
                     "password",
-                    "token",
                     "change_password",
                     "update_profile",
                     "logout",
@@ -727,17 +726,6 @@ impl App {
                 }
                 self.refresh(true);
                 Ok(self.workspace())
-            }
-            "GetAccountToken" => {
-                let handle = self
-                    .life
-                    .session(&string("sessionID"))
-                    .map_err(|e| e.message())?;
-                let secret = handle.account_token();
-                if secret.is_empty() {
-                    return Err("请先登录账号".into());
-                }
-                Ok(json!({"token": secret.as_str()}))
             }
             "SelectChannel" => {
                 let id = channel(&string("id"))?;
@@ -797,9 +785,49 @@ impl App {
                     .await?;
                 Ok(json!({}))
             }
+            "ModerateMember" => {
+                let id = string("sessionID");
+                let target = channel(&string("userID"))?;
+                let instance = string("instance");
+                let action = string("action");
+                let destination = if action == "move" {
+                    channel(&string("channelID"))?
+                } else {
+                    0
+                };
+                {
+                    let local = self.lock();
+                    let workspace = &local.projection.workspace;
+                    if !workspace.connected()
+                        || workspace.session.id != id
+                        || !workspace.session.can_moderate_members
+                        || !workspace.users.iter().any(|u| {
+                            u.id == target.to_string()
+                                && u.instance == instance
+                                && !u.is_self
+                                && u.server_role != "owner"
+                                && (u.server_role != "admin" || workspace.session.can_kick_admins)
+                        })
+                    {
+                        return Err("该成员已离线或当前身份无权管理".into());
+                    }
+                }
+                self.command(
+                    &id,
+                    session::Command::ModerateMember {
+                        target,
+                        instance,
+                        action,
+                        channel: destination,
+                    },
+                )
+                .await?;
+                Ok(json!({}))
+            }
             "CreateChannel" | "UpdateChannel" | "DeleteChannel" | "ReorderChannel" => {
                 let command = match method {
                     "CreateChannel" => session::Command::CreateChannel {
+                        admin_only: params["adminOnly"].as_bool().unwrap_or(false),
                         name: string("name"),
                         description: string("description"),
                         bitrate: params["bitrate"]
@@ -809,6 +837,7 @@ impl App {
                             .map_err(|_| "码率无效")?,
                     },
                     "UpdateChannel" => session::Command::UpdateChannel {
+                        admin_only: params["adminOnly"].as_bool().unwrap_or(false),
                         id: channel(&string("channelID"))?,
                         name: string("name"),
                         description: string("description"),
@@ -1103,7 +1132,7 @@ impl App {
         if method == "GetChannelDetails" {
             let c = w.channels.iter().find(|c| c.id == id).ok_or("频道不存在")?;
             Ok(
-                json!({"id":c.id,"name":c.name,"description":c.description,"codec":format!("Opus · {} kbps",c.bitrate/1000),"members":c.members,"isDefault":c.is_default}),
+                json!({"id":c.id,"name":c.name,"description":c.description,"codec":format!("Opus · {} kbps",c.bitrate/1000),"members":c.members,"isDefault":c.is_default,"access":if c.admin_only {"管理员频道"} else {"普通频道"}}),
             )
         } else {
             let u = w.users.iter().find(|u| u.id == id).ok_or("用户不存在")?;
@@ -1112,7 +1141,7 @@ impl App {
             )
         }
     }
-    async fn profile_command(self: &Arc<Self>, method: &str, p: Value) -> Result<Value> {
+    async fn profile_command(self: &Arc<Self>, method: &str, mut p: Value) -> Result<Value> {
         let _operation = self.credential_operation.lock().await;
         let id = p["id"].as_str().unwrap_or("").to_owned();
         let current = self.lock().projection.workspace.servers.clone();
@@ -1136,7 +1165,18 @@ impl App {
             .map_err(|_| "密码存储不可用")?;
         }
         let connection = self.connection_operation.lock().await;
+        let active_profile = {
+            let state = self.life.state.borrow();
+            match state.mode {
+                lifecycle::Mode::Connecting
+                | lifecycle::Mode::Connected
+                | lifecycle::Mode::Reconnecting => state.profile.as_ref().map(|p| p.id.clone()),
+                lifecycle::Mode::Offline | lifecycle::Mode::Failed => None,
+            }
+        };
+        let mut changed_profile = None;
         let mut delete = None;
+        let mut save_password = None;
         match method {
             "SaveServer" => {
                 let mut profile: config::ServerProfile =
@@ -1146,38 +1186,50 @@ impl App {
                 if profile.id.is_empty() {
                     profile.id = config::random_id().map_err(str::to_owned)?;
                 }
-                if self
-                    .life
-                    .state
-                    .borrow()
-                    .profile
-                    .as_ref()
-                    .is_some_and(|s| s.id == profile.id)
-                {
+                if active_profile.as_deref() == Some(profile.id.as_str()) {
                     return Err("请退出服务器后编辑".into());
                 }
+                let password = match p.get_mut("password").map(Value::take) {
+                    Some(Value::String(value)) => Zeroizing::new(value),
+                    None | Some(Value::Null) => Zeroizing::new(String::new()),
+                    _ => return Err("服务器密码无效".into()),
+                };
+                if !password.is_empty() {
+                    if password.len() < 8
+                        || password.len() > 1024
+                        || password.contains(['\0', '\r', '\n'])
+                    {
+                        return Err("服务器密码须为 8–1024 字节，不能包含换行或空字符".into());
+                    }
+                    if !self.secure_storage {
+                        return Err("系统密码存储不可用，请在连接时输入密码".into());
+                    }
+                    let key = profile.credential_key();
+                    let new_key = !current.iter().any(|old| old.credential_key() == key);
+                    save_password = Some((key, password, new_key));
+                }
+                changed_profile = Some(profile.id.clone());
                 if let Some(old) = next.iter_mut().find(|s| s.id == profile.id) {
                     if old.destination() != profile.destination() {
                         delete = Some((old.credential_key(), Some(old.account_credential_key())));
                     }
                     profile.skip_password_storage = old.skip_password_storage;
+                    if save_password.is_some() {
+                        profile.skip_password_storage = false;
+                    }
                     *old = profile;
                 } else {
                     if next.len() >= 256 {
                         return Err("服务器书签数量已达上限".into());
                     }
+                    if save_password.is_some() {
+                        profile.skip_password_storage = false;
+                    }
                     next.push(profile);
                 }
             }
             "DeleteServer" => {
-                if self
-                    .life
-                    .state
-                    .borrow()
-                    .profile
-                    .as_ref()
-                    .is_some_and(|s| s.id == id)
-                {
+                if active_profile.as_deref() == Some(id.as_str()) {
                     return Err("请退出服务器后删除".into());
                 }
                 let profile = next.iter().find(|s| s.id == id).ok_or("服务器书签不存在")?;
@@ -1186,6 +1238,7 @@ impl App {
                     Some(profile.account_credential_key()),
                 ));
                 next.retain(|s| s.id != id);
+                changed_profile = Some(id);
             }
             "ForgetServerPassword" => {
                 let profile = next
@@ -1197,40 +1250,91 @@ impl App {
             }
             _ => unreachable!(),
         }
-        let store = self.credentials.clone();
         let directory = self.options.directory.clone();
         let persisted = next.clone();
-        let receipt = if let Some((_, Some(key))) = &delete
-            && let Some(accounts) = &self.accounts
-        {
-            Some(
-                accounts
-                    .account(key.clone())
-                    .save(Zeroizing::new(String::new()))
-                    .map_err(|_| "无法清除已保存登录")?,
-            )
-        } else {
-            None
-        };
         drop(connection);
-        if let Some(receipt) = receipt {
-            credentials::saved(receipt)
-                .await
-                .map_err(|error| format!("无法清除已保存登录：{error}"))?;
-        }
+        let store = self.credentials.clone();
+        let path = directory.join("servers.json");
+        let replacement = save_password
+            .as_ref()
+            .map(|(key, password, _)| (key.clone(), password.clone()));
         tokio::task::spawn_blocking(move || {
-            if let Some((password, _)) = delete {
-                let mut store = store.lock().map_err(|_| "凭据存储不可用")?;
+            config::ProfileStore::new(path)
+                .load()
+                .map_err(str::to_owned)?;
+            // A denied replacement must not erase the original destination's credentials.
+            if let Some((key, password)) = replacement {
                 store
-                    .delete(&password)
-                    .map_err(|error| format!("无法清除已保存密码：{error}"))?;
+                    .lock()
+                    .map_err(|_| "凭据存储不可用")?
+                    .set(&key, &password)
+                    .map_err(|error| format!("无法保存服务器密码：{error}"))?;
             }
-            config::ProfileStore::new(directory.join("servers.json"))
-                .save(&persisted)
-                .map_err(str::to_owned)
+            Ok::<_, String>(())
         })
         .await
         .map_err(|_| "无法保存服务器")??;
+        let result: Result<()> = async {
+            if let Some((_, Some(key))) = &delete
+                && let Some(accounts) = &self.accounts
+            {
+                let receipt = accounts
+                    .account(key.clone())
+                    .save(Zeroizing::new(String::new()))
+                    .map_err(|_| "无法清除已保存登录")?;
+                credentials::saved(receipt)
+                    .await
+                    .map_err(|error| format!("无法清除已保存登录：{error}"))?;
+            }
+            let store = self.credentials.clone();
+            tokio::task::spawn_blocking(move || {
+                if let Some((password, _)) = delete {
+                    store
+                        .lock()
+                        .map_err(|_| "凭据存储不可用")?
+                        .delete(&password)
+                        .map_err(|error| format!("无法清除已保存密码：{error}"))?;
+                }
+                config::ProfileStore::new(directory.join("servers.json"))
+                    .save(&persisted)
+                    .map_err(str::to_owned)
+            })
+            .await
+            .map_err(|_| "无法保存服务器")?
+        }
+        .await;
+        if let Err(error) = result {
+            if let Some((key, _, new_key)) = save_password {
+                if new_key {
+                    let store = self.credentials.clone();
+                    tokio::task::spawn_blocking(move || {
+                        store
+                            .lock()
+                            .map_err(|_| "书签保存失败，且无法清理新密码")?
+                            .delete(&key)
+                            .map_err(|_| "书签保存失败，且无法清理新密码")
+                    })
+                    .await
+                    .map_err(|_| "书签保存失败，且无法清理新密码")??;
+                } else {
+                    return Err(format!("密码已更新，但服务器书签保存失败：{error}"));
+                }
+            }
+            return Err(error);
+        }
+        let _connection = self.connection_operation.lock().await;
+        let retire_failed = {
+            let state = self.life.state.borrow();
+            state.mode == lifecycle::Mode::Failed
+                && state
+                    .profile
+                    .as_ref()
+                    .is_some_and(|p| changed_profile.as_deref() == Some(p.id.as_str()))
+        };
+        if retire_failed {
+            // A failed profile is error-page context, not an active connection.
+            self.life.disconnect().await.map_err(str::to_owned)?;
+        }
         self.lock().projection.workspace.servers = next;
         self.refresh(true);
         Ok(self.workspace())

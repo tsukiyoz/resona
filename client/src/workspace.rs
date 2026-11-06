@@ -197,6 +197,8 @@ impl Projection {
             current.account_name.clear();
             current.can_claim_owner = false;
             current.can_poke = false;
+            current.can_moderate_members = false;
+            current.can_kick_admins = false;
             current.can_manage_channels = false;
             current.can_reorder_channels = false;
             current.can_configure_channel_audio = false;
@@ -224,6 +226,8 @@ impl Projection {
         current.server_role = state.server_role.clone();
         current.can_claim_owner = state.can_claim_owner;
         current.can_poke = state.can_poke;
+        current.can_moderate_members = state.can_moderate_members;
+        current.can_kick_admins = state.can_kick_admins;
         current.can_manage_channels = state.can_manage_channels;
         current.can_reorder_channels = state.can_reorder_channels;
         current.can_configure_channel_audio = state.can_configure_channel_audio;
@@ -248,6 +252,7 @@ impl Projection {
                 name: c.name.clone(),
                 description: c.description.clone(),
                 bitrate: c.bitrate,
+                admin_only: c.admin_only,
                 is_default: c.id == state.default_channel,
                 members: state.members.iter().filter(|m| m.channel == c.id).count(),
                 kind: "channel".into(),

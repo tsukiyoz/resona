@@ -218,6 +218,7 @@ async fn account_owner_channel_crud_and_chat_survive_server_restart() {
     command(
         &owner.handle,
         C::CreateChannel {
+            admin_only: false,
             name: "persistent-room".into(),
             description: "before".into(),
             bitrate: 32_000,
@@ -238,6 +239,7 @@ async fn account_owner_channel_crud_and_chat_survive_server_restart() {
     command(
         &owner.handle,
         C::UpdateChannel {
+            admin_only: false,
             id: channel,
             name: "更新频道".into(),
             description: "after".into(),
@@ -460,6 +462,343 @@ async fn wait_core_connection(handle: &mut resona_client::core::Handle, mode: &s
 }
 #[cfg(feature = "audio")]
 #[tokio::test]
+async fn failed_authentication_bookmark_can_be_edited_retried_and_deleted() {
+    use resona_client::{config::ServerProfile, credentials::Store};
+    use serde_json::json;
+    let (_peer, address, _) = start_peer(&["-server", "-server-password", "changed-password"]);
+    let directory = tempfile::tempdir().unwrap();
+    let credentials = MemoryCredentials::default();
+    let mut profile = ServerProfile {
+        id: "stale-password".into(),
+        protocol: "resona-noise".into(),
+        name: "fixture".into(),
+        nickname: "guest".into(),
+        address: address.to_string(),
+        ..Default::default()
+    };
+    let core = persistent_core(directory.path(), credentials.clone()).await;
+    let mut handle = core.handle.clone();
+    handle
+        .request(
+            "SaveServer",
+            json!({"profile":profile,"password":"old-password"}),
+        )
+        .await
+        .unwrap();
+    handle
+        .request("ConnectSavedServer", json!({"id":profile.id}))
+        .await
+        .unwrap();
+    wait_core_connection(&mut handle, "failed").await;
+    assert!(!handle.view.borrow().workspace.session.error.is_empty());
+    profile.name = "edited after rejection".into();
+    let path = directory.path().join("servers.json");
+    let original = std::fs::read(&path).unwrap();
+    std::fs::write(&path, b"{").unwrap();
+    assert!(
+        handle
+            .request("SaveServer", json!({"profile":profile}))
+            .await
+            .is_err()
+    );
+    assert_eq!(handle.view.borrow().workspace.session.mode, "failed");
+    assert_eq!(handle.view.borrow().workspace.servers[0].name, "fixture");
+    std::fs::write(&path, original).unwrap();
+    let edited = handle
+        .request("SaveServer", json!({"profile":profile}))
+        .await
+        .unwrap();
+    assert_eq!(edited["session"]["mode"], "offline");
+    assert_eq!(edited["session"]["serverID"], "");
+    assert_eq!(edited["session"]["error"], "");
+    assert_eq!(
+        *Store::new(credentials.clone())
+            .get(&profile.credential_key())
+            .unwrap(),
+        "old-password",
+        "editing metadata must not discard the saved password"
+    );
+    handle
+        .request("ConnectSavedServer", json!({"id":profile.id}))
+        .await
+        .unwrap();
+    wait_core_connection(&mut handle, "failed").await;
+    let edited = handle
+        .request(
+            "SaveServer",
+            json!({"profile":profile,"password":"changed-password"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(edited["session"]["mode"], "offline");
+    handle
+        .request("ConnectSavedServer", json!({"id":profile.id}))
+        .await
+        .unwrap();
+    wait_core_connection(&mut handle, "connected").await;
+    for (method, params) in [
+        ("SaveServer", json!({"profile":profile})),
+        ("DeleteServer", json!({"id":profile.id})),
+    ] {
+        let error = handle.request(method, params).await.unwrap_err();
+        assert!(error.starts_with("请退出服务器后"), "{error}");
+    }
+    handle.request("DisconnectServer", json!({})).await.unwrap();
+    handle
+        .request(
+            "ConnectServerWithPassword",
+            json!({"id":profile.id,"password":"old-password","remember":true}),
+        )
+        .await
+        .unwrap();
+    wait_core_connection(&mut handle, "failed").await;
+    let deleted = handle
+        .request("DeleteServer", json!({"id":profile.id}))
+        .await
+        .unwrap();
+    assert!(deleted["servers"].as_array().unwrap().is_empty());
+    assert_eq!(deleted["session"]["mode"], "offline");
+    assert_eq!(deleted["session"]["serverID"], "");
+    assert!(
+        !Store::new(credentials)
+            .has(&profile.credential_key())
+            .unwrap()
+    );
+    assert!(
+        resona_client::config::ProfileStore::new(directory.path().join("servers.json"))
+            .load()
+            .unwrap()
+            .is_empty()
+    );
+    core.close().await;
+}
+
+#[cfg(feature = "audio")]
+#[tokio::test]
+async fn bookmark_password_save_handles_denial_and_partial_storage_failure() {
+    use resona_client::{config::ServerProfile, credentials::Store};
+    use serde_json::json;
+    use std::sync::atomic::Ordering;
+    let directory = tempfile::tempdir().unwrap();
+    let credentials = MemoryCredentials::default();
+    struct Release(MemoryCredentials);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            *self.0.block_writes.0.lock().unwrap() = false;
+            self.0.block_writes.1.notify_all();
+        }
+    }
+    let core = persistent_core(directory.path(), credentials.clone()).await;
+    let handle = core.handle.clone();
+    let mut profile = ServerProfile {
+        id: "password-save".into(),
+        protocol: "resona-noise".into(),
+        name: "fixture".into(),
+        nickname: "guest".into(),
+        address: "127.0.0.1:9988".into(),
+        server_public_key: "11".repeat(32),
+        skip_password_storage: true,
+        ..Default::default()
+    };
+    let created = handle
+        .request(
+            "SaveServer",
+            json!({"profile":profile,"password":"original-password"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created["session"]["mode"], "offline");
+    assert_eq!(created["servers"][0]["skipPasswordStorage"], false);
+    assert!(!created.to_string().contains("original-password"));
+    let path = directory.path().join("servers.json");
+    assert!(
+        !std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("original-password")
+    );
+    credentials.deny_reads.store(true, Ordering::SeqCst);
+    handle
+        .request("SaveServer", json!({"profile":profile,"password":""}))
+        .await
+        .unwrap();
+    credentials.deny_reads.store(false, Ordering::SeqCst);
+    assert_eq!(
+        *Store::new(credentials.clone())
+            .get(&profile.credential_key())
+            .unwrap(),
+        "original-password"
+    );
+    Store::new(credentials.clone())
+        .set(&profile.account_credential_key(), "original-login-token")
+        .unwrap();
+    credentials.deny_writes.store(true, Ordering::SeqCst);
+    profile.name = "must not be published".into();
+    let error = handle
+        .request(
+            "SaveServer",
+            json!({"profile":profile,"password":"replacement-password"}),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.starts_with("无法保存服务器密码"), "{error}");
+    assert_eq!(handle.view.borrow().workspace.servers[0].name, "fixture");
+    let mut moved = profile.clone();
+    moved.address = "127.0.0.1:9999".into();
+    let error = handle
+        .request(
+            "SaveServer",
+            json!({"profile":moved,"password":"replacement-password"}),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.starts_with("无法保存服务器密码"), "{error}");
+    for (key, expected) in [
+        (profile.credential_key(), "original-password"),
+        (profile.account_credential_key(), "original-login-token"),
+    ] {
+        assert_eq!(
+            *Store::new(credentials.clone()).get(&key).unwrap(),
+            expected
+        );
+    }
+    assert!(
+        !Store::new(credentials.clone())
+            .has(&moved.credential_key())
+            .unwrap()
+    );
+    credentials.deny_writes.store(false, Ordering::SeqCst);
+
+    for new_key in [false, true] {
+        let original = std::fs::read(&path).unwrap();
+        let mut changed = profile.clone();
+        if new_key {
+            changed.id = "new-profile".into();
+        }
+        *credentials.block_writes.0.lock().unwrap() = true;
+        let release = Release(credentials.clone());
+        let writer = handle.clone();
+        let params = json!({"profile":changed,"password":"replacement-password"});
+        let save = tokio::spawn(async move { writer.request("SaveServer", params).await });
+        timeout(Duration::from_secs(2), credentials.write_entered.notified())
+            .await
+            .unwrap();
+        std::fs::write(&path, b"{").unwrap();
+        drop(release);
+        let error = save.await.unwrap().unwrap_err();
+        if new_key {
+            assert!(
+                !Store::new(credentials.clone())
+                    .has(&changed.credential_key())
+                    .unwrap()
+            );
+        } else {
+            assert!(
+                error.starts_with("密码已更新，但服务器书签保存失败"),
+                "{error}"
+            );
+            assert_eq!(
+                *Store::new(credentials.clone())
+                    .get(&changed.credential_key())
+                    .unwrap(),
+                "replacement-password"
+            );
+        }
+        assert!(!error.contains("replacement-password"));
+        assert_eq!(handle.view.borrow().workspace.servers.len(), 1);
+        assert_eq!(handle.view.borrow().workspace.servers[0].name, "fixture");
+        std::fs::write(&path, original).unwrap();
+    }
+    core.close().await;
+}
+
+#[cfg(feature = "audio")]
+#[tokio::test]
+async fn bookmark_mutations_preserve_other_sessions_and_protect_pending_workers() {
+    use resona_client::config::ServerProfile;
+    use serde_json::json;
+    let (peer, address, _) = start_peer(&["-server"]);
+    let directory = tempfile::tempdir().unwrap();
+    let core = persistent_core(directory.path(), MemoryCredentials::default()).await;
+    let mut handle = core.handle.clone();
+    let profile = ServerProfile {
+        id: "active".into(),
+        protocol: "resona-noise".into(),
+        name: "fixture".into(),
+        nickname: "guest".into(),
+        address: address.to_string(),
+        ..Default::default()
+    };
+    handle
+        .request("SaveServer", json!({"profile":profile}))
+        .await
+        .unwrap();
+    handle
+        .request(
+            "ConnectServerWithPassword",
+            json!({"id":profile.id,"password":"local-test-only"}),
+        )
+        .await
+        .unwrap();
+    wait_core_connection(&mut handle, "connected").await;
+    let session_id = handle.view.borrow().workspace.session.id.clone();
+    let mut other = profile.clone();
+    other.id = "other".into();
+    handle
+        .request("SaveServer", json!({"profile":other}))
+        .await
+        .unwrap();
+    handle
+        .request("DeleteServer", json!({"id":other.id}))
+        .await
+        .unwrap();
+    assert_eq!(handle.view.borrow().workspace.session.id, session_id);
+    assert!(handle.view.borrow().workspace.connected());
+
+    drop(peer);
+    wait_core_connection(&mut handle, "reconnecting").await;
+    for (method, params) in [
+        ("SaveServer", json!({"profile":profile})),
+        ("DeleteServer", json!({"id":profile.id})),
+    ] {
+        let error = handle.request(method, params).await.unwrap_err();
+        assert!(error.starts_with("请退出服务器后"), "{error}");
+    }
+    handle.request("DisconnectServer", json!({})).await.unwrap();
+
+    let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let mut pending = profile;
+    pending.address = socket.local_addr().unwrap().to_string();
+    handle
+        .request("SaveServer", json!({"profile":pending}))
+        .await
+        .unwrap();
+    handle
+        .request(
+            "ConnectServerWithPassword",
+            json!({"id":pending.id,"password":"local-test-only"}),
+        )
+        .await
+        .unwrap();
+    wait_core_connection(&mut handle, "connecting").await;
+    for (method, params) in [
+        ("SaveServer", json!({"profile":pending})),
+        ("DeleteServer", json!({"id":pending.id})),
+    ] {
+        let error = handle.request(method, params).await.unwrap_err();
+        assert!(error.starts_with("请退出服务器后"), "{error}");
+    }
+    handle.request("DisconnectServer", json!({})).await.unwrap();
+    handle
+        .request("DeleteServer", json!({"id":pending.id}))
+        .await
+        .unwrap();
+    assert!(handle.view.borrow().workspace.session.server_id.is_empty());
+    assert_eq!(handle.view.borrow().workspace.session.mode, "offline");
+    core.close().await;
+}
+
+#[cfg(feature = "audio")]
+#[tokio::test]
 async fn account_login_survives_fresh_cores_rotates_and_logout_forgets() {
     use resona_client::{config::ServerProfile, credentials::Store};
     use serde_json::json;
@@ -497,6 +836,22 @@ async fn account_login_survives_fresh_cores_rotates_and_logout_forgets() {
         .get(&profile.account_credential_key())
         .unwrap();
     assert!(first.starts_with("ra1_"));
+    // Recovery credentials are managed internally, never a manual login/export option.
+    assert!(
+        handle
+            .request("GetAccountToken", json!({"sessionID":id}))
+            .await
+            .is_err()
+    );
+    assert!(
+        handle
+            .request(
+                "AccountCommand",
+                json!({"sessionID":id,"action":"token","token":first.as_str()})
+            )
+            .await
+            .is_err()
+    );
     core.close().await;
     let core = persistent_core(directory.path(), credentials.clone()).await;
     let mut handle = core.handle.clone();
@@ -600,11 +955,7 @@ async fn account_login_survives_fresh_cores_rotates_and_logout_forgets() {
         .await
         .unwrap();
     wait_core_connection(&mut handle, "failed").await;
-    assert!(
-        !Store::new(credentials.clone())
-            .has(&profile.account_credential_key())
-            .unwrap()
-    );
+    // Retry reads through the credential queue after the rejected token's deletion.
     handle
         .request(
             "ConnectServerWithPassword",
@@ -613,6 +964,11 @@ async fn account_login_survives_fresh_cores_rotates_and_logout_forgets() {
         .await
         .unwrap();
     wait_core_connection(&mut handle, "connected").await;
+    assert!(
+        !Store::new(credentials.clone())
+            .has(&profile.account_credential_key())
+            .unwrap()
+    );
     assert!(
         handle
             .view
@@ -2079,6 +2435,165 @@ async fn lifecycle_disconnect_cancels_pending_handshake() {
         .await
         .unwrap();
     assert!(start.elapsed() < Duration::from_secs(1));
+}
+
+#[tokio::test]
+async fn restricted_channel_temporary_pull_identity_change_and_kick() {
+    use resona_client::session::{AccountRequest, Command as C, Error as E, Handle};
+    async fn send(h: &Handle, command: C) -> Result<(), E> {
+        tokio::time::sleep(Duration::from_millis(550)).await;
+        h.command(
+            command,
+            Instant::now() + Duration::from_secs(3),
+            &CancellationToken::new(),
+        )
+        .await
+    }
+    let (peer, address, key) = start_peer(&["-server"]);
+    let mut owner = app_session(address, key, "owner").await;
+    send(
+        &owner.handle,
+        C::Account(AccountRequest {
+            action: "register".into(),
+            username: "access-owner".into(),
+            password: "owner-test-password".to_string().into(),
+            ..Default::default()
+        }),
+    )
+    .await
+    .unwrap();
+    send(&owner.handle, C::ClaimOwner(peer.2.clone().unwrap()))
+        .await
+        .unwrap();
+    send(
+        &owner.handle,
+        C::Watch {
+            channels: true,
+            members: true,
+        },
+    )
+    .await
+    .unwrap();
+    send(
+        &owner.handle,
+        C::UpdateChannel {
+            id: 2,
+            name: "Administrators".into(),
+            description: String::new(),
+            bitrate: 32000,
+            admin_only: true,
+        },
+    )
+    .await
+    .unwrap();
+    wait_state(&mut owner.handle, |s| {
+        s.state.can_moderate_members && s.state.channels.iter().any(|c| c.id == 2 && c.admin_only)
+    })
+    .await;
+    let mut guest = app_session(address, key, "guest").await;
+    assert_eq!(send(&guest.handle, C::Move(2)).await, Err(E::Rejected(4)));
+    let member = guest
+        .handle
+        .state
+        .borrow()
+        .state
+        .members
+        .iter()
+        .find(|m| m.id == guest.handle.state.borrow().state.self_)
+        .unwrap()
+        .clone();
+    let pull = || C::ModerateMember {
+        target: member.id as u16,
+        instance: member.instance.clone(),
+        action: "move".into(),
+        channel: 2,
+    };
+    assert_eq!(send(&owner.handle, pull()).await, Err(E::Rejected(4)));
+    send(&owner.handle, C::Move(2)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(550)).await;
+    send(&owner.handle, pull()).await.unwrap();
+    wait_state(&mut guest.handle, |s| {
+        s.channel() == 2 && s.chat_status.channel == 2
+    })
+    .await;
+    send(&owner.handle, C::Move(1)).await.unwrap();
+    send(
+        &guest.handle,
+        C::VoiceState {
+            muted: true,
+            deafened: true,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        guest.handle.state.borrow().channel(),
+        2,
+        "inviter leaving must not eject temporary guest"
+    );
+    send(&guest.handle, C::Move(1)).await.unwrap();
+    assert_eq!(send(&guest.handle, C::Move(2)).await, Err(E::Rejected(4)));
+    send(&owner.handle, C::Move(2)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(550)).await;
+    send(&owner.handle, pull()).await.unwrap();
+    wait_state(&mut guest.handle, |s| s.channel() == 2).await;
+    send(
+        &guest.handle,
+        C::Account(AccountRequest {
+            action: "register".into(),
+            username: "pulled-member".into(),
+            password: "member-test-password".to_string().into(),
+            ..Default::default()
+        }),
+    )
+    .await
+    .unwrap();
+    wait_state(&mut guest.handle, |s| {
+        s.channel() == 1 && !s.state.account_uid.is_empty()
+    })
+    .await;
+    let uid = guest.handle.state.borrow().state.account_uid.clone();
+    let recovery = guest.handle.account_token();
+    assert_eq!(send(&guest.handle, C::Move(2)).await, Err(E::Rejected(4)));
+    tokio::time::sleep(Duration::from_millis(550)).await;
+    send(
+        &owner.handle,
+        C::ModerateMember {
+            target: member.id as u16,
+            instance: member.instance,
+            action: "kick".into(),
+            channel: 0,
+        },
+    )
+    .await
+    .unwrap();
+    timeout(Duration::from_secs(3), async {
+        while guest.handle.state.borrow().closed.is_none() {
+            guest.handle.state.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    guest.close().await;
+    let mut reconnected = app_session(address, key, "reconnected").await;
+    send(
+        &reconnected.handle,
+        C::Account(AccountRequest {
+            action: "token".into(),
+            token: recovery,
+            ..Default::default()
+        }),
+    )
+    .await
+    .unwrap();
+    wait_state(&mut reconnected.handle, |s| s.state.account_uid == uid).await;
+    assert_eq!(reconnected.handle.state.borrow().channel(), 1);
+    assert_eq!(
+        send(&reconnected.handle, C::Move(2)).await,
+        Err(E::Rejected(4))
+    );
+    reconnected.close().await;
+    owner.close().await;
 }
 
 struct Peer(Child, Option<std::net::SocketAddr>, Option<String>);

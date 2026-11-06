@@ -1,6 +1,6 @@
 //! Debug-only local fixtures. This entry point never constructs ResonaApp or CoreClient.
 use crate::{
-    components::{attention_notice, server_entry_contents, speaking_indicator},
+    components::{attention_notice, error_notice, server_entry_contents, speaking_indicator},
     model::{Capabilities, Channel, ProcessorOption, User, VoiceState, Workspace},
     preferences::ThemePreference,
     presentation::{self, ResourceState, ServerPage},
@@ -16,7 +16,7 @@ use gpui_kit::{
     Render, Styled, Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
 
-const SCENARIOS: [&str; 9] = [
+const SCENARIOS: [&str; 11] = [
     "离线",
     "本地预览",
     "准备连接",
@@ -26,6 +26,8 @@ const SCENARIOS: [&str; 9] = [
     "语音失败",
     "音频不可用",
     "戳一下",
+    "操作提示",
+    "长错误",
 ];
 
 pub fn open(cx: &mut App) {
@@ -311,6 +313,31 @@ impl Render for Showcase {
                         .child(attention_notice(
                             "一个较长的中文昵称和 Emoji🙂 戳了你一下".into(),
                             2,
+                            cx.listener(|this, _, _, cx| {
+                                this.show_notice = false;
+                                cx.notify();
+                            }),
+                        )),
+                )
+            })
+            .when(self.scenario >= 9 && self.show_notice, |root| {
+                root.child(
+                    div()
+                        .absolute()
+                        .left(px(226.))
+                        .right_4()
+                        .top(px(240.))
+                        .flex()
+                        .justify_center()
+                        .child(error_notice(
+                            if self.scenario == 9 {
+                                "仅管理员可进入".into()
+                            } else {
+                                format!(
+                                    "连接失败，请检查服务器地址后重试。{}",
+                                    "https://example.invalid/very-long-server-address/".repeat(12)
+                                )
+                            },
                             cx.listener(|this, _, _, cx| {
                                 this.show_notice = false;
                                 cx.notify();

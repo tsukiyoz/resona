@@ -89,14 +89,14 @@ impl Error {
             Self::Rejected(3) => "操作过于频繁，请稍后重试",
             Self::Rejected(4) => "没有执行此操作的权限",
             Self::Rejected(5) => "频道内仍有成员，不能删除",
-            Self::Rejected(6) => "默认频道不能删除",
+            Self::Rejected(6) => "默认频道必须保持普通且不能删除",
             Self::Rejected(7) => "服务器保存失败，请确认当前状态后重试",
             Self::Rejected(8) => "频道数量或 ID 已达上限",
             Self::Rejected(9) => "消息送达结果未确认，重发可能重复",
             Self::Rejected(10) => "账号验证失败，请检查输入或重新登录",
             Self::Rejected(11) => "账号名称已被使用",
             Self::Rejected(12) => "账号服务繁忙，请稍后重试",
-            Self::Rejected(13) => "该成员已离线、已变化或暂不支持戳一下",
+            Self::Rejected(13) => "该成员已离线、已变化或不支持此操作",
             Self::Rejected(_) => "服务器拒绝此操作，请检查权限和频道状态",
             _ => "服务器连接已关闭，请检查网络后重试",
         }
@@ -141,6 +141,12 @@ impl Snapshot {
 
 #[derive(Clone)]
 pub enum Command {
+    ModerateMember {
+        target: u16,
+        instance: String,
+        action: String,
+        channel: u16,
+    },
     Poke {
         target: u16,
         instance: String,
@@ -172,12 +178,14 @@ pub enum Command {
         name: String,
         description: String,
         bitrate: u32,
+        admin_only: bool,
     },
     UpdateChannel {
         id: u16,
         name: String,
         description: String,
         bitrate: u32,
+        admin_only: bool,
     },
     DeleteChannel(u16),
     ReorderChannel {
@@ -242,6 +250,27 @@ impl Command {
     fn frame(&self, id: u32) -> Result<Vec<u8>> {
         use pb::Kind;
         let data = match self {
+            Self::ModerateMember {
+                target,
+                instance,
+                action,
+                channel,
+            } if *target != 0
+                && !instance.is_empty()
+                && instance.len() <= 128
+                && (action == "kick" || (action == "move" && *channel != 0)) =>
+            {
+                wire::pack(
+                    Kind::ModerateMember,
+                    id,
+                    &pb::ModerateMember {
+                        target: (*target).into(),
+                        instance: instance.clone(),
+                        action: action.clone(),
+                        channel: (*channel).into(),
+                    },
+                )
+            }
             Self::Poke { target, instance }
                 if *target != 0 && !instance.is_empty() && instance.len() <= 128 =>
             {
@@ -358,6 +387,7 @@ impl Command {
                 name,
                 description,
                 bitrate,
+                admin_only,
             } if valid_channel(name, description, *bitrate) => wire::pack(
                 Kind::CreateChannel,
                 id,
@@ -365,6 +395,7 @@ impl Command {
                     name: name.clone(),
                     description: description.clone(),
                     bitrate: *bitrate,
+                    admin_only: *admin_only,
                 },
             ),
             Self::UpdateChannel {
@@ -372,6 +403,7 @@ impl Command {
                 name,
                 description,
                 bitrate,
+                admin_only,
             } if *channel != 0 && valid_channel(name, description, *bitrate) => wire::pack(
                 Kind::UpdateChannel,
                 id,
@@ -380,6 +412,7 @@ impl Command {
                     name: name.clone(),
                     description: description.clone(),
                     bitrate: *bitrate,
+                    admin_only: *admin_only,
                 },
             ),
             Self::DeleteChannel(channel) if *channel != 0 => wire::pack(

@@ -1,5 +1,35 @@
 # 产品与验收约定
 
+## 紧凑操作通知（2026-11-06）
+
+- 普通操作错误在内容区上方居中显示，宽度随内容收缩、上限 360px，受当前可用宽度限制。
+- 使用中性主题背景、细边框和轻阴影，正文正常文字色，仅 16px 状态图标点色，不用整条红底横幅。关闭按钮固定 24px。
+- 短权限提示为“仅管理员可进入”；长错误完整换行，正文高度上限 144px，可滚动查看，文字给滚动条留出间距。
+- 不抢焦点、不自动消失、不新增计时器。关闭清除当前错误和个人收听设置错误；弹窗打开时仅隐藏，退出遮罩仍覆盖通知。
+- 原生预览检查深浅主题、800×900/760×600、短提示、长 URL 滚动和关闭；不影响连接、权限、语音及后台刷新。
+
+## 身份与频道权限（2026-11-06）
+
+- Owner 唯一，只能由已登录账号消费 24 小时的一次性初始化认领码绑定，不提供网页转让或创建第二位 Owner。
+- 登录只显示账号密码及注册。账号自动续登凭据由应用内部保管；移除管理员令牌的发行、兑换、撤销、存储与旧后台 Token 登录，已有账号及角色保留。
+- 仅 Owner 可见“管理员”页面，按 UID、账号和昵称选取已有注册账号授予或撤销 admin，不删除账号。管理员账号与普通账号共用同一用户体系，游客指未登录状态。
+- 普通频道允许任何已连接成员进入；管理员频道仅 Owner/admin 能主动进入。默认频道始终普通，服务端和编辑页面都禁止把它设为管理员频道。
+- 频道列表中普通频道使用 `#`，管理员频道使用 14px 细线盾牌；两者占位和对齐一致，沿用次要文字及选中颜色，不增加底色或动画。该标识表示访问权限，与频道创建来源无关。
+- Owner/admin 已在目标管理员频道时，可以拖拽普通用户或游客进入。临时准入仅属于该连接的该频道，离开、断线或切换账号 UID 后失效；不保存、不跨重连恢复。邀请者随后离开不会驱逐已被拉入者。
+- 成员拖拽与频道排序使用不同的数据类型。提交时重新核对连接、成员实例、角色和目标，过期拖拽不操作复用 ID 的新成员。失败显示成员操作错误，不伪报成功。
+- Admin 可踢普通用户或游客，不能踢其他管理员或 Owner；Owner 可踢管理员。右键“踢出服务器”需确认，取消不发请求，等待防重复提交；服务端确认后连接终止且不自动重连。对方仍可手动连接，账号恢复凭据保留。
+- 仅 Owner 可新增/解除封禁，任何角色不能封禁 Owner。封禁与踢出是独立权限，后台依据服务端能力显示按钮。
+- 撤销 admin 或收紧频道权限后，失去准入的成员退回普通默认频道，推进语音 epoch 和聊天代次，保留麦克风/收听意图，不重开设备。未提交的编辑可取消，已提交操作不能靠关闭窗口撤销；旧连接回执不影响新会话。
+- 权限检查只发生于控制操作和资源变更；语音热路径不查数据库/Casbin，不增加空闲计时器。验收覆盖注册/登录、角色变化、主动与临时加入、离开/重连、陈旧目标、确认/取消、封禁和踢出边界。
+
+## 侧栏收纳与提示音（2026-11-06）
+
+- 服务器栏右边界可拖动，窄区吸附为 52px 图标栏，反向拖动可展开；保留原收纳按钮及折叠后的名称提示。仅松手后保存收纳状态，不逐次鼠标移动写盘，不改变服务器选择、连接、发言或聊天草稿。
+- 右侧用户/频道详情栏从左边界向右拖动，进入窄区后吸附关闭；松手关闭详情，重新点击用户/频道即可展开。拖动期间设最小可读宽度和关闭/恢复回差，未达到关闭区松手恢复标准宽度，不增加持久布局字段。
+- Escape、失焦、打开弹窗或退出取消未完成拖动；窗口外松手完成当前预览。默认及最小窗口需检查边界命中、收纳后恢复、拖动方向逆转与重复操作。拖动仅响应鼠标事件，不启用动画或空闲定时器。
+- 设置 → 提示音增加“戳一下”试听，复用已有 `poke` 声音与草稿音量；试听不发送网络戳一下，收听静音时禁用。总开关包含连接、成员和戳一下通知，仍经“应用”生效，取消保留原设置。
+- 管理后台角色和封禁表格保留原生单元格布局，按钮在单元格内部排列；多行昵称/身份和空操作列的行分隔线保持对齐。
+
 ## 重置偏好与戳一下（2026-11-03）
 
 - 设置 → 诊断 → 本地配置提供“重置偏好设置”。二次确认只恢复设备、声音、提示音、外观和快捷键的默认草稿；点击“应用”才按原有音频确认及串行保存流程生效。取消重置不修改草稿，取消设置恢复原已应用值；保存失败明确提示本次有效但未保存。保护状态下不覆盖损坏或未来版本文件。
@@ -24,7 +54,7 @@
 
 ## 服务器管理后台验收
 
-- 单服务器后台使用独立管理凭据，关联持久身份；连接密码不能登录后台，网页不能创建或替换 owner。
+- 单服务器后台使用注册账号密码，关联持久 UID；连接密码不能登录后台，网页不能创建或替换 owner。
 - owner 可委派 admin；admin 管理频道与普通成员，不能管理 owner 或其他 admin。角色与封禁使用持久 UID，移动/踢出核对成员 ID 和会话实例。
 - 每次修改核验当前权限与 KV 修订；过期表单保留草稿并提示重新核对，不静默覆盖。频道默认入口不能删除，非空频道删除在服务端最终判断。
 - 保存和危险操作防重复提交，只在服务端确认后报成功；超时显示结果未确认，不自动重发。取消草稿与取消已提交请求不能混为撤销。
@@ -61,6 +91,19 @@ Hello、合法 Welcome 和持久 UID 校验。等待有界、可取消，拒绝�
 
 ### 共享连接密码与信任
 
+- 添加/编辑服务器显示名称、地址、昵称和密码，不再提供公钥输入框；已有书签的可信
+  pin 仍在内部保留并严格校验。新书签按地址与密码建立 PAKE 认证，不自动固定发现的 key。
+- 密码框每次打开为空且默认遮蔽，不读取系统中已有密码。填写新密码并保存会显式更新
+  系统凭据库，不连接服务器；留空只保留同一目标的原密码。地址变化不复制旧密码或
+  账号 Token。密码不进入书签 JSON、工作区和日志。关闭/重新打开清空表单秘密，回车
+  等同保存；未提交的取消不修改数据，已提交的保存不会因关窗而撤销。
+- 密码存储失败不保存书签；密码已更新但随后书签保存失败时明确提示部分完成，允许
+  重试。新目标书签保存失败则清理刚写入的密码，清理失败也明确报错。元数据与系统
+  凭据不承诺跨存储事务；留空保存无需系统密码读取权限。
+- 密码错误等终止连接失败后，可直接编辑或删除该服务器书签，无须先退出。保存成功后
+  清除旧失败会话和错误，重新连接使用更新后的书签；删除成功后不保留失效服务器选择。
+  校验、凭据清理或保存失败保留书签并显示原因，取消未提交的表单不改变连接。
+  正在连接、已连接及后台重连的当前书签仍须先取消或退出；其他书签可独立编辑、删除。
 - 地址与密码连接沿用原位置等待/取消，内部发现公钥并完成绑定连接的 PAKE，不向用户展示中间握手阶段。不把自动发现的 key 写进书签，不改变已存凭据键。
 - 无公钥且无密码在联网前说明需要连接密码或可信邀请。已填写公钥不匹配、密码错误立即失败，不重试认证、不回退公开模式、不发送昵称/身份/账号 Token，也不覆盖已保存密码。
 - 退出、超时或取消关闭临时连接；恢复连接重新认证，沿用已有会话/意图代次检查。
@@ -353,7 +396,7 @@ release 工作负载下采集 GPU；单元测试通过不代表实际 GPU 降幅
   spacing. The page opens at Login; a muted Register link sits to the left of the
   primary login button. Register replaces the same form and title, adding a
   nickname between username and password, with Register and log in as the primary
-  action and Back to login as its secondary action. Token login remains secondary.
+  action and Back to login as its secondary action. Login uses account passwords only.
   Registration includes an editable nickname, separate from the immutable ASCII
   username. Logged-in profile and security actions stay compact; account actions
   have their own confirmation buttons, without the unrelated preference footer.
@@ -419,6 +462,7 @@ release 工作负载下采集 GPU；单元测试通过不代表实际 GPU 降幅
   enter as guests and register/login explicitly in Settings -> User. Nicknames
   of logged-in accounts synchronize with the server; guest edits stay local.
   Backups cover SQLite and KV together.
-- Web administration accepts account passwords and retains existing web tokens.
+- Web administration accepts account passwords; reusable web tokens and
+  administrator invitations are retired. Only Owner directly assigns admin.
   Successful account authentication does not grant management permission by
   itself; Casbin remains authoritative. Web sessions do not displace voice.

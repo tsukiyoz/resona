@@ -50,7 +50,14 @@ Noise completion cannot admit a member without the application authentication.
 
 Discovered public keys remain attempt-local. Persisting them into the bookmark
 would change the existing credential key and strand saved account/server secrets.
-Only a successful current connection intent saves its password. Cancellation
+Connect-time remembering saves only after a successful current connection intent.
+Explicit Add/Edit bookmark saves may also replace the password in OS credential
+storage without connecting. The blank masked field preserves an unchanged
+destination's password; opening the form never reads it. The regular form no
+longer edits pins, but preserves existing pins and their strict validation.
+Credential and bookmark stores are not a transaction: failed new-bookmark saves
+remove the new credential, while failed existing-bookmark saves report an already
+updated password explicitly. Cancellation
 closes provisional transports; reconnect repeats PAKE before restoring identity.
 
 The private RESONA_AUTH KV is startup authority: FileStorage, History=1, no TTL.

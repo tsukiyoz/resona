@@ -25,11 +25,10 @@ const adminBase = "/api/admin/v1"
 var adminAssets embed.FS
 
 type adminSession struct {
-	Identity, Credential, CSRF string
-	Expires                    time.Time
-	Done                       chan struct{}
-	Account                    accounts.Account
-	AccountProof               accounts.Proof
+	Identity, CSRF string
+	Expires        time.Time
+	Done           chan struct{}
+	Account        accounts.Account
 }
 
 // AdminConsole owns bounded in-memory browser sessions; it creates no background
@@ -134,7 +133,6 @@ func (a *AdminConsole) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var v struct {
-		Token    string `json:"token"`
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
@@ -146,27 +144,14 @@ func (a *AdminConsole) login(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	session := adminSession{CSRF: rand.Text(), Expires: time.Now().Add(8 * time.Hour), Done: make(chan struct{})}
 	var err error
-	if v.Username != "" && v.Token == "" {
-		session.Account, err = store.accounts.Password(ctx, v.Username, v.Password)
-		session.Identity = session.Account.UID
-	} else if v.Username == "" && v.Password == "" && strings.HasPrefix(v.Token, "ra1_") {
-		session.AccountProof, err = store.accounts.Token(ctx, v.Token)
-		session.Account = session.AccountProof.Account
-		session.Identity = session.Account.UID
-		session.Expires = minTime(session.Expires, session.AccountProof.Expires)
-	} else if v.Username == "" && v.Password == "" {
-		c, ok := store.authenticateAdmin(v.Token)
-		if !ok {
-			err = accounts.ErrCredentials
-		} else {
-			session.Identity, session.Credential = c.Identity, c.ID
-			session.Expires = minTime(session.Expires, c.Expires)
-		}
-	} else {
-		err = accounts.ErrCredentials
+	session.Account, err = store.accounts.Password(ctx, v.Username, v.Password)
+	session.Identity = session.Account.UID
+	if err != nil {
+		adminError(w, http.StatusUnauthorized, "账号或密码错误")
+		return
 	}
-	if err != nil || !a.sessionValid(ctx, session) {
-		adminError(w, http.StatusUnauthorized, "管理凭据无效、已过期或权限已撤销")
+	if !a.sessionValid(ctx, session) {
+		adminError(w, http.StatusForbidden, "此账号没有后台管理权限")
 		return
 	}
 	expires := session.Expires
@@ -182,8 +167,7 @@ func (a *AdminConsole) login(w http.ResponseWriter, r *http.Request) {
 	if old, err := r.Cookie("resona_admin"); err == nil {
 		oldKey = sessionKey(old.Value)
 	}
-	_, replacing := a.sessions[oldKey]
-	if len(a.sessions) >= 64 && !replacing {
+	if _, replacing := a.sessions[oldKey]; !replacing && len(a.sessions) >= 64 {
 		a.mu.Unlock()
 		adminError(w, http.StatusServiceUnavailable, "管理会话已满，请稍后再试")
 		return
@@ -196,13 +180,6 @@ func (a *AdminConsole) login(w http.ResponseWriter, r *http.Request) {
 	a.mu.Unlock()
 	http.SetCookie(w, a.cookie(secret, expires))
 	adminJSON(w, http.StatusOK, map[string]any{"identity": session.Identity, "csrf": session.CSRF, "expires": session.Expires})
-}
-
-func minTime(a, b time.Time) time.Time {
-	if a.Before(b) {
-		return a
-	}
-	return b
 }
 
 func (a *AdminConsole) authenticate(w http.ResponseWriter, r *http.Request) (adminSession, bool) {
@@ -233,10 +210,7 @@ func (a *AdminConsole) authenticate(w http.ResponseWriter, r *http.Request) (adm
 
 func (a *AdminConsole) sessionValid(ctx context.Context, session adminSession) bool {
 	store := a.server.config.Store
-	if session.Account.UID == "" {
-		return store.adminSessionValid(session.Identity, session.Credential)
-	}
-	if session.AccountProof.TokenID != "" && !store.accounts.Valid(ctx, session.AccountProof) {
+	if session.Account.UID == "" || store.Banned(session.Identity) {
 		return false
 	}
 	current, err := store.accounts.Account(ctx, session.Identity)

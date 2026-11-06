@@ -32,7 +32,10 @@ enum Kind {
   KIND_CHAT_PAGE = 18;
   KIND_POKE = 19;
   KIND_POKED = 20;
+  KIND_MODERATE_MEMBER = 21;
 }
+// Session instance prevents moderation of a replacement peer with a reused ID.
+message ModerateMember { uint32 target = 1; string instance = 2; string action = 3; uint32 channel = 4; }
 // Transient same-server attention request; instance prevents targeting a reused ID.
 message Poke { uint32 target = 1; string instance = 2; }
 // Filled by the server, never supplied by the sender. Not retained in chat history.
@@ -56,8 +59,8 @@ message Hello {
   bool receive_pokes = 5;
 }
 message ClaimOwner { string token = 1; }
-message CreateChannel { string name = 1; string description = 2; uint32 bitrate = 3; }
-message UpdateChannel { uint32 id = 1; string name = 2; string description = 3; uint32 bitrate = 4; }
+message CreateChannel { string name = 1; string description = 2; uint32 bitrate = 3; bool admin_only = 4; }
+message UpdateChannel { uint32 id = 1; string name = 2; string description = 3; uint32 bitrate = 4; bool admin_only = 5; }
 message DeleteChannel { uint32 id = 1; }
 // Move an existing channel before another channel; before_id=0 appends.
 // This changes presentation order, never the default channel or membership.
@@ -70,6 +73,7 @@ message Channel {
   string name = 2;
   string description = 3;
   uint32 bitrate = 4;
+  bool admin_only = 5;
 }
 message Member {
   uint32 id = 1;
@@ -102,6 +106,8 @@ message State {
   string account_uid = 17;
   string account_name = 18;
   bool can_poke = 19;
+  bool can_moderate_members = 20;
+  bool can_kick_admins = 21;
 }
 // VoiceState sets both flags; it is not a partial update. Missing flags mean false.
 message Command {

@@ -45,6 +45,10 @@ func TestControlBoundsAndTypeSafety(t *testing.T) {
 		dest    any
 	}{
 		{UpdateChannelKind, &pb.UpdateChannel{Id: 65536}, &UpdateChannel{}},
+		{ModerateMemberKind, &pb.ModerateMember{Target: 65536, Instance: "live", Action: "kick"}, &ModerateMember{}},
+		{ModerateMemberKind, &pb.ModerateMember{Target: 1, Instance: "", Action: "kick"}, &ModerateMember{}},
+		{ModerateMemberKind, &pb.ModerateMember{Target: 1, Instance: "live", Action: "ban"}, &ModerateMember{}},
+		{ModerateMemberKind, &pb.ModerateMember{Target: 1, Instance: "live", Action: "move"}, &ModerateMember{}},
 		{DeleteChannelKind, &pb.DeleteChannel{Id: 65536}, &DeleteChannel{}},
 		{ReorderChannelKind, &pb.ReorderChannel{Id: 65536}, &ReorderChannel{}},
 		{ReorderChannelKind, &pb.ReorderChannel{Id: 1, BeforeId: 65536}, &ReorderChannel{}},

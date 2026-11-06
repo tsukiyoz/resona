@@ -22,16 +22,15 @@ const resourceKey = "state"
 // resourceRecord is one CAS transaction: claiming an owner consumes its claim,
 // and channel creation advances the non-reusable ID allocator in the same write.
 type resourceRecord struct {
-	Version                   int               `json:"version"`
-	Channels                  channelRecord     `json:"channels"`
-	Owner                     string            `json:"owner,omitempty"`
-	Claim                     claimSecret       `json:"claim"`
-	Admins                    []string          `json:"admins,omitempty"`
-	Credentials               []AdminCredential `json:"credentials,omitempty"`
-	Bans                      []Ban             `json:"bans,omitempty"`
-	Settings                  *ServerSettings   `json:"settings,omitempty"`
-	AccountIdentities         bool              `json:"account_identities,omitempty"`
-	AuthenticationInitialized bool              `json:"authentication_initialized,omitempty"`
+	Version                   int             `json:"version"`
+	Channels                  channelRecord   `json:"channels"`
+	Owner                     string          `json:"owner,omitempty"`
+	Claim                     claimSecret     `json:"claim"`
+	Admins                    []string        `json:"admins,omitempty"`
+	Bans                      []Ban           `json:"bans,omitempty"`
+	Settings                  *ServerSettings `json:"settings,omitempty"`
+	AccountIdentities         bool            `json:"account_identities,omitempty"`
+	AuthenticationInitialized bool            `json:"authentication_initialized,omitempty"`
 }
 
 // Store owns one embedded broker shared by chat and durable management state.
@@ -122,7 +121,6 @@ func OpenStore(cfg ChatConfig, legacyDir string, seed []w.Channel) (_ *Store, er
 	if !record.AccountIdentities {
 		record.Owner = ""
 		record.Admins = nil
-		record.Credentials = nil
 		record.Claim = claimSecret{}
 		record.Bans = nil
 		record.AccountIdentities = true
@@ -162,7 +160,6 @@ func (s *Store) state() (resourceRecord, uint64) {
 	r := s.record
 	r.Channels.Channels = append([]w.Channel(nil), r.Channels.Channels...)
 	r.Admins = append([]string(nil), r.Admins...)
-	r.Credentials = append([]AdminCredential(nil), r.Credentials...)
 	r.Bans = append([]Ban(nil), r.Bans...)
 	if r.Settings != nil {
 		copy := *r.Settings
@@ -173,9 +170,15 @@ func (s *Store) state() (resourceRecord, uint64) {
 
 func decodeResources(data []byte) (resourceRecord, error) {
 	var r resourceRecord
+	// Discard retired management tokens without changing account roles.
+	decoded := struct {
+		*resourceRecord
+		RetiredCredentials json.RawMessage `json:"credentials,omitempty"`
+		RetiredInvitations json.RawMessage `json:"invitations,omitempty"`
+	}{resourceRecord: &r}
 	d := json.NewDecoder(bytes.NewReader(data))
 	d.DisallowUnknownFields()
-	err := d.Decode(&r)
+	err := d.Decode(&decoded)
 	// Version 1 bound the default to the first entry. Normalize once in memory;
 	// the next successful CAS persists version 2 with an independent identity.
 	if err == nil && r.Channels.Version == 1 && r.Channels.Default == 0 && len(r.Channels.Channels) > 0 {
@@ -202,16 +205,6 @@ func decodeResources(data []byte) (resourceRecord, error) {
 		}
 		seen[id] = true
 	}
-	if len(r.Credentials) > 64 {
-		return r, ErrInvalid
-	}
-	clear(seen)
-	for _, c := range r.Credentials {
-		if len(c.ID) != 26 || seen[c.ID] || !validIdentity(c.Identity) || !validIdentity(c.Digest) || !validName(c.Label, 64) || c.Expires.IsZero() {
-			return r, ErrInvalid
-		}
-		seen[c.ID] = true
-	}
 	if len(r.Bans) > 256 {
 		return r, ErrInvalid
 	}
@@ -231,6 +224,9 @@ func validChannelRecord(r channelRecord) bool {
 	}
 	defaultFound := false
 	for _, ch := range r.Channels {
+		if ch.ID == r.Default && ch.AdminOnly {
+			return false
+		}
 		defaultFound = defaultFound || ch.ID == r.Default
 		if uint32(ch.ID) >= r.Next {
 			return false
@@ -307,7 +303,6 @@ func (s *Store) updateAtContext(parent context.Context, revision uint64, fn func
 		// The cached immutable slice must never alias the mutation draft.
 		r.Channels.Channels = append([]w.Channel(nil), r.Channels.Channels...)
 		r.Admins = append([]string(nil), r.Admins...)
-		r.Credentials = append([]AdminCredential(nil), r.Credentials...)
 		r.Bans = append([]Ban(nil), r.Bans...)
 		if r.Settings != nil {
 			copy := *r.Settings

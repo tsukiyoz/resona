@@ -1,9 +1,9 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,7 +11,10 @@ import (
 	"time"
 )
 
-const testAdminOrigin = "http://127.0.0.1:9989"
+const (
+	testAdminOrigin     = "http://127.0.0.1:9989"
+	testAccountPassword = "test account password"
+)
 
 func adminRequest(a http.Handler, method, path, body, csrf string, cookie *http.Cookie) *httptest.ResponseRecorder {
 	r := httptest.NewRequest(method, testAdminOrigin+adminBase+path, strings.NewReader(body))
@@ -28,7 +31,7 @@ func adminRequest(a http.Handler, method, path, body, csrf string, cookie *http.
 
 func testAdminLogin(t *testing.T, s *Server, owner string) (*AdminConsole, *http.Cookie, string) {
 	t.Helper()
-	_, secret, err := s.config.Store.IssueAdminCredential(context.Background(), owner, owner, "Test", 24*time.Hour, 0)
+	account, err := s.config.Store.accounts.Account(context.Background(), owner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +39,7 @@ func testAdminLogin(t *testing.T, s *Server, owner string) (*AdminConsole, *http
 	if err != nil {
 		t.Fatal(err)
 	}
-	w := adminRequest(a, "POST", "/login", `{"token":"`+secret+`"}`, "", nil)
+	w := adminRequest(a, "POST", "/login", `{"username":"`+account.Username+`","password":"`+testAccountPassword+`"}`, "", nil)
 	var result struct {
 		CSRF string `json:"csrf"`
 	}
@@ -84,18 +87,12 @@ func TestAdminSessionOriginCSRFExpiryAndRevocation(t *testing.T) {
 		t.Fatal("logout failed")
 	}
 	a, cookie, _ = testAdminLogin(t, s, owner.identity)
-	credential := s.config.Store.snapshot().Credentials[0]
-	if err := s.config.Store.RevokeAdminCredential(context.Background(), owner.identity, credential.ID, 0); err != nil {
+	_, err := s.config.Store.ResetAccountPassword(context.Background(), "owner", testAccountPassword)
+	if err != nil {
 		t.Fatal(err)
 	}
-	// Revoke the credential used by the current session, not an older login.
-	for _, c := range s.config.Store.snapshot().Credentials {
-		if err := s.config.Store.RevokeAdminCredential(context.Background(), owner.identity, c.ID, 0); err != nil {
-			t.Fatal(err)
-		}
-	}
 	if w := adminRequest(a, "GET", "/session", "", "", cookie); w.Code != 401 {
-		t.Fatal("revoked credential still accepted")
+		t.Fatal("old password version still accepted")
 	}
 	a, cookie, _ = testAdminLogin(t, s, owner.identity)
 	key := sessionKey(cookie.Value)
@@ -107,31 +104,43 @@ func TestAdminSessionOriginCSRFExpiryAndRevocation(t *testing.T) {
 	}
 }
 
-func TestAdminCredentialPersistenceDoesNotStoreSecretAndRoleRevokesSession(t *testing.T) {
-	s, owner, dir := channelTestServer(t)
-	admin := strings.Repeat("b", 64)
-	ctx := context.Background()
-	if err := s.config.Store.SetRole(ctx, owner.identity, admin, "admin", 0); err != nil {
-		t.Fatal(err)
+func TestAdminLoginCapacityAndCookieReplacement(t *testing.T) {
+	s, owner, _ := channelTestServer(t)
+	a, cookie, _ := testAdminLogin(t, s, owner.principal())
+	for i := 0; i < 63; i++ {
+		a.sessions[fmt.Sprintf("occupied-%d", i)] = adminSession{Expires: time.Now().Add(time.Hour), Done: make(chan struct{})}
 	}
-	c, secret, err := s.config.Store.IssueAdminCredential(ctx, owner.identity, admin, "Admin laptop", time.Hour, 0)
+	login := `{"username":"owner","password":"` + testAccountPassword + `"}`
+	if w := adminRequest(a, "POST", "/login", login, "", nil); w.Code != 503 || len(a.sessions) != 64 {
+		t.Fatal("capacity exceeded", w.Code, len(a.sessions))
+	}
+	oldDone := a.sessions[sessionKey(cookie.Value)].Done
+	if w := adminRequest(a, "POST", "/login", login, "", cookie); w.Code != 200 || len(a.sessions) != 64 {
+		t.Fatal("cookie replacement failed", w.Code, len(a.sessions))
+	}
+	select {
+	case <-oldDone:
+	default:
+		t.Fatal("replaced session still live")
+	}
+}
+
+func TestAdminRoleRevokesAccountSession(t *testing.T) {
+	s, owner, _ := channelTestServer(t)
+	ctx := context.Background()
+	account, err := s.config.Store.accounts.Register(ctx, "admin", testAccountPassword, "Administrator")
 	if err != nil {
 		t.Fatal(err)
 	}
-	entry, err := s.config.Store.kv.Get(ctx, resourceKey)
-	if err != nil || bytes.Contains(entry.Value(), []byte(secret)) {
-		t.Fatal("plaintext secret stored", err)
-	}
-	s.config.Store.Close()
-	s.config.Store = testStore(t, dir)
-	if got, ok := s.config.Store.authenticateAdmin(secret); !ok || got.ID != c.ID {
-		t.Fatal("credential lost after restart")
-	}
-	if err := s.config.Store.SetRole(ctx, owner.identity, admin, "member", 0); err != nil {
+	if err := s.config.Store.SetRole(ctx, owner.identity, account.UID, "admin", 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := s.config.Store.authenticateAdmin(secret); ok {
-		t.Fatal("revoked admin can login")
+	a, cookie, _ := testAdminLogin(t, s, account.UID)
+	if err := s.config.Store.SetRole(ctx, owner.identity, account.UID, "member", 0); err != nil {
+		t.Fatal(err)
+	}
+	if w := adminRequest(a, "GET", "/session", "", "", cookie); w.Code != 401 {
+		t.Fatal("revoked admin still authenticated")
 	}
 	if _, err := NewAdminConsole(s, "http://0.0.0.0:9989"); err == nil {
 		t.Fatal("public plaintext origin accepted")
@@ -144,11 +153,11 @@ func TestAdminLoginRejectsMalformedAndRateLimits(t *testing.T) {
 	if w := adminRequest(a, "POST", "/login", `{"token":"wrong","identity":"owner"}`, "", nil); w.Code != 400 {
 		t.Fatal(w.Code)
 	}
-	if w := adminRequest(a, "POST", "/login", `{"token":"wrong"}`, "", nil); w.Code != 401 {
+	if w := adminRequest(a, "POST", "/login", `{"token":"wrong"}`, "", nil); w.Code != 400 {
 		t.Fatal(w.Code)
 	}
 	for range 4 {
-		adminRequest(a, "POST", "/login", `{"token":"wrong"}`, "", nil)
+		adminRequest(a, "POST", "/login", `{"username":"wrong","password":"wrong"}`, "", nil)
 	}
 	if w := adminRequest(a, "POST", "/login", `{}`, "", nil); w.Code != 429 {
 		t.Fatal(w.Code)

@@ -56,31 +56,32 @@ type Server struct {
 	pendingMaxClients int
 }
 type peer struct {
-	logger         *slog.Logger
-	receivePokes   bool
-	pokeSend       bucket
-	pokeReceive    bucket
-	account        accounts.Proof
-	accountExpires time.Time
-	accountBucket  bucket
-	removed        bool
-	chatGeneration uint64
-	chatCancel     context.CancelFunc
-	chatWake       chan struct{}
-	chatOut        chan []byte
-	watch          w.WatchResources
-	lastState      *w.State
-	revision       uint64
-	identity       string
-	conn           w.Connection
-	stream         w.Stream
-	member         w.Member
-	epoch          uint32
-	out            chan []byte
-	voiceOut       *w.VoiceRing
-	done           chan struct{}
-	commandBucket  bucket
-	voiceBucket    bucket
+	temporaryChannel uint16
+	logger           *slog.Logger
+	receivePokes     bool
+	pokeSend         bucket
+	pokeReceive      bucket
+	account          accounts.Proof
+	accountExpires   time.Time
+	accountBucket    bucket
+	removed          bool
+	chatGeneration   uint64
+	chatCancel       context.CancelFunc
+	chatWake         chan struct{}
+	chatOut          chan []byte
+	watch            w.WatchResources
+	lastState        *w.State
+	revision         uint64
+	identity         string
+	conn             w.Connection
+	stream           w.Stream
+	member           w.Member
+	epoch            uint32
+	out              chan []byte
+	voiceOut         *w.VoiceRing
+	done             chan struct{}
+	commandBucket    bucket
+	voiceBucket      bucket
 }
 type bucket struct {
 	at     time.Time
@@ -334,6 +335,12 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 			}
 			continue
 		}
+		if f.Kind == w.ModerateMemberKind {
+			if !s.moderationCommand(p, f) {
+				return
+			}
+			continue
+		}
 		if f.Kind == w.WatchResourcesKind {
 			var watch w.WatchResources
 			if w.Decode(f, &watch) != nil || (watch.AllMembers && !watch.AllChannels) {
@@ -402,24 +409,18 @@ func (s *Server) servePeer(ctx context.Context, c w.Connection) {
 		code := uint8(w.OK)
 		switch f.Kind {
 		case w.MoveKind:
-			found := false
-			for _, ch := range s.config.Channels {
-				if ch.ID == cmd.Channel {
-					found = true
-				}
-			}
+			r := s.config.Store.snapshot()
+			ch, found := channelByID(r, cmd.Channel)
 			if !found || cmd.Channel == s.deletingChannel {
 				code = w.WrongChannel
+			} else if !canEnterChannel(r, p, ch) {
+				code = w.PermissionDenied
 			} else if p.member.Channel != cmd.Channel {
-				if p.epoch == ^uint32(0) {
+				if !s.movePeerLocked(p, cmd.Channel, false) {
 					s.mu.Unlock()
 					return
 				}
-				p.epoch++
-				p.member.Epoch = p.epoch
-				p.member.Channel = cmd.Channel
 				s.broadcastLocked(nil)
-				s.restartChatLocked(p)
 			}
 		case w.ChatSyncKind:
 			if cmd.Channel != p.member.Channel {
@@ -477,7 +478,11 @@ func (s *Server) stateLocked(p *peer) w.State {
 		}
 	}
 	manage := s.config.Store.Allowed(p.principal(), "channels", "write", "*")
-	return w.State{Name: s.config.Name, Self: p.member.ID, Epoch: p.epoch, Channels: channels, Members: members, IdentityUID: p.identity, AccountUID: p.principal(), AccountName: p.account.Username, ServerRole: role, CanClaimOwner: canClaim, CanManageChannels: manage, CanReorderChannels: manage, CanConfigureChannelAudio: manage, CanWatchResources: true, AllChannels: p.watch.AllChannels, AllMembers: p.watch.AllMembers, DefaultChannel: s.defaultChannel, CanPoke: true}
+	return w.State{
+		Name: s.config.Name, Self: p.member.ID, Epoch: p.epoch, Channels: channels, Members: members, IdentityUID: p.identity, AccountUID: p.principal(), AccountName: p.account.Username, ServerRole: role, CanClaimOwner: canClaim, CanManageChannels: manage, CanReorderChannels: manage, CanConfigureChannelAudio: manage, CanWatchResources: true, AllChannels: p.watch.AllChannels, AllMembers: p.watch.AllMembers, DefaultChannel: s.defaultChannel, CanPoke: true,
+		CanModerateMembers: authorized(resources, p.principal(), "members", "write", "member"),
+		CanKickAdmins:      authorized(resources, p.principal(), "members", "write", "admin"),
+	}
 }
 
 // One shared KV informer feeds the existing per-session interest projection.
@@ -519,6 +524,7 @@ func (s *Server) applyResources(r resourceRecord, revision uint64) error {
 	}
 	s.config.Channels, s.resourceRevision = r.Channels.Channels, revision
 	s.defaultChannel = r.Channels.Default
+	s.enforceChannelAccessLocked(r)
 	s.broadcastLocked(nil)
 	return nil
 }

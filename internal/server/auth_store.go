@@ -13,8 +13,10 @@ import (
 	"github.com/tsukiyoz/resona/internal/serverauth"
 )
 
-const authenticationBucket = "RESONA_AUTH"
-const passwordKey = "server-password"
+const (
+	authenticationBucket = "RESONA_AUTH"
+	passwordKey          = "server-password"
+)
 
 type passwordRecord struct {
 	Version    int    `json:"version"`

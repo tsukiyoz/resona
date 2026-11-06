@@ -29,8 +29,8 @@ At the maintainer's request, no device identity adopts an account or privileges.
 This experimental upgrade clears previous device-bound owner/admin credentials,
 claims and bans once. All devices enter as guests; users explicitly register in
 Settings -> Identity. Every account gets an independent random UID. New owner claims
-can only be consumed by a logged-in account. Existing web-only management tokens
-are not account login credentials. Back up both SQLite and KV together.
+can only be consumed by a logged-in account. Web-only management tokens have been
+removed. Back up both SQLite and KV together.
 
 Account nicknames are server-authoritative and synchronize on login/profile
 updates; guest nicknames remain connection-local. Management identifies accounts
@@ -51,8 +51,8 @@ device. Web management sessions do not replace voice connections.
 
 The account has one native recovery token at a time, rotated transactionally on
 each successful native authentication. Rotation invalidates even disconnected
-devices, not just peers currently in the routing map. An exported token is
-therefore rotated after native login too. Browser password sessions validate the
+devices, not just peers currently in the routing map. Remembered credentials are
+therefore replaced after native login too. Browser password sessions validate the
 account password version independently and do not mint a native token.
 
 Login is an in-session command. Only server-confirmed state denotes success.
@@ -87,6 +87,15 @@ exits while OS authorization is pending or denies that authorization. Native
 secure storage remains unavailable on unsupported platforms.
 
 ## Scope
+
+### 2026-11-06: Password-only manual login
+
+Desktop offers only username/password login and registration. Remove the manual
+Token login form, copy-token control and Core token-export command. Native token
+authentication remains internal to automatic recovery and remembered login;
+stored credentials, rotation, expiry and explicit logout retain their existing
+behavior. Administrator invitation issuance and redemption are removed; Owner
+directly assigns or revokes admin for an existing account.
 
 This iteration adds guest/member/admin/owner presentation, account registration,
 password/token login, password changes, logout, owner bootstrap/recovery, and

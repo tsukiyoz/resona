@@ -46,7 +46,9 @@ m = g(r.sub, p.sub) && r.obj == p.obj && r.act == p.act && (p.target == "*" || r
 		{"owner", "members", "write", "admin"},
 		{"owner", "roles", "write", "*"},
 		{"owner", "settings", "write", "*"},
-		{"owner", "tokens", "write", "*"},
+		{"owner", "bans", "write", "member"},
+		{"owner", "bans", "write", "guest"},
+		{"owner", "bans", "write", "admin"},
 	} {
 		if _, err = e.AddPolicy(p); err != nil {
 			return nil, err
@@ -91,20 +93,21 @@ func (s *Store) SetRole(ctx context.Context, actor, identity, role string, revis
 		if !authorized(*r, actor, "roles", "write", "*") {
 			return ErrPermission
 		}
-		if !validIdentity(identity) || identity == r.Owner || (role != "admin" && role != "member") {
-			return ErrInvalid
-		}
-		r.Admins = slices.DeleteFunc(r.Admins, func(id string) bool { return id == identity })
-		if role == "member" {
-			r.Credentials = slices.DeleteFunc(r.Credentials, func(c AdminCredential) bool { return c.Identity == identity })
-		}
-		if role == "admin" {
-			if len(r.Admins) >= 64 {
-				return ErrInvalid
-			}
-			r.Admins = append(r.Admins, identity)
-			slices.Sort(r.Admins)
-		}
-		return nil
+		return assignAdmin(r, identity, role)
 	})
+}
+
+func assignAdmin(r *resourceRecord, identity, role string) error {
+	if !validIdentity(identity) || identity == r.Owner || (role != "admin" && role != "member") || (role == "admin" && isBanned(*r, identity)) {
+		return ErrInvalid
+	}
+	if role == "admin" && !slices.Contains(r.Admins, identity) && len(r.Admins) >= 64 {
+		return ErrInvalid
+	}
+	r.Admins = slices.DeleteFunc(r.Admins, func(id string) bool { return id == identity })
+	if role == "admin" {
+		r.Admins = append(r.Admins, identity)
+		slices.Sort(r.Admins)
+	}
+	return nil
 }

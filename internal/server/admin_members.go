@@ -31,7 +31,7 @@ func (s *Server) SetBan(ctx context.Context, actor, identity, reason string, ttl
 	s.channelMu.Lock()
 	defer s.channelMu.Unlock()
 	err := s.config.Store.updateAtContext(ctx, revision, func(r *resourceRecord) error {
-		if !authorized(*r, actor, "members", "write", roleOf(*r, identity)) {
+		if identity == r.Owner || !authorized(*r, actor, "bans", "write", roleOf(*r, identity)) {
 			return ErrPermission
 		}
 		if !validIdentity(identity) || (!remove && (ttl < time.Minute || ttl > 365*24*time.Hour || (reason != "" && !validName(reason, 200)))) {
@@ -43,7 +43,6 @@ func (s *Server) SetBan(ctx context.Context, actor, identity, reason string, ttl
 				return ErrInvalid
 			}
 			r.Bans = append(r.Bans, Ban{Identity: identity, Reason: reason, Expires: time.Now().UTC().Add(ttl)})
-			r.Credentials = slices.DeleteFunc(r.Credentials, func(c AdminCredential) bool { return c.Identity == identity })
 		}
 		return nil
 	})
@@ -82,6 +81,10 @@ func (s *Server) disconnectBanned() {
 
 // Live actions target a particular session, never just a recyclable UI row.
 func (s *Server) ModerateMember(ctx context.Context, actor string, id uint16, instance, action string, channel uint16, revision uint64) error {
+	return s.moderateMember(ctx, actor, nil, id, instance, action, channel, revision)
+}
+
+func (s *Server) moderateMember(ctx context.Context, actor string, actorPeer *peer, id uint16, instance, action string, channel uint16, revision uint64) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -89,9 +92,16 @@ func (s *Server) ModerateMember(ctx context.Context, actor string, id uint16, in
 	defer s.channelMu.Unlock()
 	s.mu.Lock()
 	r, current := s.config.Store.state()
-	if revision != current {
+	if revision != 0 && revision != current {
 		s.mu.Unlock()
 		return ErrConflict
+	}
+	if actorPeer != nil {
+		if s.peers[actorPeer.member.ID] != actorPeer || actorPeer.removed || (actorPeer.account.UID != "" && !time.Now().Before(actorPeer.accountExpires)) {
+			s.mu.Unlock()
+			return ErrPermission
+		}
+		actor = actorPeer.principal()
 	}
 	p := s.peers[id]
 	if p == nil || p.removed || p.member.Instance != instance {
@@ -108,15 +118,28 @@ func (s *Server) ModerateMember(ctx context.Context, actor string, id uint16, in
 		p.member.Muted = true
 		p.member.Deafened = true
 	case "move":
-		if !slices.ContainsFunc(s.config.Channels, func(ch w.Channel) bool { return ch.ID == channel }) || p.epoch == ^uint32(0) {
+		ch, found := channelByID(r, channel)
+		if !found {
 			s.mu.Unlock()
 			return ErrInvalid
 		}
-		if p.member.Channel != channel {
-			p.epoch++
-			p.member.Epoch = p.epoch
-			p.member.Channel = channel
-			s.restartChatLocked(p)
+		temporary := ch.AdminOnly && roleOf(r, p.principal()) != "admin" && roleOf(r, p.principal()) != "owner"
+		if temporary {
+			present := false
+			for _, candidate := range s.peers {
+				if !candidate.removed && candidate.principal() == actor && candidate.member.Channel == channel && time.Now().Before(candidate.accountExpires) {
+					present = true
+					break
+				}
+			}
+			if !present {
+				s.mu.Unlock()
+				return ErrPermission
+			}
+		}
+		if !s.movePeerLocked(p, channel, temporary) {
+			s.mu.Unlock()
+			return ErrInvalid
 		}
 	default:
 		s.mu.Unlock()
@@ -139,8 +162,6 @@ func (a *AdminConsole) registerMembers() {
 	a.mux.HandleFunc("POST "+adminBase+"/members/{id}/{action}", a.member)
 	a.mux.HandleFunc("POST "+adminBase+"/bans/{identity}", a.ban)
 	a.mux.HandleFunc("DELETE "+adminBase+"/bans/{identity}", a.ban)
-	a.mux.HandleFunc("POST "+adminBase+"/credentials", a.credential)
-	a.mux.HandleFunc("DELETE "+adminBase+"/credentials/{id}", a.credential)
 }
 
 func (a *AdminConsole) role(wr http.ResponseWriter, r *http.Request) {
@@ -174,8 +195,37 @@ func (a *AdminConsole) role(wr http.ResponseWriter, r *http.Request) {
 
 func (s *Server) notifyAdminChange() {
 	s.mu.Lock()
+	s.enforceChannelAccessLocked(s.config.Store.snapshot())
 	s.broadcastLocked(nil)
 	s.mu.Unlock()
+}
+
+func (s *Server) moderationCommand(p *peer, f w.Frame) bool {
+	var cmd w.ModerateMember
+	if w.Decode(f, &cmd) != nil {
+		return false
+	}
+	s.mu.Lock()
+	allowed := !p.removed && p.commandBucket.take(2, 4)
+	s.mu.Unlock()
+	code := uint8(w.RateLimited)
+	if allowed {
+		err := s.moderateMember(p.conn.Context(), "", p, cmd.Target, cmd.Instance, cmd.Action, cmd.Channel, 0)
+		switch err {
+		case nil:
+			code = w.OK
+		case ErrPermission:
+			code = w.PermissionDenied
+		case ErrNotFound:
+			code = w.MemberUnavailable
+		default:
+			code = w.Rejected
+		}
+	}
+	s.mu.Lock()
+	s.enqueueLocked(p, w.ReplyKind, f.Request, w.Reply{Code: code})
+	s.mu.Unlock()
+	return true
 }
 
 func (a *AdminConsole) member(wr http.ResponseWriter, r *http.Request) {
@@ -225,40 +275,4 @@ func (a *AdminConsole) ban(wr http.ResponseWriter, r *http.Request) {
 		return
 	}
 	adminJSON(wr, 200, map[string]bool{"ok": true})
-}
-
-func (a *AdminConsole) credential(wr http.ResponseWriter, r *http.Request) {
-	session, ok := a.authenticate(wr, r)
-	if !ok {
-		return
-	}
-	var v struct {
-		Revision uint64 `json:"revision"`
-		Identity string `json:"identity"`
-		Label    string `json:"label"`
-		Hours    int    `json:"hours"`
-	}
-	if !adminDecode(wr, r, &v) {
-		return
-	}
-	if v.Revision == 0 || v.Hours < 0 || v.Hours > 2160 {
-		adminFailure(wr, ErrInvalid)
-		return
-	}
-	if r.Method == "DELETE" {
-		if err := a.server.config.Store.RevokeAdminCredential(r.Context(), session.Identity, r.PathValue("id"), v.Revision); err != nil {
-			adminFailure(wr, err)
-			return
-		}
-		a.server.notifyAdminChange()
-		adminJSON(wr, 200, map[string]bool{"ok": true})
-		return
-	}
-	c, secret, err := a.server.config.Store.IssueAdminCredential(r.Context(), session.Identity, v.Identity, v.Label, time.Duration(v.Hours)*time.Hour, v.Revision)
-	if err != nil {
-		adminFailure(wr, err)
-		return
-	}
-	a.server.notifyAdminChange()
-	adminJSON(wr, 200, map[string]any{"credential": c, "token": secret})
 }
