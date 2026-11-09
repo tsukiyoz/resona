@@ -73,7 +73,7 @@ pub(super) fn apply(
         };
         manager
             .wait_exit_then_apply_updates(&release, false, true, Vec::<String>::new())
-            .map_err(|_| "无法启动更新程序，请检查权限后重试")
+            .map_err(|_| "无法启动更新程序，请检查权限后重试".to_owned())
     }
     #[cfg(not(target_os = "windows"))]
     {
