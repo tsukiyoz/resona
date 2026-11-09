@@ -95,6 +95,12 @@ pub struct Handle {
     pub view: watch::Receiver<View>,
 }
 impl Handle {
+    pub async fn prepare_update(&self) -> Result<updates::PreparedUpdate> {
+        if self.app.lock().closing {
+            return Err("应用正在退出".into());
+        }
+        self.app.updates.lock().await.prepare_install().await
+    }
     pub async fn request(&self, method: &str, params: Value) -> Result<Value> {
         let urgent = matches!(
             method,
@@ -1083,8 +1089,9 @@ impl App {
                 Ok(json!(true))
             }
             "GetUpdateRelease" => Ok(json!({"url":self.updates.lock().await.release_page()?})),
-            "DownloadUpdate" | "InstallUpdate" | "GetUpdatePackage" => {
-                Err("此构建不支持应用内安装，请前往发布页手动更新".into())
+            "DownloadUpdate" => {
+                self.updates.lock().await.download()?;
+                Ok(json!(true))
             }
             "PrepareShutdown" => {
                 self.connection_revision.fetch_add(1, Ordering::AcqRel);

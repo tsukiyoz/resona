@@ -57,6 +57,7 @@ func TestReleasePublicationCompletenessAndImmutability(t *testing.T) {
 		{name: "older release", releases: `{"tag_name":"v0.2.0","draft":false,"prerelease":false}`, success: true, latest: "false"},
 		{name: "existing version", releases: `{"tag_name":"v0.1.5","draft":false,"prerelease":false}`},
 		{name: "incomplete builds", failure: "missing"},
+		{name: "missing installer", failure: "installer"},
 		{name: "signature failure", failure: "sign"},
 		{name: "upload failure", failure: "upload"},
 		{name: "tag moved during build", failure: "tag"},
@@ -76,8 +77,11 @@ func TestReleasePublicationCompletenessAndImmutability(t *testing.T) {
 			write("publish.sh", string(script), 0o700)
 			write("VERSION", "0.1.5\n", 0o600)
 			write("docs/releases/v0.1.5.md", "Test release", 0o600)
-			for _, asset := range []string{"windows/Resona-win-x64.zip", "arm64/Resona-macos-arm64.zip", "x64/Resona-macos-x64.zip"} {
+			for _, asset := range []string{"windows/Resona-win-x64.zip", "arm64/Resona-macos-arm64.zip", "x64/Resona-macos-x64.zip", "installer/Resona-Setup-unsigned.exe", "installer/Resona-full.nupkg"} {
 				if tc.failure == "missing" && strings.HasPrefix(asset, "x64/") {
+					continue
+				}
+				if tc.failure == "installer" && strings.HasPrefix(asset, "installer/") {
 					continue
 				}
 				write("build/release/"+asset, "fixture", 0o600)
@@ -121,6 +125,7 @@ esac
 				lines := strings.Split(strings.TrimSpace(calls), "\n")
 				if len(lines) != 3 || !strings.HasPrefix(lines[0], "release create ") || !strings.Contains(lines[0], "--draft") ||
 					!strings.HasPrefix(lines[1], "release upload ") || !strings.Contains(lines[1], "manifest.json") ||
+					!strings.Contains(lines[1], "manifest-windows-installer.json") || !strings.Contains(lines[1], "Setup-unsigned.exe") || !strings.Contains(lines[1], "full.nupkg") ||
 					!strings.Contains(lines[2], "--draft=false --latest="+tc.latest) {
 					t.Fatalf("unsafe publication order: %s", calls)
 				}

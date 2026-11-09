@@ -31,6 +31,7 @@ func run() error {
 	expires := flag.String("expires", "", "expiry in RFC3339 UTC")
 	notesPath := flag.String("notes", "", "optional UTF-8 release note file")
 	publicKey := flag.String("public-key", "", "required public key embedded in released clients")
+	distribution := flag.String("distribution", updates.DistributionPortable, "portable or installer (Windows Velopack)")
 	flag.Parse()
 	private, err := base64.StdEncoding.DecodeString(os.Getenv("RESONA_UPDATE_SIGNING_KEY"))
 	if err != nil || len(private) != ed25519.PrivateKeySize {
@@ -56,6 +57,11 @@ func run() error {
 		return errors.New("invalid asset input")
 	}
 	manifest := updates.Manifest{Schema: 1, Product: "resona", Channel: "stable", Version: *version, ReleaseURL: "https://github.com/tsukiyoz/resona/releases/tag/" + *version, Expires: expiry, Assets: make(map[string]updates.Asset)}
+	if *distribution == updates.DistributionInstaller {
+		manifest.Schema = 2
+	} else if *distribution != updates.DistributionPortable {
+		return errors.New("unsupported distribution")
+	}
 	if *notesPath != "" {
 		notes, err := os.ReadFile(*notesPath)
 		if err != nil {
@@ -70,7 +76,14 @@ func run() error {
 		if input.Platform != "windows/amd64" && input.Platform != "darwin/arm64" && input.Platform != "darwin/amd64" {
 			return errors.New("unsupported platform")
 		}
-		if input.Platform == "windows/amd64" {
+		if *distribution == updates.DistributionInstaller {
+			if input.Platform != "windows/amd64" {
+				return errors.New("installer only supports Windows x64")
+			}
+			if err := updates.ValidateWindowsInstaller(input.Path, *version); err != nil {
+				return err
+			}
+		} else if input.Platform == "windows/amd64" {
 			if err := updates.ValidateWindowsArchive(input.Path, *version); err != nil {
 				return err
 			}
@@ -87,7 +100,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		manifest.Assets[input.Platform] = updates.Asset{URL: input.URL, Distribution: updates.DistributionPortable, SHA256: hex.EncodeToString(h.Sum(nil)), Size: size}
+		manifest.Assets[input.Platform] = updates.Asset{URL: input.URL, Distribution: *distribution, SHA256: hex.EncodeToString(h.Sum(nil)), Size: size}
 	}
 	payload, err := json.Marshal(manifest)
 	if err != nil {

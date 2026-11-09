@@ -66,6 +66,7 @@ fn incoming_kind(incoming: &Incoming) -> &'static str {
         Incoming::Workspace(_) => "workspace",
         Incoming::ResourceSync(_) => "resource",
         Incoming::Update(_) => "update",
+        Incoming::UpdateFailed(_) => "update-failed",
         Incoming::Notifications(_) => "notifications",
         Incoming::Voice(_) => "voice",
         Incoming::MicrophoneTest(_) => "microphone",
@@ -454,6 +455,8 @@ pub struct ResonaApp {
     hotkey_error: String,
     hotkey_epoch: Arc<AtomicU64>,
     closing: bool,
+    updating: bool,
+    update_confirm: bool,
     connect_revision: u64,
     preferences: Preferences,
     preference_error: Option<String>,
@@ -746,19 +749,30 @@ impl ResonaApp {
                 this.clear_account_secrets(window, cx);
             });
             this.flush_preferences();
-            if let Some(core) = this.core.clone() {
+            let updating = this.updating;
+            let exiting = this.core.clone();
+            if let Some(core) = exiting.as_ref() {
                 this.clear_hotkey(cx);
                 this.closing = true;
                 this.sync_loading_notices(false, cx);
-                let _ = cx.foreground_executor().block_with_timeout(
-                    Duration::from_secs(7),
-                    core.prepare_shutdown(
-                        this.preferences.notifications_enabled && !this.voice.deafened,
-                        this.preferences.notification_volume,
-                    ),
-                );
+                if !updating {
+                    let _ = cx.foreground_executor().block_with_timeout(
+                        Duration::from_secs(7),
+                        core.prepare_shutdown(
+                            this.preferences.notifications_enabled && !this.voice.deafened,
+                            this.preferences.notification_volume,
+                        ),
+                    );
+                }
                 let _ = core.request("Shutdown", json!({}));
                 core.finish_shutdown();
+                if updating {
+                    // GPUI only awaits returned quit futures for 200ms. Finish
+                    // the explicit update handoff before that deadline starts.
+                    let _ = cx
+                        .foreground_executor()
+                        .block_with_timeout(Duration::from_secs(60), core.wait_closed());
+                }
             }
             async {}
         });
@@ -805,6 +819,8 @@ impl ResonaApp {
             hotkey_error: String::new(),
             hotkey_epoch: Arc::new(AtomicU64::new(0)),
             closing: false,
+            updating: false,
+            update_confirm: false,
             connect_revision: 0,
             preferences,
             preference_error,
@@ -941,28 +957,33 @@ impl ResonaApp {
             }
         })
         .detach();
+        this.start_core(window, cx);
+        this
+    }
+
+    fn start_core(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match CoreClient::spawn() {
             Ok((core, rx)) => {
-                this.core = Some(core);
-                this.request(
+                self.core = Some(core);
+                self.request(
                     "GetWorkspace",
                     json!({}),
                     Pending::Workspace("GetWorkspace"),
                 );
-                this.request("GetVoiceState", json!({}), Pending::VoiceSnapshot);
-                this.request(
+                self.request("GetVoiceState", json!({}), Pending::VoiceSnapshot);
+                self.request(
                     "GetMicrophoneTestState",
                     json!({}),
                     Pending::MicrophoneSnapshot,
                 );
-                this.request("GetAudioDevices", json!({}), Pending::Devices);
-                this.request("GetCapabilities", json!({}), Pending::Capabilities);
-                this.request(
+                self.request("GetAudioDevices", json!({}), Pending::Devices);
+                self.request("GetCapabilities", json!({}), Pending::Capabilities);
+                self.request(
                     "GetUpdateStatus",
                     json!({}),
                     Pending::Update("GetUpdateStatus"),
                 );
-                this.store_voice_preferences(None);
+                self.store_voice_preferences(None);
                 cx.spawn_in(window, async move |view, cx| {
                     while let Ok(incoming) = rx.recv().await {
                         // Bound each batch so queued audio updates leave room for input.
@@ -989,9 +1010,8 @@ impl ResonaApp {
                 })
                 .detach();
             }
-            Err(error) => this.error = error.to_string(),
+            Err(error) => self.error = error.to_string(),
         }
-        this
     }
 
     fn request(&mut self, method: &'static str, params: Value, pending: Pending) {
@@ -1078,7 +1098,12 @@ impl ResonaApp {
                     self.chat_history_error = format!("更早消息加载失败：{error}");
                 }
             }
-            Pending::Update(_) => self.update_notice = error,
+            Pending::Update(method) => {
+                if method == "InstallUpdate" {
+                    self.updating = false;
+                }
+                self.update_notice = error;
+            }
             Pending::ExportDiagnostics => self.diagnostic_error = format!("导出诊断失败：{error}"),
             Pending::CoreInfo => self.build_info_error = format!("无法读取应用构建信息：{error}"),
             Pending::Capabilities => {
@@ -1153,9 +1178,27 @@ impl ResonaApp {
         match incoming {
             Incoming::Update(value) => {
                 if self.core.is_some() {
+                    if value["state"] != "idle" {
+                        self.update_notice.clear();
+                    }
                     self.update_status = value;
-                    self.update_notice.clear();
                 }
+            }
+            Incoming::UpdateFailed(error) => {
+                self.core = None;
+                self.closing = false;
+                self.updating = false;
+                self.pending.clear();
+                self.workspace = Workspace::default();
+                self.voice = VoiceState::default();
+                self.microphone_test = VoiceState::default();
+                self.resource_interest = None;
+                self.resource_state = ResourceState::Idle;
+                self.clear_selected_details();
+                self.update_notice =
+                    format!("更新未安装：{error}。可重新检查更新或继续使用当前版本。");
+                self.modal = Some(Modal::About);
+                self.start_core(window, cx);
             }
             Incoming::Notifications(value) => {
                 if let Ok(mut workspace) = serde_json::from_value::<Workspace>(value) {
@@ -1638,6 +1681,9 @@ impl ResonaApp {
                     (Some(Pending::Update(method)), Ok(value)) => {
                         if method == "GetUpdateStatus" {
                             self.update_status = value;
+                        } else if method == "InstallUpdate" && !self.closing {
+                            self.updating = true;
+                            self.begin_shutdown(window, cx);
                         } else if method == "GetUpdateRelease" && !self.closing {
                             if let Some(url) = value["url"].as_str() {
                                 cx.open_url(url);
@@ -1646,7 +1692,12 @@ impl ResonaApp {
                             }
                         }
                     }
-                    (Some(Pending::Update(_)), Err(error)) => self.update_notice = error,
+                    (Some(Pending::Update(method)), Err(error)) => {
+                        if method == "InstallUpdate" {
+                            self.updating = false;
+                        }
+                        self.update_notice = error;
+                    }
                     (Some(Pending::CoreInfo), Ok(value)) => {
                         self.core_info = Some(value);
                         self.build_info_error.clear();
@@ -2075,7 +2126,7 @@ impl ResonaApp {
         cx.spawn(async |view, cx| {
             cx.background_executor().timer(Duration::from_secs(7)).await;
             let _ = view.update(cx, |this, cx| {
-                if this.closing {
+                if this.closing && !this.updating {
                     if let Some(core) = &this.core {
                         core.finish_shutdown();
                     }
@@ -6411,7 +6462,8 @@ impl ResonaApp {
         let pending = self
             .pending_actions()
             .any(|p| matches!(p, Pending::Update(_)));
-        let busy = pending || state == "checking";
+        let busy =
+            pending || matches!(state, "checking" | "downloading" | "installing") || self.updating;
         let status = if !self.update_notice.is_empty() {
             self.update_notice.clone()
         } else if !configured {
@@ -6422,19 +6474,31 @@ impl ResonaApp {
         } else {
             match state {
                 "checking" => "正在检查更新…".into(),
+                "downloading" => {
+                    let downloaded = self.update_status["downloaded"].as_u64().unwrap_or(0);
+                    let total = self.update_status["total"].as_u64().unwrap_or(0).max(1);
+                    format!(
+                        "正在下载更新：{}%（{:.1} / {:.1} MiB）",
+                        downloaded * 100 / total,
+                        downloaded as f64 / 1048576.,
+                        total as f64 / 1048576.
+                    )
+                }
+                "ready" => "更新已下载并验证，重启后安装".into(),
+                "installing" => "正在准备重启更新…".into(),
                 "current" => "已是最新正式版本".into(),
                 "available" => format!(
                     "可用版本：{}",
                     self.update_status["version"].as_str().unwrap_or("--")
                 ),
                 "failed" => format!(
-                    "检查更新失败：{}",
+                    "更新失败：{}",
                     self.update_status["error"]
                         .as_str()
                         .filter(|reason| !reason.is_empty())
                         .unwrap_or("请稍后重试")
                 ),
-                "cancelled" => "已取消检查更新".into(),
+                "cancelled" => "已取消更新任务".into(),
                 _ => "尚未检查更新".into(),
             }
         };
@@ -6447,6 +6511,10 @@ impl ResonaApp {
                 .on_click(move |_, _, cx| {
                     entity.update(cx, |this, cx| {
                         this.update_notice.clear();
+                        this.update_confirm = false;
+                        if method == "InstallUpdate" {
+                            this.updating = true;
+                        }
                         this.request(method, json!({}), Pending::Update(method));
                         cx.notify();
                     });
@@ -6466,7 +6534,45 @@ impl ResonaApp {
                     .disabled(busy || self.core.is_none()),
             );
         }
-        if state == "checking" {
+        if self.update_status["canDownload"].as_bool().unwrap_or(false) {
+            controls = controls
+                .child(button("download-update", "下载更新", "DownloadUpdate").disabled(busy));
+        }
+        if self.update_status["canInstall"].as_bool().unwrap_or(false) {
+            if self.update_confirm {
+                controls = controls
+                    .child(button("install-update", "确认重启", "InstallUpdate").disabled(busy));
+                let entity = view.clone();
+                controls = controls.child(
+                    Button::new("keep-update")
+                        .label("稍后")
+                        .compact()
+                        .ghost()
+                        .disabled(busy)
+                        .on_click(move |_, _, cx| {
+                            entity.update(cx, |this, cx| {
+                                this.update_confirm = false;
+                                cx.notify();
+                            });
+                        }),
+                );
+            } else {
+                let entity = view.clone();
+                controls = controls.child(
+                    Button::new("confirm-update")
+                        .label("重启并更新")
+                        .compact()
+                        .disabled(busy)
+                        .on_click(move |_, _, cx| {
+                            entity.update(cx, |this, cx| {
+                                this.update_confirm = true;
+                                cx.notify();
+                            });
+                        }),
+                );
+            }
+        }
+        if matches!(state, "checking" | "downloading") {
             controls =
                 controls.child(button("cancel-update", "取消", "CancelUpdate").disabled(pending));
         }
@@ -6477,6 +6583,14 @@ impl ResonaApp {
             .gap_2()
             .child(div().h(px(1.)).w_full().bg(color(LINE)))
             .child(div().text_xs().text_color(color(MUTED)).child(status))
+            .when(self.update_confirm, |s| {
+                s.child(
+                    div()
+                        .text_xs()
+                        .text_color(color(MUTED))
+                        .child("重启会结束当前通话；偏好与登录身份会保留。"),
+                )
+            })
             .child(controls)
     }
 
@@ -9378,7 +9492,11 @@ impl Render for ResonaApp {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child(div().text_sm().child("正在断开并退出")),
+                        .child(div().text_sm().child(if self.updating {
+                            "正在结束通话并重启更新"
+                        } else {
+                            "正在断开并退出"
+                        })),
                 )
             });
         div()

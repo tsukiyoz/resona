@@ -116,3 +116,22 @@ jobs:
           path: desktop/dist/Resona-win-x64.zip
           if-no-files-found: error
           retention-days: 14
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '8.0.x'
+      - name: Package Windows installer (unsigned)
+        shell: pwsh
+        run: |
+          $tools = Join-Path $env:RUNNER_TEMP 'resona-vpk'
+          dotnet tool install vpk --version 1.2.161 --tool-path $tools
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./desktop/scripts/package-installer-windows.ps1 -Version '${{ steps.version.outputs.version }}' -Vpk (Join-Path $tools 'vpk.exe')
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v6
+        with:
+          name: Resona-${{ steps.version.outputs.version }}-win-x64-installer-unsigned-${{ github.sha }}
+          path: |
+            desktop/dist/installer/Resona-Setup-unsigned.exe
+            desktop/dist/installer/Resona-full.nupkg
+          if-no-files-found: error
+          retention-days: 14

@@ -36,6 +36,8 @@ mkdir -p "$output"
 cp build/release/windows/Resona-win-x64.zip "$output/Resona-$RELEASE_TAG-win-x64-portable.zip"
 cp build/release/arm64/Resona-macos-arm64.zip "$output/Resona-$RELEASE_TAG-macos-arm64-portable.zip"
 cp build/release/x64/Resona-macos-x64.zip "$output/Resona-$RELEASE_TAG-macos-x64-portable.zip"
+cp build/release/installer/Resona-Setup-unsigned.exe "$output/Resona-$RELEASE_TAG-win-x64-Setup-unsigned.exe"
+cp build/release/installer/Resona-full.nupkg "$output/Resona-$RELEASE_TAG-win-x64-full.nupkg"
 jq -n --arg dir "$output" --arg tag "$RELEASE_TAG" --arg repo "$GITHUB_REPOSITORY" '
   [{platform:"windows/amd64",suffix:"win-x64"},
    {platform:"darwin/arm64",suffix:"macos-arm64"},
@@ -47,6 +49,13 @@ jq -n --arg dir "$output" --arg tag "$RELEASE_TAG" --arg repo "$GITHUB_REPOSITOR
 expires=$(date -u -d '+365 days' '+%Y-%m-%dT%H:%M:%SZ')
 go run ./tools/release-manifest -version "$RELEASE_TAG" -assets "$output/assets.json" \
   -notes "$notes" -expires "$expires" -public-key "$RESONA_UPDATE_PUBLIC_KEY" -out "$output/manifest.json"
+jq -n --arg dir "$output" --arg tag "$RELEASE_TAG" --arg repo "$GITHUB_REPOSITORY" '
+  ("Resona-"+$tag+"-win-x64-full.nupkg") as $name |
+  [{platform:"windows/amd64",path:($dir+"/"+$name),
+    url:("https://github.com/"+$repo+"/releases/download/"+$tag+"/"+$name)}]
+' > "$output/installer-assets.json"
+go run ./tools/release-manifest -version "$RELEASE_TAG" -distribution installer -assets "$output/installer-assets.json" \
+  -notes "$notes" -expires "$expires" -public-key "$RESONA_UPDATE_PUBLIC_KEY" -out "$output/manifest-windows-installer.json"
 
 # A failed upload remains a draft and cannot be discovered through /latest.
 verify_tag
@@ -54,6 +63,8 @@ gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draf
   --title "Resona $RELEASE_TAG" --notes-file "$notes"
 gh release upload "$RELEASE_TAG" "$output/Resona-$RELEASE_TAG-win-x64-portable.zip" \
   "$output/Resona-$RELEASE_TAG-macos-arm64-portable.zip" "$output/Resona-$RELEASE_TAG-macos-x64-portable.zip" \
-  "$output/manifest.json" --repo "$GITHUB_REPOSITORY"
+  "$output/manifest.json" "$output/manifest-windows-installer.json" \
+  "$output/Resona-$RELEASE_TAG-win-x64-Setup-unsigned.exe" "$output/Resona-$RELEASE_TAG-win-x64-full.nupkg" \
+  --repo "$GITHUB_REPOSITORY"
 verify_tag
 gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest="$latest"
