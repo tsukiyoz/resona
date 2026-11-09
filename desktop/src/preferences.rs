@@ -196,7 +196,7 @@ impl Preferences {
     }
 
     fn decode(bytes: &[u8]) -> io::Result<(Self, u32)> {
-        let value: serde_json::Value = serde_json::from_slice(bytes)?;
+        let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
         if !value.is_object() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -217,6 +217,8 @@ impl Preferences {
                 })?,
         };
         if version == SCHEMA_VERSION {
+            // The unreleased manual text-size preference was replaced by display scaling.
+            value.as_object_mut().unwrap().remove("text_size");
             check_fields(&value, &serde_json::to_value(Self::default())?)?;
         }
         let migrate_legacy = version == 0 && value.get("processing").is_none();
@@ -345,6 +347,22 @@ fn write_backup(path: &Path, bytes: &[u8]) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn retired_manual_text_size_does_not_protect_or_overwrite_other_preferences() {
+        let (preferences, _) = super::Preferences::decode(
+            br#"{"schema_version":1,"text_size":"extra_large","theme":"dark","playback_volume":250}"#,
+        ).unwrap();
+        assert!(!preferences.read_only);
+        assert_eq!(preferences.theme, super::ThemePreference::Dark);
+        assert_eq!(preferences.playback_volume, 250);
+        assert!(
+            serde_json::to_value(preferences)
+                .unwrap()
+                .get("text_size")
+                .is_none()
+        );
+    }
+
     #[test]
     fn entry_preference_and_new_processing_defaults_round_trip() {
         let baseline = super::Preferences::default();

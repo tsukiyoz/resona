@@ -25,9 +25,14 @@ pub fn apply(preference: ThemePreference, window: Option<&mut Window>, cx: &mut 
     if let Some(window) = window.as_deref() {
         apply_titlebar(mode, window);
     }
+    let font_size = window
+        .as_deref()
+        .map(|window| automatic_font_size(window, cx));
     Theme::change(mode, window, cx);
     Theme::update(cx, |theme| {
-        theme.font_size = gpui_kit::px(14.);
+        if let Some(font_size) = font_size {
+            theme.font_size = gpui_kit::px(font_size);
+        }
         theme.radius = gpui_kit::px(6.);
         theme.radius_lg = gpui_kit::px(8.);
         let tone = |dark, light| {
@@ -57,6 +62,78 @@ pub fn apply(preference: ThemePreference, window: Option<&mut Window>, cx: &mut 
         theme.ring = tone(0x8bada0, 0x43816c);
         theme.popover = tone(0x191c20, 0xffffff);
     });
+}
+
+fn extra_scale(system_scale: f32, width: f32, height: f32) -> f32 {
+    if !system_scale.is_finite()
+        || system_scale <= 0.
+        || !width.is_finite()
+        || width <= 0.
+        || !height.is_finite()
+        || height <= 0.
+    {
+        return 1.;
+    }
+    let resolution_scale = (width.min(height) / 1080.).clamp(1., 1.5);
+    // GPUI already applies the system scale to logical pixels.
+    resolution_scale.max(system_scale) / system_scale
+}
+
+fn automatic_font_size(window: &Window, cx: &App) -> f32 {
+    let system_scale = window.scale_factor();
+    let Some(display) = window.display(cx) else {
+        return 14.;
+    };
+    let size = display.bounds().size;
+    14. * extra_scale(
+        system_scale,
+        f32::from(size.width) * system_scale,
+        f32::from(size.height) * system_scale,
+    )
+}
+
+pub fn update_scale(window: &Window, cx: &mut App) -> bool {
+    let font_size = gpui_kit::px(automatic_font_size(window, cx));
+    if (Theme::global(cx).font_size - font_size).abs() < gpui_kit::px(0.01) {
+        return false;
+    }
+    Theme::update(cx, |theme| theme.font_size = font_size);
+    true
+}
+
+#[cfg(test)]
+mod scaling_tests {
+    use super::extra_scale;
+
+    #[test]
+    fn combines_resolution_and_dpi_without_double_scaling() {
+        for (width, height, dpi, expected) in [
+            (1920., 1080., 1., 1.),
+            (2560., 1440., 1., 4. / 3.),
+            (3840., 2160., 1., 1.5),
+            (2560., 1440., 1.5, 1.5),
+            (3840., 2160., 2., 2.),
+            (3440., 1440., 1., 4. / 3.),
+            (2160., 3840., 1., 1.5),
+            (1280., 720., 1., 1.),
+            (7680., 4320., 1., 1.5),
+        ] {
+            assert!((dpi * extra_scale(dpi, width, height) - expected).abs() < 0.001);
+        }
+    }
+
+    #[test]
+    fn invalid_display_metrics_keep_system_scaling() {
+        for (dpi, width, height) in [
+            (0., 1920., 1080.),
+            (f32::NAN, 1920., 1080.),
+            (1., f32::INFINITY, 1080.),
+            (1., 1920., 0.),
+            (1., -1920., 1080.),
+        ] {
+            assert_eq!(extra_scale(dpi, width, height), 1.);
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
