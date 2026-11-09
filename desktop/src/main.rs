@@ -103,7 +103,11 @@ fn main() -> Result<()> {
         gpui_kit::init(cx);
         cx.bind_keys([
             KeyBinding::new("escape", ui::DismissEmoji, Some("ResonaEmoji")),
-            KeyBinding::new("escape", ui::DismissModal, None),
+            KeyBinding::new(
+                "escape",
+                ui::DismissModal,
+                Some("!PopupMenu && !PopoverContent"),
+            ),
             KeyBinding::new("cmd-q", ui::Quit, None),
             KeyBinding::new("ctrl-q", ui::Quit, None),
         ]);

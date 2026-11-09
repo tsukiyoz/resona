@@ -24,7 +24,7 @@ use gpui_kit::component::{
 use gpui_kit::{
     AnyElement, Context, Entity, EntityInputHandler, FocusHandle, Image, ImageFormat,
     InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, Window, div, img, prelude::*, px, svg,
+    StatefulInteractiveElement, Styled, Subscription, Window, div, img, prelude::*, px, rems, svg,
 };
 use serde_json::{Value, json};
 use std::{
@@ -486,6 +486,8 @@ pub struct ResonaApp {
     submitted_drafts: HashMap<String, (String, String)>,
     selected_server: String,
     modal: Option<Modal>,
+    modal_visible: bool,
+    modal_focus: FocusHandle,
     ownership_revision: u64,
     channel_revision: u64,
     channel_error: String,
@@ -835,6 +837,8 @@ impl ResonaApp {
             submitted_drafts: HashMap::new(),
             selected_server: String::new(),
             modal: None,
+            modal_visible: false,
+            modal_focus: cx.focus_handle(),
             ownership_revision: 0,
             channel_revision: 0,
             channel_error: String::new(),
@@ -880,8 +884,19 @@ impl ResonaApp {
                     activation_subscription,
                     quit_subscription,
                     cx.observe_window_appearance(window, |this, window, cx| {
-                        theme::apply(this.editing_preferences().theme, Some(window), cx);
+                        let preferences = this.editing_preferences();
+                        theme::apply(preferences.theme, Some(window), cx);
                         cx.notify();
+                    }),
+                    cx.observe_window_bounds(window, |_, window, cx| {
+                        if theme::update_scale(window, cx) {
+                            cx.notify();
+                        }
+                    }),
+                    cx.observe_window_display(window, |_, window, cx| {
+                        if theme::update_scale(window, cx) {
+                            cx.notify();
+                        }
                     }),
                 ])
                 .collect(),
@@ -1284,6 +1299,7 @@ impl ResonaApp {
                                     if current {
                                         self.account_notice = "操作已完成".into();
                                         self.account_mode = "password";
+                                        self.modal_focus.focus(window, cx);
                                     }
                                 }
                                 Err(error) if current => self.account_notice = error,
@@ -1344,6 +1360,7 @@ impl ResonaApp {
                                             workspace.session.server_role;
                                         self.workspace.session.can_claim_owner = false;
                                         self.ownership_error.clear();
+                                        self.modal_focus.focus(window, cx);
                                     }
                                 }
                                 Ok(_) => {}
@@ -1864,6 +1881,9 @@ impl ResonaApp {
                     } else if workspace.session.server_role == "owner"
                         || !workspace.session.can_claim_owner
                     {
+                        if self.workspace.session.can_claim_owner {
+                            self.modal_focus.focus(window, cx);
+                        }
                         self.claim_input
                             .update(cx, |input, cx| input.set_value("", window, cx));
                         self.ownership_error.clear();
@@ -2854,6 +2874,9 @@ impl ResonaApp {
             return;
         }
         self.close_modal(window, cx);
+        if self.modal.is_some() {
+            return;
+        }
         self.modal = Some(Modal::Ownership {
             session: self.workspace.session.id.clone(),
         });
@@ -2973,6 +2996,7 @@ impl ResonaApp {
         self.account_notice.clear();
         self.account_revision = self.account_revision.wrapping_add(1);
         self.modal = None;
+        self.modal_visible = false;
         self.connect_error.clear();
         self.focus.focus(window, cx);
         cx.notify();
@@ -4185,7 +4209,7 @@ impl ResonaApp {
                     )
                     .when(page == ServerPage::Channels, |name| name.child(
                         div()
-                            .text_size(px(10.))
+                            .text_size(rems(10. / 14.))
                             .text_color(color(MUTED))
                             .truncate()
                             .child(if showing_session {
@@ -4241,7 +4265,7 @@ impl ResonaApp {
                     .px_3()
                     .py_2()
                     .flex_shrink_0()
-                    .text_size(px(10.))
+                    .text_size(rems(10. / 14.))
                     .text_color(color(self.status_color()))
                     .child(self.status_detail()),
             );
@@ -4270,7 +4294,7 @@ impl ResonaApp {
                             .overflow_hidden()
                             .flex()
                             .items_center()
-                            .text_size(px(10.))
+                            .text_size(rems(10. / 14.))
                             .text_color(color(MUTED))
                             .child(repeated)
                             .into_any_element();
@@ -4278,7 +4302,7 @@ impl ResonaApp {
                     let label = channel.name;
                     let text = || {
                         div()
-                            .text_size(px(10.))
+                            .text_size(rems(10. / 14.))
                             .text_color(color(MUTED))
                             .child(label.clone())
                     };
@@ -4400,7 +4424,7 @@ impl ResonaApp {
                                     .flex()
                                     .items_center()
                                     .gap_2()
-                                    .text_size(px(11.))
+                                    .text_size(rems(11. / 14.))
                                     .text_color(color(if speaking {
                                         TEXT
                                     } else if user.is_self {
@@ -4680,10 +4704,10 @@ impl ResonaApp {
                                 });
                             })
                             .child(if let Some(image) = channel_image {
-                                img(image).size(px(16.)).into_any_element()
+                                img(image).size(rems(16. / 14.)).into_any_element()
                             } else {
                                 div()
-                                    .w(px(17.))
+                                    .w(rems(17. / 14.))
                                     .h(px(20.))
                                     .flex_none()
                                     .flex()
@@ -4692,7 +4716,7 @@ impl ResonaApp {
                                     .text_color(color(if selected { ICE } else { MUTED }))
                                     .child(if channel.admin_only {
                                         Icon::new(gpui_kit::assets::IconName::Shield)
-                                            .size(px(14.))
+                                            .size(rems(1.))
                                             .text_color(color(if selected { ICE } else { MUTED }))
                                             .into_any_element()
                                     } else {
@@ -4715,7 +4739,7 @@ impl ResonaApp {
                             )
                             .child(
                                 div()
-                                    .text_size(px(10.))
+                                    .text_size(rems(10. / 14.))
                                     .text_color(color(if is_switching { AMBER } else { MUTED }))
                                     .child(if is_switching {
                                         "…".into()
@@ -5405,7 +5429,7 @@ impl ResonaApp {
                                             .gap_1()
                                             .child(
                                                 div()
-                                                    .w(px(52.))
+                                                    .w(rems(52. / 14.))
                                                     .flex_shrink_0()
                                                     .whitespace_nowrap()
                                                     .text_xs()
@@ -5415,7 +5439,7 @@ impl ResonaApp {
                                             )
                                             .child(
                                                 div()
-                                                    .max_w(px(100.))
+                                                    .max_w(rems(100. / 14.))
                                                     .flex_shrink_0()
                                                     .flex()
                                                     .items_start()
@@ -5736,7 +5760,7 @@ impl ResonaApp {
                     )
                     .child(
                         div()
-                            .text_size(px(11.))
+                            .text_size(rems(11. / 14.))
                             .text_color(color(if self.voice.error.is_empty() {
                                 MUTED
                             } else {
@@ -5926,7 +5950,7 @@ impl ResonaApp {
             .gap_1()
             .child(
                 div()
-                    .text_size(px(9.))
+                    .text_size(rems(9. / 14.))
                     .text_color(color(MUTED))
                     .child(label),
             )
@@ -6340,7 +6364,7 @@ impl ResonaApp {
                     .gap_1()
                     .child(
                         div()
-                            .text_size(px(10.))
+                            .text_size(rems(10. / 14.))
                             .text_color(color(MUTED))
                             .child(*label),
                     )
@@ -7515,7 +7539,7 @@ impl ResonaApp {
                         .child(div().text_xs().text_color(color(MUTED)).child("身份 ID"))
                         .child(
                             div()
-                                .text_size(px(10.))
+                                .text_size(rems(10. / 14.))
                                 .child(
                                     div().child(
                                         self.workspace
@@ -8536,7 +8560,7 @@ impl ResonaApp {
                 .shadow_lg()
                 .child(
                     div()
-                        .w(px(148.))
+                        .w(rems(148. / 14.))
                         .h_full()
                         .flex_shrink_0()
                         .p_4()
@@ -8885,26 +8909,7 @@ impl ResonaApp {
         } else {
             card.into_any_element()
         };
-        Some(
-            div()
-                .id("modal-scrim")
-                .absolute()
-                .inset_0()
-                .bg(color(Color::Scrim))
-                .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
-                    cx.stop_propagation()
-                })
-                .on_mouse_down(gpui_kit::MouseButton::Right, |_, _, cx| {
-                    cx.stop_propagation()
-                })
-                .on_click(|_, _, cx| cx.stop_propagation())
-                .flex()
-                .items_center()
-                .justify_center()
-                .px_3()
-                .child(card)
-                .into_any_element(),
-        )
+        Some(components::modal_layer(card, &self.modal_focus).into_any_element())
     }
 
     fn session_label(&self) -> String {
@@ -9030,7 +9035,23 @@ impl Render for ResonaApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.closing || self.modal.is_some() || !window.is_window_active() {
             self.panel_drag = None;
+            self.composer_drag = None;
+            self.chat_scroll_drag = None;
         }
+        if self.modal.is_some() && !self.modal_visible {
+            let view = cx.entity().downgrade();
+            // Wait for the modal's focus tree so an explicitly focused input is preserved.
+            window.on_next_frame(move |window, cx| {
+                if let Some(view) = view.upgrade() {
+                    view.update(cx, |this, cx| {
+                        if this.modal.is_some() && !this.modal_focus.contains_focused(window, cx) {
+                            this.modal_focus.focus(window, cx);
+                        }
+                    });
+                }
+            });
+        }
+        self.modal_visible = self.modal.is_some();
         if self.emoji_scope.is_some() && self.emoji_scope != self.emoji_context() {
             self.emoji_scope = None;
         }
@@ -9040,7 +9061,7 @@ impl Render for ResonaApp {
         if self
             .channel_drag
             .as_ref()
-            .is_some_and(|drag| !self.channel_drag_current(drag))
+            .is_some_and(|drag| self.modal.is_some() || !self.channel_drag_current(drag))
         {
             cx.stop_active_drag(window);
             self.channel_drag = None;
@@ -9128,6 +9149,9 @@ impl Render for ResonaApp {
             .track_focus(&self.focus)
             .on_mouse_move(
                 cx.listener(|this, event: &gpui_kit::MouseMoveEvent, window, cx| {
+                    if this.modal.is_some() {
+                        return;
+                    }
                     if let Some(drag) = &mut this.panel_drag {
                         if event.pressed_button != Some(gpui_kit::MouseButton::Left) {
                             this.finish_panel_drag(cx);
@@ -9159,6 +9183,9 @@ impl Render for ResonaApp {
             .on_mouse_up(
                 gpui_kit::MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
+                    if this.modal.is_some() {
+                        return;
+                    }
                     this.finish_panel_drag(cx);
                     this.composer_drag = None;
                     this.chat_follow_bottom =
@@ -9177,6 +9204,9 @@ impl Render for ResonaApp {
                 }),
             )
             .capture_any_mouse_down(cx.listener(|this, event: &gpui_kit::MouseDownEvent, _, _| {
+                if this.modal.is_some() {
+                    return;
+                }
                 let bounds = this.chat_scroll.viewport_bounds();
                 this.chat_scroll_drag = (event.button == gpui_kit::MouseButton::Left
                     && bounds.contains(&event.position)
@@ -9187,6 +9217,9 @@ impl Render for ResonaApp {
             .on_mouse_up_out(
                 gpui_kit::MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
+                    if this.modal.is_some() {
+                        return;
+                    }
                     this.finish_panel_drag(cx);
                     this.composer_drag = None;
                     if this
@@ -9309,7 +9342,10 @@ impl Render for ResonaApp {
             })
             .children(self.render_modal(&view))
             .when(
-                !self.poke_notices.is_empty() && self.workspace.connected() && !self.closing,
+                !self.poke_notices.is_empty()
+                    && self.workspace.connected()
+                    && !self.closing
+                    && self.modal.is_none(),
                 |root| {
                     let entity = view.clone();
                     root.child(
@@ -9822,14 +9858,14 @@ fn settings_nav_contents(label: &'static str, icon: impl IconNamed) -> AnyElemen
         .gap_2()
         .child(
             div()
-                .w(px(20.))
+                .w(rems(20. / 14.))
                 .flex_shrink_0()
                 .flex()
                 .justify_center()
                 .child(
                     svg()
                         .path(icon.path())
-                        .size(px(16.))
+                        .size(rems(16. / 14.))
                         .text_color(color(MUTED)),
                 ),
         )

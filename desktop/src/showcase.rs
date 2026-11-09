@@ -1,6 +1,8 @@
 //! Debug-only local fixtures. This entry point never constructs ResonaApp or CoreClient.
 use crate::{
-    components::{attention_notice, error_notice, server_entry_contents, speaking_indicator},
+    components::{
+        attention_notice, error_notice, modal_layer, server_entry_contents, speaking_indicator,
+    },
     model::{Capabilities, Channel, ProcessorOption, User, VoiceState, Workspace},
     preferences::ThemePreference,
     presentation::{self, ResourceState, ServerPage},
@@ -12,8 +14,9 @@ use gpui_kit::component::{
     menu::{DropdownMenu, PopupMenuItem},
 };
 use gpui_kit::{
-    App, AppContext, Bounds, Context, FocusHandle, InteractiveElement, IntoElement, ParentElement,
-    Render, Styled, Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
+    AnyElement, App, AppContext, Bounds, Context, FocusHandle, InteractiveElement, IntoElement,
+    ParentElement, Render, Styled, Subscription, Window, WindowBounds, WindowOptions, div,
+    prelude::*, px, size,
 };
 
 const SCENARIOS: [&str; 11] = [
@@ -54,6 +57,20 @@ pub fn open(cx: &mut App) {
                 backend: "speex".into(),
                 theme: ThemePreference::System,
                 show_notice: true,
+                _subscriptions: vec![
+                    cx.observe_window_bounds(window, |_, window, cx| {
+                        if theme::update_scale(window, cx) {
+                            cx.notify();
+                        }
+                    }),
+                    cx.observe_window_display(window, |_, window, cx| {
+                        if theme::update_scale(window, cx) {
+                            cx.notify();
+                        }
+                    }),
+                ],
+                modal_open: false,
+                modal_focus: cx.focus_handle(),
                 focus: {
                     let focus = cx.focus_handle();
                     focus.focus(window, cx);
@@ -70,6 +87,9 @@ struct Showcase {
     backend: String,
     theme: ThemePreference,
     show_notice: bool,
+    _subscriptions: Vec<Subscription>,
+    modal_open: bool,
+    modal_focus: FocusHandle,
     focus: FocusHandle,
 }
 
@@ -162,6 +182,13 @@ impl Render for Showcase {
         div()
             .track_focus(&self.focus)
             .on_action(cx.listener(|_, _: &crate::ui::Quit, _, cx| cx.quit()))
+            .on_action(
+                cx.listener(|this, _: &crate::ui::DismissModal, window, cx| {
+                    this.modal_open = false;
+                    this.focus.focus(window, cx);
+                    cx.notify();
+                }),
+            )
             .h(window.viewport_size().height)
             .relative()
             .flex()
@@ -192,6 +219,18 @@ impl Render for Showcase {
                     .child(themes),
             )
             .child(div().px_4().pb_3().child(scenarios))
+            .child(
+                div().px_4().pb_3().flex().flex_wrap().gap_2().child(
+                    Button::new("preview-modal")
+                        .label("打开模态窗口")
+                        .outline()
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.modal_open = true;
+                            this.modal_focus.focus(window, cx);
+                            cx.notify();
+                        })),
+                ),
+            )
             .child(
                 div()
                     .flex_1()
@@ -344,6 +383,33 @@ impl Render for Showcase {
                             }),
                         )),
                 )
+            })
+            .when(self.modal_open, |root| {
+                let card: AnyElement = div()
+                    .w(px(400.))
+                    .max_w_full()
+                    .p_5()
+                    .rounded(px(7.))
+                    .bg(color(Color::Raised))
+                    .border_1()
+                    .border_color(color(Color::Border))
+                    .flex()
+                    .flex_col()
+                    .gap_4()
+                    .child("模态窗口")
+                    .child(div().text_sm().child("底层成员与场景保持不变"))
+                    .child(
+                        Button::new("preview-modal-close")
+                            .label("关闭")
+                            .outline()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.modal_open = false;
+                                this.focus.focus(window, cx);
+                                cx.notify();
+                            })),
+                    )
+                    .into_any_element();
+                root.child(modal_layer(card, &self.modal_focus))
             })
     }
 }

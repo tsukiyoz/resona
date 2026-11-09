@@ -11,9 +11,37 @@ use gpui_kit::component::{
     scroll::ScrollableElement,
 };
 use gpui_kit::{
-    AnyElement, InteractiveElement, IntoElement, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, div, prelude::*, px, svg,
+    AnyElement, FocusHandle, InteractiveElement, IntoElement, ParentElement, SharedString,
+    StatefulInteractiveElement, Styled, base::FocusTrapElement, div, prelude::*, px, rems, svg,
 };
+
+pub fn modal_layer(card: AnyElement, focus: &FocusHandle) -> impl IntoElement {
+    div()
+        .id("modal-scrim")
+        .absolute()
+        .inset_0()
+        .occlude()
+        .track_focus(focus)
+        .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
+        .on_mouse_up(gpui_kit::MouseButton::Left, |_, _, cx| {
+            cx.stop_propagation()
+        })
+        .on_mouse_up(gpui_kit::MouseButton::Right, |_, _, cx| {
+            cx.stop_propagation()
+        })
+        .on_mouse_up(gpui_kit::MouseButton::Middle, |_, _, cx| {
+            cx.stop_propagation()
+        })
+        .on_scroll(|_, _, cx| cx.stop_propagation())
+        .on_click(|_, _, cx| cx.stop_propagation())
+        .bg(color(Color::Scrim))
+        .flex()
+        .items_center()
+        .justify_center()
+        .px_3()
+        .child(card)
+        .focus_trap("resona-modal", focus)
+}
 
 pub fn error_notice(
     text: String,
@@ -34,11 +62,16 @@ pub fn error_notice(
         .items_start()
         .gap_2()
         .child(
-            div().h(px(24.)).flex_none().flex().items_center().child(
-                Icon::new(gpui_kit::assets::IconName::CircleAlert)
-                    .size(px(16.))
-                    .text_color(color(Color::Danger)),
-            ),
+            div()
+                .h(rems(24. / 14.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .child(
+                    Icon::new(gpui_kit::assets::IconName::CircleAlert)
+                        .size(rems(16. / 14.))
+                        .text_color(color(Color::Danger)),
+                ),
         )
         .child(
             div()
@@ -48,7 +81,7 @@ pub fn error_notice(
                 .py(px(2.))
                 .pr_2()
                 .text_sm()
-                .line_height(px(20.))
+                .line_height(rems(20. / 14.))
                 .text_color(color(Color::Text))
                 .child(text)
                 .overflow_y_scrollbar(),
@@ -58,8 +91,8 @@ pub fn error_notice(
                 .icon(IconName::Close)
                 .ghost()
                 .xsmall()
-                .w(px(24.))
-                .h(px(24.))
+                .w(rems(24. / 14.))
+                .h(rems(24. / 14.))
                 .flex_none()
                 .tooltip("关闭通知")
                 .on_click(dismiss),
@@ -117,7 +150,7 @@ pub fn server_entry_contents(entry: &ServerEntry<'_>) -> gpui_kit::Div {
         .gap_3()
         .child(
             div()
-                .h(px(20.))
+                .min_h(rems(20. / 14.))
                 .text_sm()
                 .text_color(color(if entry.failed {
                     Color::Danger
@@ -173,7 +206,7 @@ pub fn speaking_indicator(
             "speaking-{location}-{}",
             user.id
         )))
-        .size(px(16.))
+        .size(rems(16. / 14.))
         .flex_none()
         .flex()
         .items_center()
@@ -187,11 +220,11 @@ pub fn speaking_indicator(
                 } else {
                     Color::Muted
                 }))
-                .size(px(14.))
+                .size(rems(1.))
                 .into_any_element()
         } else {
             div()
-                .size(px(if speaking { 12. } else { 8. }))
+                .size(rems(if speaking { 12. / 14. } else { 8. / 14. }))
                 .rounded_full()
                 .bg(color(if speaking {
                     Color::Speaking
