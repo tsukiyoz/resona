@@ -15,8 +15,8 @@ foreach ($Name in @('resona-desktop.exe', 'resona_webrtc_apm.dll', 'resona-packa
 }
 $Info = Get-Content -Raw (Join-Path $Source 'resona-package.json') | ConvertFrom-Json
 if ($Info.version -ne $Version -or $Info.distribution -ne 'portable') { throw 'Windows package metadata mismatch' }
-$ToolVersion = & $Vpk --version
-if ($LASTEXITCODE -ne 0 -or "$ToolVersion" -notmatch '^1\.2\.161(?:\s|\+|$)') { throw 'Velopack CLI 1.2.161 is required' }
+$ToolHelp = & $Vpk --help
+if ($LASTEXITCODE -ne 0 -or ($ToolHelp -join "`n") -notmatch 'Velopack CLI 1\.2\.161(?:\s|\+|$)') { throw 'Velopack CLI 1.2.161 is required' }
 # Only replace this script's marked staging/output directories.
 foreach ($Directory in @($Stage, $Output)) {
     if (Test-Path $Directory) {
@@ -32,7 +32,7 @@ $Info.distribution = 'installer'
 $Arguments = @('pack', '--packId', 'Resona', '--packVersion', $Version.TrimStart('v'),
     '--packDir', $Stage, '--mainExe', 'resona-desktop.exe', '--packTitle', 'Resona',
     '--packAuthors', 'tsukiyoz', '--runtime', 'win-x64', '--outputDir', $Output,
-    '--icon', (Join-Path $Root 'desktop\assets\resona.ico'), '--delta', 'None', '--noPortable')
+    '--icon', (Join-Path $Root 'desktop\assets\resona.ico'), '--delta', 'None', '--noPortable', '--skip-updates', '--yes')
 & $Vpk @Arguments
 if ($LASTEXITCODE -ne 0) { throw 'Velopack packaging failed' }
 $Setups = @(Get-ChildItem $Output -Filter '*Setup.exe' -File)

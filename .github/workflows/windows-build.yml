@@ -15,6 +15,8 @@ jobs:
   build:
     runs-on: windows-2022
     timeout-minutes: 90
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -116,6 +118,26 @@ jobs:
           path: desktop/dist/Resona-win-x64.zip
           if-no-files-found: error
           retention-days: 14
+
+  installer:
+    needs: build
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: Resona-${{ needs.build.outputs.version }}-win-x64-${{ github.sha }}
+          path: desktop/dist
+      - name: Extract tested Windows payload
+        shell: pwsh
+        run: Expand-Archive desktop/dist/Resona-win-x64.zip -DestinationPath desktop/dist/Resona-win-x64
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '8.0.x'
@@ -125,11 +147,11 @@ jobs:
           $tools = Join-Path $env:RUNNER_TEMP 'resona-vpk'
           dotnet tool install vpk --version 1.2.161 --tool-path $tools
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ./desktop/scripts/package-installer-windows.ps1 -Version '${{ steps.version.outputs.version }}' -Vpk (Join-Path $tools 'vpk.exe')
+          ./desktop/scripts/package-installer-windows.ps1 -Version '${{ needs.build.outputs.version }}' -Vpk (Join-Path $tools 'vpk.exe')
       - name: Upload Windows installer
         uses: actions/upload-artifact@v6
         with:
-          name: Resona-${{ steps.version.outputs.version }}-win-x64-installer-unsigned-${{ github.sha }}
+          name: Resona-${{ needs.build.outputs.version }}-win-x64-installer-unsigned-${{ github.sha }}
           path: |
             desktop/dist/installer/Resona-Setup-unsigned.exe
             desktop/dist/installer/Resona-full.nupkg

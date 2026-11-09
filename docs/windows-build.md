@@ -6,6 +6,8 @@
 
 同次构建还提供独立的 `win-x64-installer-unsigned` artifact，其中 `Resona-Setup-unsigned.exe` 用于安装，`Resona-full.nupkg` 是应用内更新使用的完整包，不需要用户手动打开。安装器目前没有 Authenticode，Windows 可能显示未知发布者或 SmartScreen 提示。便携版只打开发布页手动更新；安装版在“设置 → 关于”提供下载、取消及确认重启更新。手动分支构建带 `-dev`，可以验收安装，但不检查正式更新频道。完整流程与双版本验收见 [更新说明](updates.md)。
 
+安装包 job 使用同次构建已测试的便携产物。若只有安装包生成失败，重跑失败 job 即可复用已上传的产物，编译 job 的缓存也不受打包失败影响。
+
 ## 本地单命令
 
 性能采集器采用独立的 [Desktop performance tools 工作流](https://github.com/tsukiyoz/resona/actions/workflows/desktop-perf.yml)，不包含在应用压缩包中。选择该工作流最近一次成功运行，在 Artifacts 下载 `desktop-perf-win-x64-<commit>`，解压到可写目录后双击 `compare.cmd`。工具无需开发环境，具体采集步骤见 [工具说明](../tools/desktop-perf/README.md)。应用和工具的构建提交号可以不同；无需等待每次应用更新重新编译未改动的工具。
