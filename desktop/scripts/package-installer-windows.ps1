@@ -15,8 +15,6 @@ foreach ($Name in @('resona-desktop.exe', 'resona_webrtc_apm.dll', 'resona-packa
 }
 $Info = Get-Content -Raw (Join-Path $Source 'resona-package.json') | ConvertFrom-Json
 if ($Info.version -ne $Version -or $Info.distribution -ne 'portable') { throw 'Windows package metadata mismatch' }
-$ToolHelp = & $Vpk --help
-if ($LASTEXITCODE -ne 0 -or ($ToolHelp -join "`n") -notmatch 'Velopack CLI 1\.2\.161(?:\s|\+|$)') { throw 'Velopack CLI 1.2.161 is required' }
 # Only replace this script's marked staging/output directories.
 foreach ($Directory in @($Stage, $Output)) {
     if (Test-Path $Directory) {
