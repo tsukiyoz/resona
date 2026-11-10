@@ -43,7 +43,7 @@ pub fn apply(preference: ThemePreference, window: Option<&mut Window>, cx: &mut 
             })
             .into()
         };
-        theme.background = tone(0x101113, 0xffffff);
+        theme.background = tone(0x101113, 0xf1f2f3);
         theme.foreground = tone(0xe8ecef, 0x202428);
         theme.border = tone(0x35393e, 0xd3d8de);
         theme.input = tone(0x3b4046, 0xe7eaed);
@@ -58,9 +58,9 @@ pub fn apply(preference: ThemePreference, window: Option<&mut Window>, cx: &mut 
         theme.accent = tone(0x293632, 0xeaf3f0);
         theme.accent_foreground = tone(0xb0d6c8, 0x28594c);
         theme.muted = tone(0x22262a, 0xf0f2f3);
-        theme.muted_foreground = tone(0x929ca7, 0x66727d);
+        theme.muted_foreground = tone(0x929ca7, 0x5d6a75);
         theme.ring = tone(0x8bada0, 0x43816c);
-        theme.popover = tone(0x191c20, 0xffffff);
+        theme.popover = tone(0x191c20, 0xf6f7f8);
     });
 }
 
@@ -206,9 +206,9 @@ pub enum Color {
 impl Color {
     fn palette(self, light: bool) -> u32 {
         let (dark, light_color) = match self {
-            Self::Canvas => (0x090a0cff, 0xf6f8faff),
-            Self::Panel => (0x101214ff, 0xffffffff),
-            Self::Raised => (0x181a1dff, 0xf0f3f5ff),
+            Self::Canvas => (0x090a0cff, 0xe9ebeeff),
+            Self::Panel => (0x101214ff, 0xf1f2f3ff),
+            Self::Raised => (0x181a1dff, 0xf6f7f8ff),
             Self::Hover => (0x24272bff, 0xe8eef1ff),
             Self::Border => (0x303337ff, 0xd8dfe4ff),
             Self::Text => (0xe9edf1ff, 0x1e2930ff),
@@ -222,7 +222,7 @@ impl Color {
             Self::DangerSurface => (0x40282bff, 0xffeceeff),
             Self::Avatar => (0x303638ff, 0xd8dfe4ff),
             Self::AvatarAccent => (0x293735ff, 0xe5f1edff),
-            Self::Sidebar => (0x111315ff, 0xffffffff),
+            Self::Sidebar => (0x111315ff, 0xf1f2f3ff),
             Self::Selected => (0x2a2f31ff, 0xe8eef1ff),
             Self::Meter => (0x303840ff, 0xd8dfe4ff),
             Self::Transparent => (0x00000000, 0x00000000),
@@ -233,11 +233,11 @@ impl Color {
             Self::ControlBorder => (0xffffff40, 0x00000028),
             Self::GlassBorder => (0xffffff22, 0x00000016),
             Self::ModalBorder => (0xffffff38, 0x00000028),
-            Self::Popover => (0x16181bed, 0xffffffff),
-            Self::Toolbar => (0x141619f5, 0xffffffff),
-            Self::Modal => (0x17191df5, 0xffffffff),
+            Self::Popover => (0x16181bed, 0xf6f7f8ff),
+            Self::Toolbar => (0x141619f5, 0xf1f2f3ff),
+            Self::Modal => (0x17191df5, 0xf6f7f8ff),
             Self::SidebarShade => (0x080a0d55, 0xe8edf080),
-            Self::Toast => (0x101214ed, 0xfffffff0),
+            Self::Toast => (0x101214ed, 0xf6f7f8f0),
             Self::Scrim => (0x00000066, 0x00000066),
         };
         if light { light_color } else { dark }

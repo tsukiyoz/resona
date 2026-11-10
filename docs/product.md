@@ -518,3 +518,23 @@ The maintainer subsequently accepted the local macOS installation and Windows
 installer experience. Intel installation and Windows OTA between two formal
 versions remain separate acceptance items. CI adds both macOS architectures on
 trusted main/tag builds; PKGs remain unsigned and not notarized.
+
+## Light appearance refinement (2026-11-10)
+
+- Light uses neutral gray large surfaces: canvas `#e9ebee`, panels/sidebar/toolbar
+  `#f1f2f3`, and raised surfaces/dialogs/menus `#f6f7f8`. Component and custom
+  palettes agree; small inverse button text stays white. Dark is unchanged.
+- Appearance preview, Apply, Cancel and discard keep their existing semantics.
+  Apply persists the selected preference without restarting audio; failure keeps
+  the draft editable. Cancel/confirmed discard restores applied colors, titlebar
+  and icon. Closing the app does not silently persist a preview.
+- System mode follows OS appearance, including after restart. Explicit Light
+  remains light when the OS changes. No new rendering loop or decorative effect.
+- Product review checked the semantic palette and component backgrounds. The
+  existing contrast test passed at least 4.5:1 for text/status labels on canvas,
+  panels and raised surfaces; all 79 desktop unit tests and one integration test
+  passed. The release app's offline main view and device settings were inspected
+  on macOS; opening/cancelling settings preserved the current appearance.
+- Native Windows acceptance should include settings, menus, notices, focus
+  outlines and selected/disabled controls at 800x900 and 760x600. macOS inspection
+  does not establish Windows acceptance.
