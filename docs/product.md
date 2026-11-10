@@ -493,3 +493,28 @@ release 工作负载下采集 GPU；单元测试通过不代表实际 GPU 降幅
   administrator invitations are retired. Only Owner directly assigns admin.
   Successful account authentication does not grant management permission by
   itself; Casbin remains authoritative. Web sessions do not displace voice.
+
+## Local macOS installation acceptance (2026-11-10)
+
+- User quits Resona normally, then opens the local development PKG in macOS
+  Installer. Packaging never quits or installs over the running client itself.
+- Installation offers Applications or the current user's Applications directory.
+  Standard Installer owns progress, cancellation and permission errors; cancelling
+  before installation preserves the existing app. Failure must not claim success.
+- The package retains `dev.resona.client` and the same application signing
+  identity. The installer requests launch after installation; a successful launch
+  does not imply a successful server connection. Existing configuration, bookmarks
+  and credentials stay in their existing user storage.
+- User acceptance covers first/repeat install, choosing destination, cancellation,
+  launch, microphone access and retained identity/preferences. App removal alone
+  retains user data. Package extraction/signature checks do not replace these
+  native tests. Local development PKGs are unsigned and not notarized; macOS OTA
+  and public installer trust remain deferred.
+
+Build evidence: the local arm64 PKG was generated and expanded; bundle, helper,
+native-library signatures and unchanged designated requirement passed. Desktop
+tests passed (79 unit + 1 integration), as did the four client update tests. Actual
+The maintainer subsequently accepted the local macOS installation and Windows
+installer experience. Intel installation and Windows OTA between two formal
+versions remain separate acceptance items. CI adds both macOS architectures on
+trusted main/tag builds; PKGs remain unsigned and not notarized.

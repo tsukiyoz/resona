@@ -4,7 +4,7 @@ use std::path::Path;
 
 /// Handle install/update hooks before GPUI, devices or networking are initialized.
 pub fn bootstrap() {
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     velopack::VelopackApp::build()
         .set_auto_apply_on_startup(false)
         .run();

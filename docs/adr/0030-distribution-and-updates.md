@@ -1,6 +1,6 @@
 # ADR-0030: 分发方式与更新
 
-- 状态：Accepted；Windows 安装/重启仍须实机验收，Authenticode 延后
+- 状态：Accepted；Windows 安装已验收，跨版本 OTA 仍须实机验收，Authenticode 延后
 - 日期：2026-10-15
 - 取代：ADR-0029 的便携 ZIP 自动整目录替换方案
 
@@ -37,3 +37,12 @@ Velopack 显示恢复交互，不承诺新版逻辑有 bug 时自动回滚。
 偏好、书签、身份与凭据仍位于产品目录外，更新行为不修改它们。
 发布使用 `tsukiyoz/resona`，不另外创建发布仓库。签名密钥通过发布 Secret，
 客户端只内置公钥和公开 feed；平台签名与 Apple 公证仍是独立要求。
+
+2026-11-10：增加本机 macOS Velopack PKG 安装体验验证，沿用同一固定 SDK/CLI
+版本。核对 OSX pack command、runner 与 installer 生成代码；打包修改临时副本，
+注入 helper 后使用原证书重签，并展开检查签名与 designated requirement。
+维护者已验收本机 Apple Silicon 与 Windows 安装体验。main 手动构建及 tag 流水线
+增加 arm64/x64 PKG，与 Windows Setup、完整更新包及各平台便携包一起发布。
+PKG 本身尚未签名或公证，包内 app 使用现有证书签名；功能分支不导入证书、只构建
+ad-hoc 便携包。Intel 安装及 Windows 跨正式版本 OTA 仍需验收。macOS 元数据仍为 portable，
+不开放 OTA，SDK 仅处理安装启动钩子且禁用启动自动应用；无额外后台轮询。

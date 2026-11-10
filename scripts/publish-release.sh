@@ -38,6 +38,9 @@ cp build/release/arm64/Resona-macos-arm64.zip "$output/Resona-$RELEASE_TAG-macos
 cp build/release/x64/Resona-macos-x64.zip "$output/Resona-$RELEASE_TAG-macos-x64-portable.zip"
 cp build/release/installer/Resona-Setup-unsigned.exe "$output/Resona-$RELEASE_TAG-win-x64-Setup-unsigned.exe"
 cp build/release/installer/Resona-full.nupkg "$output/Resona-$RELEASE_TAG-win-x64-full.nupkg"
+for arch in arm64 x64; do
+  cp "build/release/macos-installer-$arch/Resona-$RELEASE_TAG-macos-$arch-Setup-unsigned.pkg" "$output/"
+done
 jq -n --arg dir "$output" --arg tag "$RELEASE_TAG" --arg repo "$GITHUB_REPOSITORY" '
   [{platform:"windows/amd64",suffix:"win-x64"},
    {platform:"darwin/arm64",suffix:"macos-arm64"},
@@ -65,6 +68,7 @@ gh release upload "$RELEASE_TAG" "$output/Resona-$RELEASE_TAG-win-x64-portable.z
   "$output/Resona-$RELEASE_TAG-macos-arm64-portable.zip" "$output/Resona-$RELEASE_TAG-macos-x64-portable.zip" \
   "$output/manifest.json" "$output/manifest-windows-installer.json" \
   "$output/Resona-$RELEASE_TAG-win-x64-Setup-unsigned.exe" "$output/Resona-$RELEASE_TAG-win-x64-full.nupkg" \
+  "$output/Resona-$RELEASE_TAG-macos-arm64-Setup-unsigned.pkg" "$output/Resona-$RELEASE_TAG-macos-x64-Setup-unsigned.pkg" \
   --repo "$GITHUB_REPOSITORY"
 verify_tag
 gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest="$latest"

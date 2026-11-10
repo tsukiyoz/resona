@@ -102,7 +102,9 @@ calls Windows and both macOS architecture builds pinned to the event commit.
 After portable and installer packages succeed, `scripts/publish-release.sh` signs both manifests,
 creates a draft, uploads every package/manifest and makes the release public.
 Assets use `Resona-vX.Y.Z-<platform>-portable.zip`,
-`Resona-vX.Y.Z-win-x64-Setup-unsigned.exe` and `Resona-vX.Y.Z-win-x64-full.nupkg` names. Workflow artifacts remain
+`Resona-vX.Y.Z-win-x64-Setup-unsigned.exe`, `Resona-vX.Y.Z-win-x64-full.nupkg`
+and `Resona-vX.Y.Z-macos-<arm64|x64>-Setup-unsigned.pkg` names. Both macOS
+installers are required before publication; missing packages cannot produce a public release. Workflow artifacts remain
 temporary (14 days); Release assets provide the public downloads.
 
 Existing releases, including drafts, are never overwritten. Review/delete an
@@ -158,3 +160,50 @@ restart, identity/bookmark/preference retention, corrupt/truncated packages, ful
 disk, missing/locked Update.exe and repeated failures. Use a dedicated signing key
 and test server for fixtures, never publish a fake newer version to the stable feed.
 Record native acceptance separately; macOS tests cannot prove Windows replacement.
+
+## macOS installers
+
+`make build-installer-macos` builds an app and packages it with Velopack
+1.2.161. It uses the same `VERSION` override as `make build-desktop`; use
+`make build-installer-macos VERSION=v0.5.0-dev` for a development snapshot.
+This does not implement macOS OTA. Package metadata remains portable and automatic update
+application stays disabled. No startup network check or idle timer is added.
+
+The macOS workflow produces separate Apple Silicon and Intel PKGs on release tags
+and manual main builds, using the configured signing identity. Manual feature
+branch builds remain ad-hoc portable ZIPs and do not import signing Secrets.
+Windows continues to build its Setup executable and full nupkg in a separate job.
+
+Install the build-only tools locally (or set `RESONA_VPK` to an existing pinned CLI):
+
+```sh
+# Install .NET SDK 8 into build/tools/dotnet using Microsoft's dotnet-install script.
+DOTNET_ROOT="$PWD/build/tools/dotnet" build/tools/dotnet/dotnet tool install vpk \
+  --version 1.2.161 --tool-path "$PWD/build/tools/vpk"
+make build-installer-macos
+```
+
+An existing certificate identity is required, resolved by
+`desktop/scripts/macos-signing-identity.sh`. The wrapper stages a copy, signs the
+modified bundle with the same identity, expands the PKG and verifies its app
+signature, designated requirement, helper and metadata before publishing the
+output in `desktop/dist/macos-installer/`. The original app remains available.
+To repackage an already built matching bundle without rebuilding, run
+`sh desktop/scripts/package-installer-macos.sh`.
+
+The PKG is unsigned and not notarized; its contained application is signed with
+the configured certificate (currently Apple Development). This does not establish public Gatekeeper
+trust. Trusted public distribution requires the appropriate Developer ID application and
+installer certificates, notarization and separate native acceptance.
+
+Quit Resona normally before installing. Open the generated PKG in macOS Installer
+and choose the system Applications directory or the current user's Applications
+directory. Velopack's postinstall script requests launch of the installed app.
+Cancelling before installation does not replace the application. Existing user
+configuration and Keychain items are outside the bundle; this script neither
+resets them nor deletes them on uninstall. Extracting and verifying a package is
+not evidence that installation, first launch or permission prompts passed.
+
+The maintainer accepted the local Apple Silicon installation and the Windows
+installer on 2026-11-10. Intel PKG installation and Windows OTA across two formal
+versions still need native acceptance; local packaging does not prove CI completion.

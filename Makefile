@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := build
-.PHONY: help dev build build-core build-opus build-apm build-desktop build-server build-listening-bot deploy core clean clean-all test test-client test-listening-bot test-native test-build test-deploy generate format lint
+.PHONY: help dev build build-core build-opus build-apm build-desktop build-installer-macos build-server build-listening-bot deploy core clean clean-all test test-client test-listening-bot test-native test-build test-deploy generate format lint
 
 HOST_OS := $(shell uname -s)
 GOEXE = $(shell go env GOEXE)
@@ -25,6 +25,7 @@ help:
 	@echo 'make build-core     Build the Rust client library into client/target/'
 	@echo 'make build-apm      Build native WebRTC and RNNoise audio library into build/bin/'
 	@echo 'make build-desktop  Build desktop with in-process core (macOS: desktop/dist/Resona.app)'
+	@echo 'make build-installer-macos  Build a macOS PKG (requires certificate and pinned Velopack CLI)'
 	@echo 'make build-server   Build the pure-Go server into build/bin/'
 	@echo 'make build-listening-bot  Build Rust listening sources and isolated Go server'
 	@echo 'make deploy         Generate a Linux server package in build/deploy/ (no upload)'
@@ -98,6 +99,15 @@ test-listening-bot: build-opus
 
 deploy:
 	VERSION="$(VERSION)" BUILD_TIME="$(BUILD_TIME)" DEPLOY_ARCH="$(DEPLOY_ARCH)" sh deploy/package.sh
+
+build-installer-macos:
+ifeq ($(HOST_OS),Darwin)
+	$(MAKE) build-desktop VERSION="$(VERSION)"
+	sh desktop/scripts/package-installer-macos.sh
+else
+	@echo 'macOS installer packaging requires macOS.' >&2
+	@exit 1
+endif
 
 build-desktop:
 ifeq ($(HOST_OS),Darwin)
