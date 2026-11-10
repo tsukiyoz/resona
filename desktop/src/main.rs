@@ -81,6 +81,7 @@ impl AssetSource for Assets {
 }
 
 fn main() -> Result<()> {
+    resona_client::updates::bootstrap();
     match std::env::args().nth(1).as_deref() {
         Some("--version-json") => {
             println!(

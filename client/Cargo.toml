@@ -10,7 +10,7 @@ audio = ["dep:libloading"]
 
 [dependencies]
 snow = { version = "=0.10.0", default-features = false, features = ["std", "use-curve25519", "use-chacha20poly1305", "use-sha2", "use-getrandom", "risky-raw-split"] }
-tokio = { version = "1.53", features = ["net", "sync", "time", "rt", "macros", "io-util"] }
+tokio = { version = "1.53", features = ["net", "sync", "time", "rt", "macros", "io-util", "fs"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 zeroize = "1.8"
 prost = "=0.14.4"
@@ -29,11 +29,13 @@ getrandom = "=0.3.4"
 libloading = { version = "=0.8.9", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+velopack = "=1.2.161"
 security-framework = "=3.7.0"
 security-framework-sys = "=2.17.0"
 core-foundation = "=0.10.0"
 
 [target.'cfg(target_os = "windows")'.dependencies]
+velopack = "=1.2.161"
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security_Credentials"] }
 
 [build-dependencies]

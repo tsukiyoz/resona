@@ -2,7 +2,11 @@
 
 ## 最省事：下载云端构建
 
-打开仓库 **Actions -> Windows build**，选择成功的构建，在 **Artifacts** 下载 `Resona-win-x64-<commit>`，解压后再解压其中的 `Resona-win-x64.zip`，运行 `resona-desktop.exe`。不需要在自己电脑安装 Go、Rust 或 GCC。也可点击 **Run workflow** 手动构建指定分支；主分支相关代码变化会自动构建。只有 workflow 已推送且运行成功后才会出现产物；构建成功不代表麦克风、显卡和游戏后台已实机验收。
+打开仓库 **Actions -> Windows build**，选择成功的构建，在 **Artifacts** 下载 `Resona-<version>-win-x64-<commit>`，解压后再解压其中的 `Resona-win-x64.zip`，运行 `resona-desktop.exe`。不需要在自己电脑安装 Go、Rust 或 GCC。也可点击 **Run workflow** 手动构建指定分支；正式 tag 发布会调用该工作流，普通 main 推送不构建产品包。只有 workflow 已推送且运行成功后才会出现产物；构建成功不代表麦克风、显卡和游戏后台已实机验收。
+
+同次构建还提供独立的 `win-x64-installer-unsigned` artifact，其中 `Resona-Setup-unsigned.exe` 用于安装，`Resona-full.nupkg` 是应用内更新使用的完整包，不需要用户手动打开。安装器目前没有 Authenticode，Windows 可能显示未知发布者或 SmartScreen 提示。便携版只打开发布页手动更新；安装版在“设置 → 关于”提供下载、取消及确认重启更新。手动分支构建带 `-dev`，可以验收安装，但不检查正式更新频道。完整流程与双版本验收见 [更新说明](updates.md)。
+
+安装包 job 使用同次构建已测试的便携产物。若只有安装包生成失败，重跑失败 job 即可复用已上传的产物，编译 job 的缓存也不受打包失败影响。
 
 ## 本地单命令
 
@@ -55,6 +59,18 @@ git pull --ff-only origin main
 仅对上述本次脚本进程使用 ExecutionPolicy Bypass，不修改系统执行策略。若企业策略禁止执行脚本，按组织允许的方式运行，不修改企业策略。
 
 输出目录：`desktop/dist/Resona-win-x64/`。保留 `resona-desktop.exe` 和 `resona_webrtc_apm.dll` 在同一目录；没有 core 子进程。首次构建需要下载和编译较多依赖。CI 在清空 MSYS2 的 PATH 后运行 Rust 原生处理器测试，防止漏打包 DLL 依赖。
+
+## 本地生成安装器
+
+完成上述便携包构建后，额外安装 .NET 8 SDK（仅打包机需要），固定使用与 Rust SDK 相同的 Velopack CLI：
+
+```powershell
+dotnet tool install vpk --version 1.2.161 --tool-path .\build\vpk
+$version = 'v' + (Get-Content -Raw VERSION).Trim()
+.\desktop\scripts\package-installer-windows.ps1 -Version $version -Vpk .\build\vpk\vpk.exe
+```
+
+产物在 `desktop/dist/installer/`。`-Version` 必须与刚构建的便携包一致；脚本独立复制安装器 staging，保留原便携包的分发标记。不需要发布签名私钥，安装包结构检查在本地执行；OTA 清单的 Ed25519 签名只在正式发布步骤使用。
 
 ## 运行与问题定位
 

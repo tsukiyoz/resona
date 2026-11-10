@@ -25,6 +25,7 @@ pub enum Incoming {
     Workspace(Value),
     ResourceSync(Value),
     Update(Value),
+    UpdateFailed(String),
     Notifications(Value),
     Voice(Value),
     MicrophoneTest(Value),
@@ -84,6 +85,7 @@ pub struct CoreClient {
     next_id: Arc<AtomicU64>,
     waiters: Waiters,
     shutting_down: Arc<AtomicBool>,
+    finished: Receiver<()>,
 }
 impl CoreClient {
     pub fn spawn() -> Result<(Self, Receiver<Incoming>)> {
@@ -98,6 +100,7 @@ impl CoreClient {
         let closing = shutting_down.clone();
         let intents = Arc::new(Intents::default());
         let latest = intents.clone();
+        let (finished_tx, finished) = async_channel::bounded::<()>(1);
         thread::Builder::new().name("resona-client".into()).spawn(move||{
             let runtime=match tokio::runtime::Builder::new_current_thread().enable_all().build(){Ok(runtime)=>runtime,Err(_)=>{let _=tx.try_send(Incoming::Exited("无法启动客户端运行时".into()));return;}};
             runtime.block_on(async move{
@@ -106,6 +109,7 @@ impl CoreClient {
                     let handle=core.handle.clone();let events=tx.clone();let stop=token.clone();let state=handle.view.clone();
                     let publisher=tokio::spawn(publish(state,events,stop));
                     let mut jobs=tokio::task::JoinSet::new();
+                    let install = Arc::new(Mutex::new(None));
                     loop {
                         let request=tokio::select! {biased;
                             _=token.cancelled()=>break,
@@ -114,9 +118,14 @@ impl CoreClient {
                             Some(_)=jobs.join_next(),if !jobs.is_empty()=>continue,
                         };
                         let Some(request)=request else{break;};
-                        let handle=handle.clone();let output=tx.clone();let waiters=replies.clone();let closing=closing.clone();let stop=token.clone();let latest=latest.clone();
+                        let handle=handle.clone();let output=tx.clone();let waiters=replies.clone();let closing=closing.clone();let stop=token.clone();let latest=latest.clone();let staged=install.clone();
                         jobs.spawn(async move{
-                            let result=if latest.current(&request){handle.request(&request.method,request.params).await}else{Err("操作已被后续操作取消".into())};
+                            let result=if request.method == "InstallUpdate" {
+                                handle.prepare_update().await.map(|update| {
+                                    *staged.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(update);
+                                    json!(true)
+                                })
+                            } else if latest.current(&request){handle.request(&request.method,request.params).await}else{Err("操作已被后续操作取消".into())};
                             let waiter=waiters.lock().ok().and_then(|mut w|w.remove(&request.id));
                             if let Some(waiter)=waiter{let _=waiter.try_send(result);}
                             else if !closing.load(Ordering::Acquire){tokio::select!{biased;_=stop.cancelled()=>{},_=output.send(Incoming::Response{id:request.id,result})=>{}}}
@@ -124,9 +133,21 @@ impl CoreClient {
                     }
                     token.cancel();jobs.abort_all();while jobs.join_next().await.is_some(){}
                     let _=publisher.await;core.close().await;
-                    Ok::<(),String>(())
+                    let update = install.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+                    if let Some(update) = update {
+                        let result = tokio::task::spawn_blocking(move || update.apply()).await
+                            .map_err(|_| "无法启动更新程序".to_owned()).and_then(|result| result);
+                        if let Err(error) = result {
+                            finished_tx.close();
+                            let _ = tx.send(Incoming::UpdateFailed(error)).await;
+                            return Ok(false);
+                        }
+                    }
+                    Ok::<bool,String>(true)
                 }.await;
                 if let Ok(mut pending)=replies.lock(){pending.clear();}
+                finished_tx.close();
+                if matches!(result, Ok(false)) {return;}
                 let message=result.err().unwrap_or_else(||"客户端已关闭".into());
                 let _=tx.send(Incoming::Exited(message)).await;
             });
@@ -146,6 +167,7 @@ impl CoreClient {
                 next_id: Arc::new(AtomicU64::new(1)),
                 waiters,
                 shutting_down,
+                finished,
             },
             incoming,
         ))
@@ -183,6 +205,9 @@ impl CoreClient {
     }
     pub fn finish_shutdown(&self) {
         self.runtime.cancel.cancel();
+    }
+    pub async fn wait_closed(&self) {
+        let _ = self.finished.recv().await;
     }
     pub async fn prepare_shutdown(&self, enabled: bool, volume: u8) -> Result<Value> {
         self.shutting_down.store(true, Ordering::Release);
@@ -279,6 +304,7 @@ mod tests {
             next_id: Arc::new(AtomicU64::new(1)),
             waiters: Arc::new(Mutex::new(HashMap::new())),
             shutting_down: Arc::new(AtomicBool::new(false)),
+            finished: async_channel::bounded::<()>(1).1,
         };
         core.request("GetWorkspace", json!({})).unwrap();
         core.request("DisconnectServer", json!({})).unwrap();

@@ -4,7 +4,7 @@
 
 One immutable version tag covers all distribution types. `resona-package.json`
 records schema 1, product, platform, version and `distribution: portable|installer`.
-Windows metadata lives beside Core; macOS metadata lives in Contents/Resources.
+Windows metadata lives beside resona-desktop.exe; macOS metadata lives in Contents/Resources.
 Core validates it once at startup and returns interpreted capabilities/reasons.
 Missing, invalid or mismatched metadata never enables updates. See ADR-0030.
 
@@ -18,8 +18,8 @@ The system browser is requested to open the page; this is not reported as a
 successful download or installation. Core URL errors remain in the panel.
 
 Portable packages have no in-app download, package reveal, install or update-exit
-actions. Core also rejects legacy DownloadUpdate/GetUpdatePackage/InstallUpdate
-commands. The former ZIP directory replacement helper and CLI entry were removed.
+actions. Their core rejects DownloadUpdate/InstallUpdate commands.
+The former ZIP directory replacement helper and CLI entry were removed.
 No packages are downloaded or cached. Configuration, identities and credentials
 remain in their existing user directories outside the application package.
 
@@ -35,12 +35,40 @@ reason. HTTP 404 identifies an unpublished manifest; DNS, TLS, connection and
 timeout errors remain distinct. Raw request URLs and transport errors are not
 shown. No automatic retry extends the deadline.
 
-**Installer packages are not implemented yet.** Their metadata type is recognized,
-but reports "installer update backend unavailable" and exposes no update actions.
-Future installers must handle their own upgrade, failure recovery and restart;
-changing a ZIP marker to installer does not implement those behaviors. Signed
-assets will need a distribution dimension before both types can be served.
-macOS Developer ID/notarization and Windows native acceptance remain separate.
+Windows installers use pinned Velopack 1.2.161 (commit
+`92d6a1c91716729d449034df5c50307dcce39493`), installing for the current user.
+The SDK runs installation hooks before GPUI/core/device initialization. Startup
+auto-apply and file logging are disabled. No background update service or polling
+is added. A matching Resona installation/manifest is required, in addition to the
+installer marker. Renaming a portable ZIP does not enable OTA.
+
+About offers Check -> Download -> Restart and update -> Confirm restart. Downloads
+show bounded progress (at most four updates/second), can be cancelled, and survive
+closing Settings. Cancellation discards the partial temporary file. Size, HTTPS,
+signature and SHA-256 failures never enable installation. Downloads have a 30-minute
+overall deadline and 30-second chunk wait. There is one task at a time; no resume
+or delta in this first version. Temporary data is under the user's resona/updates
+cache, outside the install directory, and removed on cancellation/normal exit.
+
+Confirming restart rechecks the file and transfers its ownership outside the core.
+Capture/PTT, microphone test, playback and network are stopped by normal core
+cleanup. Only after core.close completes does the runtime stage the full nupkg
+and launch Update.exe in wait-for-current-PID mode; GUI then quits. This avoids
+consuming Velopack's 60-second helper deadline while closing audio devices.
+The ordinary seven-second force-quit fallback is disabled for update exits;
+application-level quit waits up to 60 seconds for cleanup/handoff before GPUI's
+short quit-future deadline begins. Exceeding that bound or OS forced termination
+can abort an update and is not a guaranteed graceful exit. Replacement starts
+only after process exit. A failed launch restarts the current client runtime in
+disconnected state, exposes the error in About and allows retry/reconnect. Replacement failures
+use Velopack's native failure/recovery interaction. This is not automatic rollback
+for an application regression. Ordinary quit does not apply a downloaded update.
+
+Windows Authenticode is explicitly deferred for this iteration. Installers are
+named `Setup-unsigned.exe`; Windows may display publisher/SmartScreen warnings.
+Ed25519 authenticity remains mandatory for OTA, but is not Authenticode. Do not
+describe these builds as trusted Windows publisher-signed packages. macOS Developer
+ID/notarization and native Windows install/update acceptance remain separate.
 
 ## Trust and build configuration
 
@@ -61,13 +89,22 @@ open-page action. Expired, invalid or forged manifests never expose that action.
 This is not a complete TUF implementation. Ed25519 signing is independent of
 Apple/Windows platform signing; manual downloads are handled by the browser.
 
+Installed Windows builds replace the endpoint's final `/manifest.json` with
+`/manifest-windows-installer.json`. That feed uses schema 2 and only installer
+assets; portable schema 1 is unchanged for older released clients. The same trust
+key signs both feeds. A full nupkg's product/platform/distribution metadata and
+Resona nuspec version are validated before its digest is signed.
+
 ## Tag publication
 
 `release.yml` validates an annotated tag on main, VERSION and release notes, then
 calls Windows and both macOS architecture builds pinned to the event commit.
-After all three packages succeed, `scripts/publish-release.sh` signs the manifest,
+After portable and installer packages succeed, `scripts/publish-release.sh` signs both manifests,
 creates a draft, uploads every package/manifest and makes the release public.
-Assets use `Resona-vX.Y.Z-<platform>-portable.zip` names. Workflow artifacts remain
+Assets use `Resona-vX.Y.Z-<platform>-portable.zip`,
+`Resona-vX.Y.Z-win-x64-Setup-unsigned.exe`, `Resona-vX.Y.Z-win-x64-full.nupkg`
+and `Resona-vX.Y.Z-macos-<arm64|x64>-Setup-unsigned.pkg` names. Both macOS
+installers are required before publication; missing packages cannot produce a public release. Workflow artifacts remain
 temporary (14 days); Release assets provide the public downloads.
 
 Existing releases, including drafts, are never overwritten. Review/delete an
@@ -106,3 +143,67 @@ The interaction was evaluated against DBX commit
 `12139b55df9b4bf0ae89d4fab459bf1871e8a783`, notably
 [AppToolbar.vue](https://github.com/t8y2/dbx/blob/12139b55df9b4bf0ae89d4fab459bf1871e8a783/apps/desktop/src/components/layout/AppToolbar.vue)
 and UpdateDialog/useAppUpdater. Resona does not adopt hourly checks or plugin updates.
+
+## Windows acceptance
+
+CI builds the portable payload, installs pinned `vpk` with .NET 8 (build-only),
+creates a separate installer stage and validates the full nupkg without release
+secrets. Manual builds remain `-dev` and do not consume the stable update channel.
+Download the `win-x64-installer-unsigned` artifact and run its Setup executable,
+not the nupkg. Existing portable preferences and credentials retain their current
+user-directory paths; uninstall never deliberately deletes those directories.
+
+Before release, test two aligned formal versions on Windows: install A, publish B's
+signed feed and full package to a test endpoint, then verify check/download/cancel,
+closing/reopening Settings, ordinary quit without applying, active-call confirmed
+restart, identity/bookmark/preference retention, corrupt/truncated packages, full
+disk, missing/locked Update.exe and repeated failures. Use a dedicated signing key
+and test server for fixtures, never publish a fake newer version to the stable feed.
+Record native acceptance separately; macOS tests cannot prove Windows replacement.
+
+## macOS installers
+
+`make build-installer-macos` builds an app and packages it with Velopack
+1.2.161. It uses the same `VERSION` override as `make build-desktop`; use
+`make build-installer-macos VERSION=v0.5.0-dev` for a development snapshot.
+This does not implement macOS OTA. Package metadata remains portable and automatic update
+application stays disabled. No startup network check or idle timer is added.
+
+The macOS workflow produces separate Apple Silicon and Intel PKGs on release tags
+and manual main builds, using the configured signing identity. Manual feature
+branch builds remain ad-hoc portable ZIPs and do not import signing Secrets.
+Windows continues to build its Setup executable and full nupkg in a separate job.
+
+Install the build-only tools locally (or set `RESONA_VPK` to an existing pinned CLI):
+
+```sh
+# Install .NET SDK 8 into build/tools/dotnet using Microsoft's dotnet-install script.
+DOTNET_ROOT="$PWD/build/tools/dotnet" build/tools/dotnet/dotnet tool install vpk \
+  --version 1.2.161 --tool-path "$PWD/build/tools/vpk"
+make build-installer-macos
+```
+
+An existing certificate identity is required, resolved by
+`desktop/scripts/macos-signing-identity.sh`. The wrapper stages a copy, signs the
+modified bundle with the same identity, expands the PKG and verifies its app
+signature, designated requirement, helper and metadata before publishing the
+output in `desktop/dist/macos-installer/`. The original app remains available.
+To repackage an already built matching bundle without rebuilding, run
+`sh desktop/scripts/package-installer-macos.sh`.
+
+The PKG is unsigned and not notarized; its contained application is signed with
+the configured certificate (currently Apple Development). This does not establish public Gatekeeper
+trust. Trusted public distribution requires the appropriate Developer ID application and
+installer certificates, notarization and separate native acceptance.
+
+Quit Resona normally before installing. Open the generated PKG in macOS Installer
+and choose the system Applications directory or the current user's Applications
+directory. Velopack's postinstall script requests launch of the installed app.
+Cancelling before installation does not replace the application. Existing user
+configuration and Keychain items are outside the bundle; this script neither
+resets them nor deletes them on uninstall. Extracting and verifying a package is
+not evidence that installation, first launch or permission prompts passed.
+
+The maintainer accepted the local Apple Silicon installation and the Windows
+installer on 2026-11-10. Intel PKG installation and Windows OTA across two formal
+versions still need native acceptance; local packaging does not prove CI completion.

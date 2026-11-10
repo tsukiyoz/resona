@@ -364,9 +364,19 @@ macOS 顶栏与应用暗色背景一体，保留原生关闭、最小化、全�
 
 一次检查总期限为 10 秒。仅主动取消或退出取消属于 cancelled，显示“已取消检查更新”；超时、网络、HTTP 和清单验证失败属于 failed，显示“检查更新失败：{安全原因}”，可手动重试。超时明确提示连接超时；HTTP 404 提示未发布清单，403/429/其他响应显示状态码，DNS、TLS 和连接失败分别说明原因，不直接显示底层请求地址或原始网络错误。退出时不另弹失败提示。
 
-Core 读取包元数据中的 portable/installer，GUI 只消费能力和已验证的发布页 URL。当前 ZIP/.app 均为 portable，有新版时关于页仅提供“打开发布页”，请求系统浏览器打开对应版本页面，不显示或执行下载、定位包和安装，不退出应用、不写更新缓存。浏览器实际是否成功打开不显示为安装成功；Core 返回地址失败留在关于页可重试。缺失/异常元数据、未知类型、开发版本、缺少更新配置均明确显示不可用原因。installer 暂无真实安装器和升级后端，识别后明确不可用，不冒充已完成自动升级。
+Core 读取包元数据中的 portable/installer，GUI 只消费能力和已验证的发布页 URL。ZIP/.app 均为 portable，有新版时关于页仅提供“打开发布页”，请求系统浏览器打开对应版本页面，不显示或执行下载、定位包和安装，不退出应用、不写更新缓存。浏览器实际是否成功打开不显示为安装成功；Core 返回地址失败留在关于页可重试。缺失/异常元数据、未知类型、开发版本、缺少更新配置均明确显示不可用原因。
 
-验收覆盖深浅主题、760×600、错误状态与焦点、关闭再打开、取消重试及有界退出。Core 拒绝旧 DownloadUpdate/GetUpdatePackage/InstallUpdate 命令。状态更新不得进入语音热路径，不能引入闲置计时器。未来安装版在同一版本 tag 发布独立资产，由安装器完成升级，配置路径保持不变；其调用、失败恢复、签名和 Windows 重启须单独验收。交互参考 DBX 已评估提交及文件见 updates.md。
+验收覆盖深浅主题、760×600、错误状态与焦点、关闭再打开、取消重试及有界退出。便携版拒绝下载和安装命令。状态更新不得进入语音热路径，不能引入闲置计时器。交互参考 DBX 已评估提交及文件见 updates.md。
+
+### Windows 安装与更新（2026-11-09）
+
+同一 tag 提供独立 Velopack 安装器与便携 ZIP。安装版仍只有“设置 → 关于”入口：主动检查、下载（进度与取消）、已验证后“重启并更新”，再明确确认会结束当前通话。关闭设置保留任务和状态，“稍后”保留本次已下载更新；普通退出不安装。取消不得被下载完成的迟到回执覆盖为 ready，校验/网络/磁盘失败留在当前页面可重试。
+
+确认重启重新校验包，将待安装文件的所有权移出 core，再停止发言/PTT、试听、收听与连接；实际 core close 完成才启动等待当前 PID 的 helper，随后退出，避免 helper 的六十秒等待期限被设备清理耗尽。窗口更新退出不用七秒强制退出兜底；系统应用级退出最多等待六十秒交接，超时或系统强制结束可能中止更新，不允许边替换边继续通话。启动 helper 失败恢复当前版本运行时并保持断开，在关于页显示失败；可重试或重新连接，不显示安装成功。替换失败保留旧安装的可恢复路径，由 Velopack 交互处理，不保证新版逻辑故障自动回滚。
+
+本机验证：Rust client 33 项单元与 29 项 Go 互通测试、desktop 79 项单元与 1 项兼容测试通过；更新包路径/身份/签名及发布完整性测试通过，macOS 原生打包和签名检查通过。流程审查覆盖下载取消、退出交接及失败恢复。Windows Setup、卸载和跨两个正式版本的实际 OTA 尚待原生验收，不能由上述检查代替；Authenticode 本期暂缓，安装器明确标记 unsigned。
+
+偏好、书签、身份、凭据位于安装目录之外，更新不重置它们。安装包使用独立 schema 2 签名清单；便携旧清单保持 schema 1。Authenticode 按用户决定延后，本期产物明确标注 unsigned，不能把 OTA 清单签名解释为 Windows 发布者签名。Windows 两版本安装/更新、退出、权限和配置保留需要实机验收；测试范围详见 updates.md。
 
 # 2026-09-18 音频设置生效反馈
 
@@ -483,3 +493,48 @@ release 工作负载下采集 GPU；单元测试通过不代表实际 GPU 降幅
   administrator invitations are retired. Only Owner directly assigns admin.
   Successful account authentication does not grant management permission by
   itself; Casbin remains authoritative. Web sessions do not displace voice.
+
+## Local macOS installation acceptance (2026-11-10)
+
+- User quits Resona normally, then opens the local development PKG in macOS
+  Installer. Packaging never quits or installs over the running client itself.
+- Installation offers Applications or the current user's Applications directory.
+  Standard Installer owns progress, cancellation and permission errors; cancelling
+  before installation preserves the existing app. Failure must not claim success.
+- The package retains `dev.resona.client` and the same application signing
+  identity. The installer requests launch after installation; a successful launch
+  does not imply a successful server connection. Existing configuration, bookmarks
+  and credentials stay in their existing user storage.
+- User acceptance covers first/repeat install, choosing destination, cancellation,
+  launch, microphone access and retained identity/preferences. App removal alone
+  retains user data. Package extraction/signature checks do not replace these
+  native tests. Local development PKGs are unsigned and not notarized; macOS OTA
+  and public installer trust remain deferred.
+
+Build evidence: the local arm64 PKG was generated and expanded; bundle, helper,
+native-library signatures and unchanged designated requirement passed. Desktop
+tests passed (79 unit + 1 integration), as did the four client update tests. Actual
+The maintainer subsequently accepted the local macOS installation and Windows
+installer experience. Intel installation and Windows OTA between two formal
+versions remain separate acceptance items. CI adds both macOS architectures on
+trusted main/tag builds; PKGs remain unsigned and not notarized.
+
+## Light appearance refinement (2026-11-10)
+
+- Light uses neutral gray large surfaces: canvas `#e9ebee`, panels/sidebar/toolbar
+  `#f1f2f3`, and raised surfaces/dialogs/menus `#f6f7f8`. Component and custom
+  palettes agree; small inverse button text stays white. Dark is unchanged.
+- Appearance preview, Apply, Cancel and discard keep their existing semantics.
+  Apply persists the selected preference without restarting audio; failure keeps
+  the draft editable. Cancel/confirmed discard restores applied colors, titlebar
+  and icon. Closing the app does not silently persist a preview.
+- System mode follows OS appearance, including after restart. Explicit Light
+  remains light when the OS changes. No new rendering loop or decorative effect.
+- Product review checked the semantic palette and component backgrounds. The
+  existing contrast test passed at least 4.5:1 for text/status labels on canvas,
+  panels and raised surfaces; all 79 desktop unit tests and one integration test
+  passed. The release app's offline main view and device settings were inspected
+  on macOS; opening/cancelling settings preserved the current appearance.
+- Native Windows acceptance should include settings, menus, notices, focus
+  outlines and selected/disabled controls at 800x900 and 760x600. macOS inspection
+  does not establish Windows acceptance.

@@ -68,7 +68,7 @@ func Verify(data []byte, publicKey string, now time.Time) (Manifest, error) {
 	if err != nil || !ed25519.Verify(key, signed.Payload, sig) {
 		return manifest, errors.New("更新清单签名验证失败")
 	}
-	if strictJSON(signed.Payload, &manifest) != nil || manifest.Schema != 1 || manifest.Product != "resona" || manifest.Channel != "stable" {
+	if strictJSON(signed.Payload, &manifest) != nil || (manifest.Schema != 1 && manifest.Schema != 2) || manifest.Product != "resona" || manifest.Channel != "stable" {
 		return manifest, errors.New("不支持此更新清单版本或产品")
 	}
 	if _, err := versionParts(manifest.Version); err != nil {
@@ -80,9 +80,11 @@ func Verify(data []byte, publicKey string, now time.Time) (Manifest, error) {
 	if !manifest.Expires.After(now) || len(manifest.Notes) > 8192 || len(manifest.Assets) > 8 {
 		return manifest, errors.New("更新清单已过期或超出限制")
 	}
-	for _, asset := range manifest.Assets {
+	for platform, asset := range manifest.Assets {
 		digest, err := hex.DecodeString(asset.SHA256)
-		if err != nil || len(digest) != 32 || asset.Size <= 0 || asset.Size > MaxPackageSize || !httpsURL(asset.URL) || asset.Distribution != DistributionPortable {
+		validDistribution := manifest.Schema == 1 && asset.Distribution == DistributionPortable ||
+			manifest.Schema == 2 && platform == "windows/amd64" && asset.Distribution == DistributionInstaller
+		if err != nil || len(digest) != 32 || asset.Size <= 0 || asset.Size > MaxPackageSize || !httpsURL(asset.URL) || !validDistribution {
 			return manifest, errors.New("更新包信息无效")
 		}
 	}

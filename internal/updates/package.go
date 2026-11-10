@@ -2,9 +2,11 @@ package updates
 
 import (
 	"archive/zip"
+	"encoding/xml"
 	"errors"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -24,6 +26,78 @@ type packageMetadata struct {
 
 func ValidateWindowsArchive(path, version string) error {
 	return validateReleaseArchive(path, "windows/amd64", version, "", []string{"resona-desktop.exe", "resona_webrtc_apm.dll", ".resona-package", "resona-package.json"})
+}
+
+// ValidateWindowsInstaller checks the complete Velopack package before signing
+// its digest. Extraction and replacement remain the Velopack updater's job.
+func ValidateWindowsInstaller(filename, version string) error {
+	archive, err := zip.OpenReader(filename)
+	if err != nil {
+		return err
+	}
+	defer archive.Close()
+	required := map[string]bool{
+		"lib/app/resona-desktop.exe": false, "lib/app/resona_webrtc_apm.dll": false,
+		"lib/app/resona-package.json": false,
+	}
+	names := make(map[string]bool)
+	var metadata, spec []byte
+	var expanded uint64
+	for _, entry := range archive.File {
+		name := strings.ToLower(entry.Name)
+		clean := strings.TrimSuffix(name, "/")
+		if clean == ".." || strings.HasPrefix(clean, "../") || strings.ContainsAny(name, "\\:") || strings.HasPrefix(name, "/") || path.Clean(clean) != clean || names[name] || entry.Mode()&os.ModeSymlink != 0 {
+			return errors.New("安装包包含不安全或重复路径")
+		}
+		names[name] = true
+		if entry.UncompressedSize64 > 2<<30-expanded {
+			return errors.New("安装包解压大小超出限制")
+		}
+		expanded += entry.UncompressedSize64
+		if _, ok := required[name]; ok {
+			required[name] = entry.Mode().IsRegular()
+		}
+		if name != "lib/app/resona-package.json" && name != "resona.nuspec" {
+			continue
+		}
+		file, err := entry.Open()
+		if err != nil {
+			return err
+		}
+		data, err := io.ReadAll(io.LimitReader(file, 64<<10+1))
+		file.Close()
+		if err != nil || len(data) > 64<<10 {
+			return errors.New("安装包元数据无效")
+		}
+		if name == "resona.nuspec" {
+			spec = data
+		} else {
+			metadata = data
+		}
+	}
+	for _, exists := range required {
+		if !exists {
+			return errors.New("安装包缺少产品文件")
+		}
+	}
+	marker, err := parsePackageMetadata(metadata, "windows/amd64", version)
+	if err != nil {
+		return err
+	}
+	if marker.Distribution != DistributionInstaller {
+		return errors.New("安装包必须标记为 installer")
+	}
+	var nuspec struct {
+		XMLName  xml.Name `xml:"package"`
+		Metadata struct {
+			ID      string `xml:"id"`
+			Version string `xml:"version"`
+		} `xml:"metadata"`
+	}
+	if xml.Unmarshal(spec, &nuspec) != nil || nuspec.Metadata.ID != "Resona" || nuspec.Metadata.Version != strings.TrimPrefix(version, "v") {
+		return errors.New("安装包的 Velopack 身份或版本不匹配")
+	}
+	return nil
 }
 
 func ValidateMacArchive(path, platform, version string) error {

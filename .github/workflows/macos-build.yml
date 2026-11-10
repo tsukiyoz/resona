@@ -180,6 +180,27 @@ jobs:
           path: desktop/dist/Resona-macos-${{ matrix.arch }}.zip
           if-no-files-found: error
           retention-days: 14
+      - name: Set up installer build runtime
+        if: steps.signing.outputs.signed == 'true'
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build and verify macOS installer
+        if: steps.signing.outputs.signed == 'true'
+        run: |
+          set -euo pipefail
+          dotnet tool install vpk --version 1.2.161 --tool-path "$RUNNER_TEMP/resona-vpk"
+          RESONA_VPK="$RUNNER_TEMP/resona-vpk/vpk" sh desktop/scripts/package-installer-macos.sh
+          echo '### macOS installer' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Unsigned PKG containing the certificate-signed app. Not notarized; macOS OTA remains disabled.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload macOS installer
+        if: steps.signing.outputs.signed == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: Resona-${{ steps.version.outputs.version }}-macos-${{ matrix.arch }}-installer-unsigned-${{ github.sha }}
+          path: desktop/dist/macos-installer/Resona-${{ steps.version.outputs.version }}-macos-${{ matrix.arch }}-Setup-unsigned.pkg
+          if-no-files-found: error
+          retention-days: 14
       - name: Remove temporary signing keychain
         if: always()
         run: |

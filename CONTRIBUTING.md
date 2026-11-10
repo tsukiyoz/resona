@@ -62,15 +62,16 @@ checks locally and dispatch workflows manually for cross-platform acceptance.
 Manual branch builds append `-dev` and are development snapshots.
 A tag runs `release.yml`, which calls both packaging workflows; do not call
 either platform package verified until its run succeeds. macOS builds separate
-Apple Silicon and Intel bundles. Manual non-main branch builds are ad-hoc signed
+Apple Silicon and Intel bundles plus unsigned PKG installers containing the
+certificate-signed app. Manual non-main branch builds are ad-hoc signed portable
 test packages; release tags and manual main builds require the signing Secrets below.
 Certificate signing alone does not mean Apple notarization. Downloadable workflow artifacts are
 temporary (14 days), not durable GitHub Release assets.
 
 Push the release commit and annotated tag together after local checks. Publish
 GitHub Release assets only from a successful tag build, with the release notes.
-The tag publication workflow signs a complete manifest and publishes all three
-packages from a draft only after successful builds. Configure the update Variables
+The tag publication workflow signs the portable and Windows installer manifests
+and publishes all portable and installer assets from a draft only after successful builds. Configure the update Variables
 and signing Secret described in `docs/updates.md` before the next tag. Formal
 0.x releases use the stable update channel but remain experimental as above.
 Changing repository
