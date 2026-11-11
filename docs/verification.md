@@ -1,5 +1,16 @@
 # 当前验证记录
 
+## 2026-11-11 SVG 图标母版
+
+- `desktop/assets/resona.svg` 为唯一图形母版，派生深色 SVG、Windows ICO、打包 PNG
+  及 macOS 留白版本；移除旧 PNG 母版和界面专用 PNG。界面直接加载 SVG，普通构建
+  不依赖图像工具；只有重新生成图标需要 librsvg 的 `rsvg-convert`。
+- 图标生成器测试与 vet 通过：覆盖两主题颜色/透明轮廓、macOS 100px 留白和九档
+  ICO 内嵌 PNG。桌面原有 79 项单元和一项集成通过；新增 GPUI 实际渲染测试通过，
+  验证 SVG 保留颜色和透明圆角，2x 平滑后缓存仍为 256px。
+- macOS release App 构建、ICNS 打包和深度签名校验通过。沙箱中 iconutil 曾报
+  Invalid Iconset，沙箱外原命令通过；Windows 原生任务栏及安装包外观未在本轮验收。
+
 ## 2026-10-23 Rust 客户端迁移收尾
 
 删除旧 Go client/audio、客户端协议适配、专用 config/credentials/diagnostics 和

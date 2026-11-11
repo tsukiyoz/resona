@@ -1,5 +1,5 @@
-pub const LIGHT: &[u8] = include_bytes!("../assets/resona-light.png");
-pub const DARK: &[u8] = include_bytes!("../assets/resona-dark.png");
+pub const LIGHT: &[u8] = include_bytes!("../assets/resona.svg");
+pub const DARK: &[u8] = include_bytes!("../assets/resona-dark.svg");
 
 pub fn apply(light: bool, window: Option<&gpui_kit::Window>) {
     platform::apply(light, window);

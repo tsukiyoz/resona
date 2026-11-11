@@ -4,11 +4,14 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/xml"
 	"fmt"
 	"image"
-	"image/color"
 	"image/png"
+	"io"
 	"os"
+	"os/exec"
+	"strconv"
 
 	"golang.org/x/image/draw"
 )
@@ -38,23 +41,30 @@ func main() {
 }
 
 func generateThemes() error {
-	f, err := os.Open("desktop/assets/resona-source.png")
+	lightSVG, err := os.ReadFile("desktop/assets/resona.svg")
 	if err != nil {
 		return err
 	}
-	dark, err := png.Decode(f)
-	_ = f.Close()
+	darkSVG, err := darkVariant(lightSVG)
 	if err != nil {
 		return err
 	}
-	light := lightVariant(dark)
+	light, err := rasterize(lightSVG, 1024)
+	if err != nil {
+		return err
+	}
+	dark, err := rasterize(darkSVG, 1024)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile("desktop/assets/resona-dark.svg", darkSVG, 0o644); err != nil {
+		return err
+	}
 	for _, item := range []struct {
 		path  string
 		image image.Image
 	}{
 		{"desktop/assets/appicon.png", light},
-		{"desktop/assets/resona-light.png", resize(light, 256)},
-		{"desktop/assets/resona-dark.png", resize(dark, 256)},
 		{"desktop/assets/resona-macos-light.png", macIcon(light)},
 		{"desktop/assets/resona-macos-dark.png", macIcon(dark)},
 	} {
@@ -79,31 +89,59 @@ func macIcon(src image.Image) image.Image {
 	return dst
 }
 
-// Preserve the source silhouette and alpha while mapping its monochrome ramp.
-func lightVariant(src image.Image) image.Image {
-	b := src.Bounds()
-	low, high := uint8(255), uint8(0)
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		for x := b.Min.X; x < b.Max.X; x++ {
-			c := color.NRGBAModel.Convert(src.At(x, y)).(color.NRGBA)
-			if c.A != 0 {
-				low, high = min(low, c.R), max(high, c.R)
+// Change only the palette; both themes share the same vector geometry.
+func darkVariant(source []byte) ([]byte, error) {
+	decoder := xml.NewDecoder(bytes.NewReader(source))
+	var output bytes.Buffer
+	encoder := xml.NewEncoder(&output)
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		switch element := token.(type) {
+		case xml.StartElement:
+			// The source already declares its default SVG namespace.
+			element.Name.Space = ""
+			for i := range element.Attr {
+				attr := &element.Attr[i]
+				if attr.Name.Local == "fill" {
+					switch attr.Value {
+					case "#ffffff":
+						attr.Value = "#111315"
+					case "#181c20":
+						attr.Value = "#eceff1"
+					}
+				}
 			}
+			token = element
+		case xml.EndElement:
+			element.Name.Space = ""
+			token = element
+		}
+		if err := encoder.EncodeToken(token); err != nil {
+			return nil, err
 		}
 	}
-	dst := image.NewNRGBA(b)
-	span := max(1, int(high)-int(low))
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		for x := b.Min.X; x < b.Max.X; x++ {
-			c := color.NRGBAModel.Convert(src.At(x, y)).(color.NRGBA)
-			t := max(0, int(c.R)-int(low))
-			dst.SetNRGBA(x, y, color.NRGBA{
-				R: uint8(255 - 231*t/span), G: uint8(255 - 227*t/span),
-				B: uint8(255 - 223*t/span), A: c.A,
-			})
-		}
+	if err := encoder.Flush(); err != nil {
+		return nil, err
 	}
-	return dst
+	return output.Bytes(), nil
+}
+
+func rasterize(source []byte, size int) (image.Image, error) {
+	cmd := exec.Command("rsvg-convert", "--width", strconv.Itoa(size), "--height", strconv.Itoa(size))
+	cmd.Stdin = bytes.NewReader(source)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	data, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("render SVG (install librsvg for rsvg-convert): %w: %s", err, stderr.String())
+	}
+	return png.Decode(bytes.NewReader(data))
 }
 
 func resize(src image.Image, size int) image.Image {

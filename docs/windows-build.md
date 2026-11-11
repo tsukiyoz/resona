@@ -22,7 +22,7 @@
 
 WebRTC 的 Abseil 对象文件名较长，MinGW 归档工具需要短构建目录。CI 使用 `RUNNER_TEMP/3a`，本地默认 `build/3a`；完整路径必须不含空格且不超过 30 字符，否则请传入例如 `build-windows.cmd -NativeTargetDirectory C:\resona-3a` 的可写短路径。该目录保留 Cargo 构建缓存，位于仓库外时不由 `make clean` 清理。
 
-Windows 图标由 `desktop/build.rs` 编译资源 ID 1，GPUI 原生窗口和 EXE 使用同一资源。打包时验证 GUI 子系统及 16/32/48/256 像素图标可加载。静态 PNG 位于 `desktop/assets/appicon.png`；修改源图 `desktop/assets/resona-source.png` 后，从仓库根目录运行 `go run ./tools/appicon` 更新各主题和尺寸，不需在 Windows 安装图像工具。
+Windows 图标由 `desktop/build.rs` 编译资源 ID 1，GPUI 原生窗口和 EXE 使用同一资源。打包时验证 GUI 子系统及 16/32/48/256 像素图标可加载。唯一图形母版是 `desktop/assets/resona.svg`，界面直接使用 SVG；PNG/ICO 是系统所需的派生产物。修改母版后，在安装了 `rsvg-convert` 的开发机器上运行 `go run ./tools/appicon` 更新各主题和尺寸并一并提交。普通 Windows 构建使用已提交资源，不需安装图像工具；旧 PNG 母版和界面专用 PNG 已移除。
 
 CI 另启用 `RESONA_CREDENTIAL_INTEGRATION=1`，对随机生成的独立 Credential Manager 条目执行写入/读取/更新/删除测试，不使用用户书签。macOS 交叉编译不能替代该原生测试；系统桌面的任务栏/Alt+Tab 图标及密码重启后连接仍需 Windows 验收。
 

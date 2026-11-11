@@ -794,7 +794,7 @@ impl ResonaApp {
             chat_history_error: String::new(),
             chat_scroll_drag: None,
             logos: [crate::app_icon::DARK, crate::app_icon::LIGHT]
-                .map(|bytes| Arc::new(Image::from_bytes(ImageFormat::Png, bytes.to_vec()))),
+                .map(|bytes| Arc::new(Image::from_bytes(ImageFormat::Svg, bytes.to_vec()))),
             core: None,
             workspace: Workspace::default(),
             voice: VoiceState::default(),

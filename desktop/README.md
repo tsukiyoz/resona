@@ -62,10 +62,16 @@ dark mode. Windows sets both native window icon sizes; the taskbar may retain a
 cached pinned-shortcut icon. EXE and shortcut defaults remain white. Theme preview
 and cancellation update runtime icons without rewriting the signed package.
 
-From the repository root, `go run ./tools/appicon` regenerates both runtime PNGs,
-both Windows ICO resources and the white `desktop/assets/appicon.png` from the original
-`desktop/assets/resona-source.png`. Runtime PNGs are 256px and cached; icon updates
-only run when the theme changes, without an idle timer.
+The vector master is `desktop/assets/resona.svg` (white background, dark bars).
+The in-app logo loads SVG directly and caches it through GPUI. From the repository
+root, `go run ./tools/appicon` derives `resona-dark.svg`, PNG exports, both Windows
+ICO resources and the padded macOS PNGs from that master. This regeneration command
+requires `rsvg-convert` (macOS: `brew install librsvg`); ordinary builds use the
+checked-in exports and require no additional image tool. The former PNG master and
+runtime logo PNGs have been removed. Both SVG themes have a 128px
+intrinsic size: GPUI's 2x SVG smoothing produces the same 256px cache as the former
+PNG logo. The vector viewBox is 1024px.
+Icon updates only run when the theme changes, without an idle timer.
 
 The **macOS build** GitHub Action builds separate Apple Silicon (`macos-arm64`)
 and Intel (`macos-x64`) packages when called by the version-tag release workflow

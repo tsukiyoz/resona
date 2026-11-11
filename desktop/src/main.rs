@@ -31,10 +31,30 @@ mod asset_tests {
             gpui_kit::assets::IconName::Shield.path(),
             gpui_kit::assets::IconName::CircleAlert.path(),
             "resona.svg".into(),
+            "resona-dark.svg".into(),
         ] {
             let bytes = Assets.load(&path).unwrap().expect("icon must be bundled");
             assert!(std::str::from_utf8(&bytes).unwrap().contains("<svg"));
             assert!(Assets.list("").unwrap().contains(&path));
+        }
+    }
+
+    #[test]
+    fn vector_logos_render_in_color_without_growing_the_old_png_cache() {
+        let renderer = gpui_kit::SvgRenderer::new(std::sync::Arc::new(Assets));
+        for (bytes, background) in [
+            (crate::app_icon::LIGHT, [255, 255, 255, 255]),
+            (crate::app_icon::DARK, [21, 19, 17, 255]),
+        ] {
+            let image = gpui_kit::Image::from_bytes(gpui_kit::ImageFormat::Svg, bytes.to_vec())
+                .to_image_data(renderer.clone())
+                .expect("logo must render through the actual GPUI image path");
+            assert_eq!(image.size(0).width.0, 256);
+            assert_eq!(image.size(0).height.0, 256);
+            let pixels = image.as_bytes(0).unwrap();
+            let offset = (128 * 256 + 128) * 4;
+            assert_eq!(&pixels[offset..offset + 4], &background);
+            assert_eq!(pixels[3], 0, "rounded corners stay transparent");
         }
     }
 }
@@ -43,6 +63,7 @@ impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         let asset: Option<&'static [u8]> = match path {
             "resona.svg" => Some(include_bytes!("../assets/resona.svg")),
+            "resona-dark.svg" => Some(include_bytes!("../assets/resona-dark.svg")),
             "mic.svg" => Some(include_bytes!("../assets/mic.svg")),
             "mic-off.svg" => Some(include_bytes!("../assets/mic-off.svg")),
             "headphones.svg" => Some(include_bytes!("../assets/headphones.svg")),
@@ -65,6 +86,7 @@ impl AssetSource for Assets {
         assets.extend(ChannelIcons.list(path)?);
         for asset in [
             "resona.svg",
+            "resona-dark.svg",
             "mic.svg",
             "mic-off.svg",
             "headphones.svg",
