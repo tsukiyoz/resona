@@ -513,7 +513,7 @@ release 工作负载下采集 GPU；单元测试通过不代表实际 GPU 降幅
 
 Build evidence: the local arm64 PKG was generated and expanded; bundle, helper,
 native-library signatures and unchanged designated requirement passed. Desktop
-tests passed (79 unit + 1 integration), as did the four client update tests. Actual
+tests passed (79 unit + 1 integration), as did the four client update tests.
 The maintainer subsequently accepted the local macOS installation and Windows
 installer experience. Intel installation and Windows OTA between two formal
 versions remain separate acceptance items. CI adds both macOS architectures on
@@ -521,9 +521,10 @@ trusted main/tag builds; PKGs remain unsigned and not notarized.
 
 ## Light appearance refinement (2026-11-10)
 
-- Light uses neutral gray large surfaces: canvas `#e9ebee`, panels/sidebar/toolbar
-  `#f1f2f3`, and raised surfaces/dialogs/menus `#f6f7f8`. Component and custom
-  palettes agree; small inverse button text stays white. Dark is unchanged.
+- Following maintainer feedback on 2026-11-11, Light averages the original and
+  gray palettes: canvas `#f0f2f4`, panels/sidebar/toolbar `#f8f9f9`, raised surfaces
+  `#f3f5f7`, and dialogs/menus `#fbfbfc`. Component and custom palettes agree;
+  small inverse button text stays white. Dark is unchanged.
 - Appearance preview, Apply, Cancel and discard keep their existing semantics.
   Apply persists the selected preference without restarting audio; failure keeps
   the draft editable. Cancel/confirmed discard restores applied colors, titlebar
